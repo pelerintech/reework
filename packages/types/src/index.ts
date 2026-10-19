@@ -1,6 +1,37 @@
 // Shared contracts consumed by `core`, `ui`, and externally-installed plugins.
 
 // ---------------------------------------------------------------------------
+// Message (derived from pi-ai's Message: OpenAI-style role + content)
+// ---------------------------------------------------------------------------
+
+export type MessageRole = "system" | "user" | "assistant" | "tool";
+
+/** A text content block in a message. */
+export interface MessageTextBlock {
+  type: "text";
+  text: string;
+}
+
+export type MessageContentBlock = MessageTextBlock;
+
+/** Message content: a plain string or a list of content blocks. */
+export type MessageContent = string | MessageContentBlock[];
+
+/** A single conversation message in the shared reework vocabulary. */
+export interface Message {
+  role: MessageRole;
+  content: MessageContent;
+  timestamp: number;
+}
+
+/** Guard: is this value a pi-ai-style message (`{ role, content }`)? */
+export function isMessage(value: unknown): value is Message {
+  if (typeof value !== "object" || value === null) return false;
+  const m = value as Record<string, unknown>;
+  return typeof m.role === "string" && (typeof m.content === "string" || Array.isArray(m.content));
+}
+
+// ---------------------------------------------------------------------------
 // Agent / stream events
 // ---------------------------------------------------------------------------
 

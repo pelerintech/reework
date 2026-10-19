@@ -4,7 +4,8 @@ import type { Registry } from "@earendil-works/pi-durable";
 import type { Engine } from "../engine.ts";
 import { CONTEXT } from "../engine.ts";
 import { defineExtension } from "@earendil-works/pi-durable";
-import type { GateDecision } from "@reework/types";
+import type { GateDecision, Proposal } from "@reework/types";
+import { publishProposal, markProposalSettled } from "../protocol/proposals.ts";
 
 export type { GateDecision };
 
@@ -59,6 +60,7 @@ export async function settleGate(engine: Engine, decision: GateDecision): Promis
   await engine.commit(async (tx) => {
     (await tx.doc(GateDecisionDoc, proposalId, proposalId)).decision = decision;
   });
+  await markProposalSettled(engine, proposalId);
   const wake = pending.get(proposalId);
   if (wake) {
     pending.delete(proposalId);
@@ -143,6 +145,100 @@ export const GatedActionTask = defineTask<
   abort: async () => {},
 });
 
+// ---------------------------------------------------------------------------
+// Gated-action tool: a durable action that opens a gate and runs the developer's
+// `run` on the decision. Registered alongside the HITL tasks so it can be
+// scheduled and resume across restart.
+// ---------------------------------------------------------------------------
+
+export interface GatedActionRunContext {
+  conversationId: string;
+  taskId: string;
+  /** Invoke another tool registered on the agent as a nested call. */
+  executeTool(name: string, args: Record<string, unknown>): Promise<unknown>;
+}
+
+export interface GatedToolResult {
+  branch: string;
+  decision: GateDecision;
+  output: unknown;
+}
+
+/** Developer-supplied `run` functions for registered gated actions, keyed by tool name. */
+const gatedRunRegistry = new Map<
+  string,
+  (ctx: GatedActionRunContext, decision: GateDecision) => Promise<unknown>
+>();
+
+export function registerGatedAction(
+  name: string,
+  run: (ctx: GatedActionRunContext, decision: GateDecision) => Promise<unknown>,
+): void {
+  gatedRunRegistry.set(name, run);
+}
+
+/**
+ * The durable gated-action task: opens a gate (a `rework.gate` approval child),
+ * suspends as its own durable task, and on the human's decision resumes and runs
+ * the registered action's `run`. It is durable, so it survives crash/restart and
+ * does not block the rest of the agent.
+ */
+export const GatedToolTask = defineTask<
+  { runKey: string; proposal: GateProposal },
+  { phase: "approve" } | { phase: "run"; gateId: TaskId<GateOutcome> },
+  GatedToolResult,
+  {}
+>({
+  name: "rework.gatedTool",
+  version: 1,
+  initial: () => ({ phase: "approve" }),
+  phases: {
+    approve: async (task, runtime, context) => {
+      await runtime.commit(async (tx) => {
+        const gate = await tx.createTask(
+          GateTask,
+          { proposal: task.input.proposal },
+          { ownership: { kind: "task", taskId: task.id } },
+        );
+        return {
+          status: "waiting",
+          checkpoint: { phase: "run", gateId: gate },
+          on: [gate],
+          policy: "allSettled",
+        };
+      }, context);
+    },
+    run: async (task, runtime, context) => {
+      const [outcome] = await runtime.outcomes([task.state.checkpoint.gateId], context);
+      if (outcome.status !== "completed") {
+        throw new Error(`gate did not complete: ${outcome.status}`);
+      }
+      const decision = outcome.result.decision;
+      const run = gatedRunRegistry.get(task.input.runKey);
+      if (!run) {
+        throw new Error(`gated action not registered: ${task.input.runKey}`);
+      }
+      const ctx: GatedActionRunContext = {
+        conversationId: String(runtime.conversationId),
+        taskId: String(task.id),
+        executeTool: async () => {
+          throw new Error("executeTool is not available inside a durable gated action");
+        },
+      };
+      const branch = decision.selectedOption ?? (decision.instruction ? "instruction" : "abort");
+      const output = await run(ctx, decision);
+      await runtime.commit(
+        async () => ({
+          status: "terminal",
+          outcome: { status: "completed", result: { branch, decision, output } },
+        }),
+        context,
+      );
+    },
+  },
+  abort: async () => {},
+});
+
 /** Independent work that keeps running while a gated action is suspended. */
 export const BackgroundTask = defineTask<{}, { phase: "run" }, { note: string }, {}>({
   name: "rework.background",
@@ -167,7 +263,7 @@ export function installHITL(registry: Registry): void {
   registry.install(
     defineExtension({
       name: "rework.hitl",
-      tasks: [GateTask, GatedActionTask, BackgroundTask],
+      tasks: [GateTask, GatedActionTask, GatedToolTask, BackgroundTask],
     }),
   );
 }
@@ -182,6 +278,14 @@ export async function openGatedAction(
   proposal: GateProposal,
 ): Promise<TaskId<ActionOutcome>> {
   const root = await rootConversation(engine);
+  await publishProposal(engine, {
+    id: proposal.id,
+    conversationId: String(root.id),
+    title: proposal.title,
+    options: proposal.options,
+    acceptFreeForm: proposal.acceptFreeForm,
+    createdAt: Date.now(),
+  } as Proposal);
   return engine.commit((tx) =>
     tx.createTask(
       GatedActionTask,

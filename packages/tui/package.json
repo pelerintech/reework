@@ -1,0 +1,23 @@
+{
+  "name": "@reework/tui",
+  "version": "0.0.0",
+  "private": true,
+  "bin": {
+    "reework-tui": "./src/cli.tsx"
+  },
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./client": "./src/client.ts"
+  },
+  "dependencies": {
+    "@reework/types": "workspace:*",
+    "ink": "^8.0.0",
+    "react": "^19.3.1",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0"
+  }
+}
