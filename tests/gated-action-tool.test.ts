@@ -7,10 +7,9 @@ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/provid
 import {
   CONTEXT,
   Engine,
-  definePlugin,
+  toExtension,
   gatedAction,
   installHITL,
-  installPlugin,
   listOpenProposals,
   openBackgroundTask,
   settleGate,
@@ -69,7 +68,7 @@ describe("a gated-action tool suspends only the gated action", () => {
         return "rolled back";
       },
     });
-    installPlugin(definePlugin({ name: "gated", tools: [applyRollback] }), registry);
+    registry.install(toExtension("gated", { tools: [applyRollback] }));
 
     const models = ENGINE_TEST_MODELS();
     models.setResponses([
@@ -131,7 +130,7 @@ describe("a gated-action tool suspends only the gated action", () => {
         return "investigating";
       },
     });
-    installPlugin(definePlugin({ name: "gated", tools: [applyRollback] }), registry);
+    registry.install(toExtension("gated", { tools: [applyRollback] }));
 
     const models = ENGINE_TEST_MODELS();
     models.setResponses([

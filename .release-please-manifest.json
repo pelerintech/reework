@@ -1,0 +1,6 @@
+{
+  "packages/types": "0.1.0",
+  "packages/client": "0.1.0",
+  "packages/core": "0.1.0",
+  "packages/tui": "0.1.0"
+}

@@ -2,9 +2,18 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels, type Models } from "@earendil-works/pi-ai/models";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { AssistantEntry, createRegistry, Harness } from "@earendil-works/pi-durable";
-import type { AgentChange, RegistryReader, ToolRegistration, Tx } from "@earendil-works/pi-durable";
+import type {
+  AgentChange,
+  HarnessSettings,
+  RegistryReader,
+  ToolRegistration,
+  Tx,
+} from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { StorageSeam } from "./tooling/storage.ts";
+import { collectGatedRuns, hitlState } from "./hitl/gate.ts";
+import type { HitlState } from "./hitl/gate.ts";
 
 export const CONTEXT = BACKGROUND_CONTEXT;
 
@@ -34,6 +43,12 @@ export interface EngineOptions {
   readonly storagePath: string;
   readonly models?: Models;
   readonly registry?: RegistryReader<ToolRegistration>;
+  readonly settings?: HarnessSettings;
+  /**
+   * Give conversations with a `cwd` a local execution environment there, so the
+   * coding tools act in that conversation's workspace.
+   */
+  readonly workspaces?: boolean;
 }
 
 /**
@@ -43,11 +58,14 @@ export interface EngineOptions {
 export class Engine {
   readonly path: string;
   readonly harness: Harness;
+  /** In-memory gate state owned by this engine's registry. */
+  readonly hitl: HitlState;
   private readonly models?: Models;
 
-  private constructor(harness: Harness, path: string, models?: Models) {
+  private constructor(harness: Harness, path: string, hitl: HitlState, models?: Models) {
     this.harness = harness;
     this.path = path;
+    this.hitl = hitl;
     this.models = models;
   }
 
@@ -55,8 +73,24 @@ export class Engine {
     const models = options.models ?? createMockModels().models;
     const registry = options.registry ?? createRegistry();
     const storage = await openNodeSqliteStorage(options.storagePath);
-    const harness = await Harness.open(storage, { models, registry }, CONTEXT);
-    return new Engine(harness, options.storagePath, models);
+    collectGatedRuns(registry);
+    const harness = await Harness.open(
+      storage,
+      {
+        models,
+        registry,
+        ...(options.settings ? { settings: options.settings } : {}),
+        ...(options.workspaces
+          ? {
+              env: ({ cwd }: { cwd?: string }) => (cwd ? new NodeExecutionEnv({ cwd }) : undefined),
+            }
+          : {}),
+      },
+      CONTEXT,
+    );
+    const engine = new Engine(harness, options.storagePath, hitlState(registry), models);
+    engine.hitl.storage = engine.storage;
+    return engine;
   }
 
   /** Return the reserved root conversation, with optional agent changes. */

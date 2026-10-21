@@ -1,17 +1,33 @@
 {
   "name": "@reework/tui",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "bin": {
-    "reework-tui": "./src/cli.tsx"
+    "reework-tui": "./dist/cli.js"
   },
+  "files": [
+    "dist"
+  ],
   "type": "module",
-  "main": "src/index.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./client": "./src/client.ts"
+    ".": {
+      "reework-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
+    "@reework/client": "workspace:*",
     "@reework/types": "workspace:*",
     "ink": "^8.0.0",
     "react": "^19.3.1",
@@ -19,5 +35,8 @@
   },
   "devDependencies": {
     "@types/react": "^19.3.0"
+  },
+  "engines": {
+    "node": ">=22.18"
   }
 }

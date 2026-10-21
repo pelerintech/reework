@@ -35,3 +35,27 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec vp test --coverage
+
+  package:
+    name: package (build, shape, pack-smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: build
+        run: pnpm run build
+      - name: check-dist
+        run: node scripts/check-dist.mjs
+      - name: publint
+        run: pnpm -r --filter "./packages/*" exec publint --strict
+      - name: attw
+        run: pnpm -r --filter "./packages/*" exec attw --pack . --profile esm-only
+      - name: pack-smoke
+        run: node scripts/pack-smoke.mjs

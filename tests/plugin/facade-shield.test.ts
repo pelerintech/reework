@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createRegistry } from "@earendil-works/pi-durable";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
-import { CONTEXT, Engine } from "@reework/core";
+import { CONTEXT, Engine, toExtension } from "@reework/core";
 import { ENGINE_TEST_MODELS } from "../durable/model-setup.js";
 import { GreetingPlugin } from "./sample-plugin.js";
 
@@ -28,7 +28,7 @@ describe("facade shields the plugin from pi-durable API changes", () => {
     // facade) — never `@earendil-works/pi-durable` — so a change in pi-durable's
     // extension API is contained in the facade, not the plugin.
     const registry = createRegistry();
-    registry.install(GreetingPlugin);
+    registry.install(toExtension(GreetingPlugin.name, GreetingPlugin.build(undefined)));
 
     const models = ENGINE_TEST_MODELS();
     models.setResponses([fauxAssistantMessage("Hello there!")]);

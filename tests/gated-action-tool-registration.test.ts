@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createRegistry } from "@earendil-works/pi-durable";
-import { definePlugin, gatedAction, installPlugin } from "@reework/core";
+import { gatedAction, toExtension } from "@reework/core";
 
 describe("a gated-action tool registers as a callable tool via the facade", () => {
   it("is installed into a registry and offered as a callable tool by name", () => {
@@ -17,7 +17,7 @@ describe("a gated-action tool registers as a callable tool via the facade", () =
     });
 
     const registry = createRegistry();
-    installPlugin(definePlugin({ name: "gated", tools: [applyRollback] }), registry);
+    registry.install(toExtension("gated", { tools: [applyRollback] }));
 
     const tools = registry
       .snapshot()

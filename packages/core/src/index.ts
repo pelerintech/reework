@@ -5,35 +5,61 @@ export type {
   AgentDefinition,
   AgentModel,
   AgentModelProvider,
+  AgentModelApi,
   AgentMission,
   DeclaredModule,
 } from "./agent-definition.ts";
+
+export { AgentHost, ConversationNotFound, ProposalNotFound } from "./host.ts";
+export type { ConversationRecord } from "./protocol/conversations.ts";
+export type {
+  ConversationInfo,
+  ConversationRead,
+  ConversationSnapshot,
+  CreateConversationOptions,
+  SubmitOptions,
+  SubmitResult,
+} from "./host.ts";
 
 export { Engine, createMockModels, CONTEXT } from "./engine.ts";
 export type { EngineOptions } from "./engine.ts";
 
 export {
+  CodingTools,
+  createBashTool,
+  createCodingTools,
+  createEditTool,
+  createReadTool,
+  createWriteTool,
   StorageSeam,
   createComponentRegistry,
   installComponents,
   definePlugin,
   defineTool,
-  installPlugin,
+  isReeworkPlugin,
+  once,
+  onceInCommit,
+  toExtension,
   section,
+  Type,
 } from "./tooling/index.ts";
 export type {
   StorageSeamType,
   Component,
   ComponentRegistry,
   DomainComponent,
-  PluginDefinition,
+  BuiltPlugin,
+  PluginSetupContext,
+  ReeworkPlugin,
+  Static,
+  TSchema,
+  WorkspaceProvider,
+  WorkspaceTarget,
 } from "./tooling/index.ts";
-
-export { WebChannel, WhatsAppChannel } from "./channels/index.ts";
 
 export { createServer } from "./server/index.ts";
 
-export { startAgent } from "./runtime/bootstrap.ts";
+export { MODEL_PROVIDER_ID, startAgent } from "./runtime/bootstrap.ts";
 export type { RunningAgent, StartAgentOptions } from "./runtime/bootstrap.ts";
 
 export {
@@ -57,6 +83,7 @@ export { mapDurableEvent } from "./protocol/event-mapper.ts";
 export type {
   GatedActionDefinition,
   GatedActionGate,
+  GatedActionGateContext,
   GatedActionRunContext,
 } from "./hitl/gated-action-tool.ts";
 export type {
@@ -65,4 +92,5 @@ export type {
   GateOutcome,
   ActionOutcome,
   ProposalOption,
+  HitlState,
 } from "./hitl/gate.ts";

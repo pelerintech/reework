@@ -1,26 +1,23 @@
 import { describe, expect, it } from "vitest";
 import { createRegistry } from "@earendil-works/pi-durable";
-import { definePlugin, installPlugin, section } from "@reework/core";
+import { definePlugin, section, toExtension } from "@reework/core";
 import { GreetingPlugin } from "./sample-plugin.js";
 
-describe("Layer-2 facade registers an extension through defineExtension", () => {
-  it("defines a plugin against the facade and installs it as a pi-durable extension", () => {
-    const plugin = definePlugin({
-      name: "counting",
-      sections: [section("preamble", () => "Count carefully.", { tag: false })],
-    });
+describe("the facade turns plugins into pi-durable extensions", () => {
+  it("builds a plugin from its config and installs its sections as an extension", () => {
+    const counting = definePlugin("counting", (config: { unit: string }) => ({
+      sections: [section("counting", () => `Count in ${config.unit}.`, { tag: false })],
+    }));
 
     const registry = createRegistry();
-    installPlugin(GreetingPlugin, registry);
-    registry.install(plugin);
+    registry.install(toExtension(GreetingPlugin.name, GreetingPlugin.build(undefined)));
+    registry.install(toExtension(counting.name, counting.build({ unit: "apples" })));
 
-    expect(registry.snapshot().extension("greeting")).toBeDefined();
-    expect(registry.snapshot().extension("counting")).toBeDefined();
-    expect(
-      registry
-        .snapshot()
-        .sections()
-        .map((s) => s.section.key),
-    ).toContain("preamble");
+    const snapshot = registry.snapshot();
+    expect(snapshot.extension("greeting")).toBeDefined();
+    expect(snapshot.extension("counting")).toBeDefined();
+    expect(snapshot.sections().map((s) => s.section.key)).toEqual(
+      expect.arrayContaining(["preamble", "counting"]),
+    );
   });
 });

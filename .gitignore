@@ -3,6 +3,7 @@ reespec/
 
 # reespec harness skills (installed by `reespec init`)
 .pi/
+.claude/
 
 # dependencies
 node_modules/

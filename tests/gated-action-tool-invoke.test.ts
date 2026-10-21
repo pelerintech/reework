@@ -7,10 +7,9 @@ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/provid
 import {
   CONTEXT,
   Engine,
-  definePlugin,
+  toExtension,
   gatedAction,
   installHITL,
-  installPlugin,
   listOpenProposals,
   settleGate,
 } from "@reework/core";
@@ -49,7 +48,7 @@ describe("an agent-driven run invokes the gated-action tool", () => {
         return "rolled back";
       },
     });
-    installPlugin(definePlugin({ name: "gated", tools: [applyRollback] }), registry);
+    registry.install(toExtension("gated", { tools: [applyRollback] }));
 
     const models = ENGINE_TEST_MODELS();
     models.setResponses([

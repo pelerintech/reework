@@ -108,6 +108,12 @@ export interface CompactionEndEvent extends AgentEventBase {
 export interface SnapshotEvent extends AgentEventBase {
   kind: "snapshot";
   events: AgentEvent[];
+  /** User and assistant messages so far, oldest first. */
+  messages?: Message[];
+  /** Proposals open in the conversation. */
+  proposals?: Proposal[];
+  /** Whether a run is answering input right now. */
+  running?: boolean;
 }
 
 export type AgentEvent =
@@ -139,11 +145,23 @@ export interface ProposalOption {
   description?: string;
 }
 
+/**
+ * Material shown with a proposal so the human can decide without leaving the
+ * surface. Surfaces that cannot render a kind show it as `text`.
+ */
+export type ProposalAttachment = {
+  kind: "markdown" | "diff" | "text";
+  title?: string;
+  content: string;
+};
+
 export interface Proposal {
   id: string;
   conversationId: string;
   title: string;
   description?: string;
+  /** Evidence and proposed changes (diagnosis, logs, a diff, test output). */
+  attachments?: ProposalAttachment[];
   /** Finite set of offered choices each mapping to a branch. */
   options: ProposalOption[];
   /** Whether the gate also accepts a free-form instruction. */
@@ -159,7 +177,8 @@ export function isProposal(value: unknown): value is Proposal {
     typeof p.conversationId === "string" &&
     typeof p.title === "string" &&
     Array.isArray(p.options) &&
-    typeof p.acceptFreeForm === "boolean"
+    typeof p.acceptFreeForm === "boolean" &&
+    (p.attachments === undefined || Array.isArray(p.attachments))
   );
 }
 
@@ -184,6 +203,108 @@ export function isGateDecision(value: unknown): value is GateDecision {
   const hasInstruction = typeof d.instruction === "string";
   return hasOption || hasInstruction;
 }
+
+// ---------------------------------------------------------------------------
+// Conversations and submissions (protocol responses)
+// ---------------------------------------------------------------------------
+
+/** `POST /conversations` — 201 when created, 200 when the key already existed. */
+export interface ConversationCreated {
+  id: string;
+  key?: string;
+  created: boolean;
+}
+
+/** `POST /conversations/:id/messages` — 202: admitted, answered in the background. */
+export interface SubmissionAccepted {
+  conversationId: string;
+  submissionId: string;
+}
+
+/** `POST /conversations/:id/messages?wait=true` — 200 with the answer. */
+export interface SubmissionAnswered extends SubmissionAccepted {
+  message?: Message;
+}
+
+// ---------------------------------------------------------------------------
+// Route table: every built-in protocol route. The server mounts from it and
+// clients call by id, so they cannot drift.
+// ---------------------------------------------------------------------------
+
+export interface RouteSpec {
+  readonly method: "GET" | "POST";
+  readonly path: string;
+  /** `token`: needs `Authorization: Bearer <REEWORK_API_TOKEN>`. */
+  readonly auth: "token" | "open";
+  readonly summary: string;
+}
+
+export const ROUTES = {
+  health: { method: "GET", path: "/health", auth: "open", summary: "Liveness" },
+  "conversations.create": {
+    method: "POST",
+    path: "/conversations",
+    auth: "token",
+    summary: "Create a conversation; a `key` makes it idempotent (201 new, 200 existing)",
+  },
+  "conversations.list": {
+    method: "GET",
+    path: "/conversations",
+    auth: "token",
+    summary: "Every created conversation with its key and creation time",
+  },
+  "conversations.get": {
+    method: "GET",
+    path: "/conversations/:id",
+    auth: "token",
+    summary: "A conversation's entries",
+  },
+  "conversations.submit": {
+    method: "POST",
+    path: "/conversations/:id/messages",
+    auth: "token",
+    summary:
+      "Submit input (202); `?wait=true` returns the answer; `requestId` dedupes; `mode: steer`",
+  },
+  "conversations.abort": {
+    method: "POST",
+    path: "/conversations/:id/abort",
+    auth: "token",
+    summary: "Stop the current run; open gates stay open",
+  },
+  "conversations.proposals": {
+    method: "GET",
+    path: "/conversations/:id/proposals",
+    auth: "token",
+    summary: "Open proposals of one conversation",
+  },
+  "conversations.decide": {
+    method: "POST",
+    path: "/conversations/:id/proposals/:pid/decisions",
+    auth: "token",
+    summary: "Decide a proposal of this conversation",
+  },
+  "conversations.watch": {
+    method: "GET",
+    path: "/conversations/:id/ws",
+    auth: "token",
+    summary: "WebSocket: a snapshot, then live AgentEvents",
+  },
+  "proposals.list": {
+    method: "GET",
+    path: "/proposals",
+    auth: "token",
+    summary: "Open proposals across every conversation (the inbox)",
+  },
+  "proposals.decide": {
+    method: "POST",
+    path: "/proposals/:pid/decisions",
+    auth: "token",
+    summary: "Decide any open proposal by id",
+  },
+} as const satisfies Record<string, RouteSpec>;
+
+export type RouteId = keyof typeof ROUTES;
 
 // ---------------------------------------------------------------------------
 // Channel contract (separate REST + WS transport surfaces)

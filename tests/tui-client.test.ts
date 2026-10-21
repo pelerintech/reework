@@ -1,129 +1,105 @@
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { serve } from "@hono/node-server";
-import type { ServerType } from "@hono/node-server";
-import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
-import type { AgentEvent } from "@reework/types";
-import { createRegistry } from "@earendil-works/pi-durable";
-import { Engine, createServer, installHITL, openGatedAction, waitForOutcome } from "@reework/core";
-import type { ActionOutcome } from "@reework/core";
-import { TuiProtocolClient } from "@reework/tui";
-import { ENGINE_TEST_MODELS } from "./durable/model-setup.js";
+import { describe, expect, it } from "vitest";
+import { Type } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { createClient } from "@reework/client";
+import { definePlugin, gatedAction } from "@reework/core";
+import { answerProposal, loadStartState, sendToAgent } from "@reework/tui";
+import { TEST_TOKEN, fauxModels, startTestAgent, testDefinition } from "./support/agent.ts";
+import { eventually } from "./support/wait.ts";
 
-const open: Engine[] = [];
-const servers: ServerType[] = [];
-
-function tmpPath(): string {
-  const dir = mkdtempSync(join(tmpdir(), "reework-"));
-  return join(dir, "session.sqlite");
+/** A listening agent with gates open in two conversations, plus one quiet conversation. */
+export async function agentWithTwoGates() {
+  const faux = fauxModels();
+  const ask = (title: string) => [
+    fauxAssistantMessage([fauxToolCall("approve", { title })], { stopReason: "toolUse" }),
+    fauxAssistantMessage(`asked: ${title}`),
+  ];
+  faux.respond([...ask("Restart worker?"), ...ask("Roll out fix?")]);
+  const plugin = definePlugin("ops", () => ({
+    tools: [
+      gatedAction({
+        name: "approve",
+        parameters: Type.Object({ title: Type.String() }),
+        gate: (args) => ({
+          title: args.title,
+          options: [{ id: "yes", label: "Yes" }],
+          acceptFreeForm: true,
+        }),
+        run: async () => "done",
+      }),
+    ],
+  }));
+  const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }), {
+    models: faux.models,
+  });
+  const { port } = await agent.listen(0);
+  const a = await agent.host.createConversation({ key: "alert-a" });
+  const b = await agent.host.createConversation({ key: "alert-b" });
+  const quiet = await agent.host.createConversation({ key: "quiet" });
+  await agent.host.submitInput(a.id, "check A", { wait: true });
+  await agent.host.submitInput(b.id, "check B", { wait: true });
+  const client = createClient({ baseUrl: `http://127.0.0.1:${port}`, token: TEST_TOKEN });
+  return { agent, client, a, b, quiet };
 }
 
-afterEach(async () => {
-  while (servers.length > 0) {
-    servers.pop()!.close();
-  }
-  while (open.length > 0) {
-    const engine = open.pop()!;
-    await engine.close();
-  }
-});
+describe("the TUI's start state", () => {
+  it("is the inbox of open proposals across conversations, and every conversation", async () => {
+    const { client, a, b, quiet } = await agentWithTwoGates();
 
-async function startServer(): Promise<{ engine: Engine; baseUrl: string; conversationId: string }> {
-  const models = ENGINE_TEST_MODELS();
-  models.setResponses([fauxAssistantMessage("the tui got an answer")]);
-  const engine = await Engine.open({ storagePath: tmpPath(), models: models.models });
-  open.push(engine);
-  const root = await engine.root();
-  const { app, nodeWebSocket } = createServer(engine);
-  const server = serve({ fetch: app.fetch, port: 0 }, (info) => {
-    nodeWebSocket.injectWebSocket(server);
-    void info;
-  });
-  servers.push(server);
-  const address = server.address() as { port: number };
-  return { engine, baseUrl: `http://127.0.0.1:${address.port}`, conversationId: String(root.id) };
-}
+    const state = await loadStartState(client);
 
-describe("TUI protocol client connects to an agent server", () => {
-  it("connects via the event stream and submits input / reads the conversation over REST", async () => {
-    const { baseUrl, conversationId } = await startServer();
-    const client = new TuiProtocolClient({ baseUrl });
-
-    // Submits input and reads the typed outcome over REST.
-    const message = await client.submitInput(conversationId, "hello");
-    expect(message.role).toBe("assistant");
-    expect(JSON.stringify(message.content)).toContain("the tui got an answer");
-
-    // Reads the conversation's entries over REST.
-    const conversation = await client.readConversation(conversationId);
-    expect(conversation.id).toBe(conversationId);
-    expect(conversation.entries.length).toBeGreaterThan(0);
-
-    // Connects to the live event stream over WS.
-    const received: AgentEvent[] = [];
-    const disconnect = await client.connect(conversationId, (events) => received.push(...events));
-    expect(typeof disconnect).toBe("function");
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    disconnect();
+    expect(state.inbox.map((p) => [p.title, p.conversationId])).toEqual([
+      ["Restart worker?", a.id],
+      ["Roll out fix?", b.id],
+    ]);
+    expect(state.conversations.map((c) => c.key)).toEqual(["alert-a", "alert-b", "quiet"]);
+    expect(state.conversations.map((c) => c.id)).toContain(quiet.id);
   });
 
-  it("lets the operator list an open gate and answer it via a decision", async () => {
-    const models = ENGINE_TEST_MODELS();
-    const registry = createRegistry();
-    installHITL(registry);
-    const engine = await Engine.open({ storagePath: tmpPath(), models: models.models, registry });
-    open.push(engine);
-    const root = await engine.root();
-    const { app, nodeWebSocket } = createServer(engine);
-    const server = serve({ fetch: app.fetch, port: 0 }, (info) => {
-      nodeWebSocket.injectWebSocket(server);
-      void info;
-    });
-    servers.push(server);
-    const address = server.address() as { port: number };
-    const baseUrl = `http://127.0.0.1:${address.port}`;
-    const conversationId = String(root.id);
+  it("answers each inbox proposal in its own conversation, by option or by instruction", async () => {
+    const { agent, client, a, b } = await agentWithTwoGates();
+    const { inbox } = await loadStartState(client);
+    const [inA, inB] = inbox;
 
-    // Open a gate on the server's conversation.
-    const actionId = await openGatedAction(engine, {
-      id: "tui-gate",
-      title: "Approve?",
-      options: [{ id: "yes", label: "Yes" }],
-      acceptFreeForm: false,
+    expect(await answerProposal(client, inB, "yes")).toEqual({ kind: "option", optionId: "yes" });
+    expect(await answerProposal(client, inA, "only restart the canary")).toEqual({
+      kind: "instruction",
+      instruction: "only restart the canary",
     });
 
-    const client = new TuiProtocolClient({ baseUrl });
-    const proposals = await client.listProposals(conversationId);
-    expect(proposals.some((p) => p.id === "tui-gate")).toBe(true);
-
-    await client.submitDecision(conversationId, {
-      proposalId: "tui-gate",
-      selectedOption: "yes",
-      instruction: null,
-    });
-    const outcome = await waitForOutcome<ActionOutcome>(engine, actionId);
-    expect(outcome.status).toBe("completed");
-    expect(outcome.result!.branch).toBe("yes");
+    expect((await loadStartState(client)).inbox).toEqual([]);
+    await eventually(async () =>
+      JSON.stringify(await agent.host.readConversation(a.id)).includes("only restart the canary"),
+    );
+    expect(JSON.stringify(await agent.host.readConversation(b.id))).toContain('option \\"yes\\"');
   });
 
-  it("keeps the server running after the TUI client disconnects", async () => {
-    const { baseUrl, conversationId } = await startServer();
-    const client = new TuiProtocolClient({ baseUrl });
+  it("sends input without waiting; the answer arrives on the conversation's event stream", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const faux = fauxModels();
+    faux.respond([
+      async () => {
+        await held;
+        return fauxAssistantMessage("took a while");
+      },
+    ]);
+    const agent = await startTestAgent(testDefinition(), { models: faux.models });
+    const { port } = await agent.listen(0);
+    const client = createClient({ baseUrl: `http://127.0.0.1:${port}`, token: TEST_TOKEN });
+    const { id } = await client.createConversation();
+    const kinds: string[] = [];
+    const watch = await client.watch(id, (frame) => {
+      if (frame.kind === "events") kinds.push(...frame.events.map((e) => e.kind));
+    });
 
-    const disconnect = await client.connect(conversationId, () => {});
-    disconnect();
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    const sent = await sendToAgent(client, id, "investigate the latency");
+    expect(sent.submissionId).toBeTruthy();
+    expect(kinds).not.toContain("run_end");
 
-    // The server is independent of the client: it still serves requests.
-    const health = await fetch(`${baseUrl}/health`);
-    expect(health.status).toBe(200);
-    const body = (await health.json()) as { ok: boolean };
-    expect(body.ok).toBe(true);
-
-    // And it still processes input after the client detached.
-    const message = await client.submitInput(conversationId, "still here");
-    expect(message.role).toBe("assistant");
+    release();
+    await eventually(() => kinds.includes("run_end"));
+    watch.close();
+    expect(JSON.stringify(await client.readConversation(id))).toContain("took a while");
   });
 });

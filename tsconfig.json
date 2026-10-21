@@ -14,7 +14,8 @@
     "resolveJsonModule": true,
     "allowJs": true,
     "checkJs": false,
-    "jsx": "react-jsx"
+    "jsx": "react-jsx",
+    "customConditions": ["reework-source"]
   },
   "include": ["packages/*/src", "tests", "vite.config.ts"]
 }

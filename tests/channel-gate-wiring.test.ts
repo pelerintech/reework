@@ -38,7 +38,7 @@ describe("channel ↔ gate wiring", () => {
 
     // A stub channel watches the protocol's proposal stream in-process.
     const observed: Proposal[] = [];
-    const unsubscribe = onProposalOpen((proposal) => observed.push(proposal));
+    const unsubscribe = onProposalOpen(engine, (proposal) => observed.push(proposal));
 
     const proposal = { id: "gate-1", title: "Apply rollback?", options: [], acceptFreeForm: true };
     const actionId = await openGatedAction(engine, proposal);

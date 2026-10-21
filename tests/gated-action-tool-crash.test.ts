@@ -7,10 +7,9 @@ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/provid
 import {
   CONTEXT,
   Engine,
-  definePlugin,
+  toExtension,
   gatedAction,
   installHITL,
-  installPlugin,
   listOpenProposals,
   settleGate,
 } from "@reework/core";
@@ -88,7 +87,7 @@ describe("a gated action survives crash mid-gate", () => {
     const registryA = createRegistry();
     installHITL(registryA);
     const applyA = makeTool();
-    installPlugin(definePlugin({ name: "gated", tools: [applyA] }), registryA);
+    registryA.install(toExtension("gated", { tools: [applyA] }));
     const modelsA = ENGINE_TEST_MODELS();
     modelsA.setResponses([
       fauxAssistantMessage([fauxToolCall("apply.rollback", {})], { stopReason: "toolUse" }),
@@ -115,7 +114,7 @@ describe("a gated action survives crash mid-gate", () => {
     const registryB = createRegistry();
     installHITL(registryB);
     const applyB = makeTool();
-    installPlugin(definePlugin({ name: "gated", tools: [applyB] }), registryB);
+    registryB.install(toExtension("gated", { tools: [applyB] }));
     const modelsB = ENGINE_TEST_MODELS();
     modelsB.setResponses([fauxAssistantMessage("done")]);
     const engineB = await Engine.open({

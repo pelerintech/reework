@@ -1,7 +1,8 @@
 import { defineDoc } from "@earendil-works/pi-durable";
-import type { Proposal } from "@reework/types";
+import type { Proposal, ProposalAttachment } from "@reework/types";
 import type { Engine } from "../engine.ts";
 import { CONTEXT } from "../engine.ts";
+import { notifyProposalOpen } from "../hitl/gate.ts";
 
 /** A proposal as recorded durably, with its open/settled status. */
 export type OpenProposal = {
@@ -10,6 +11,7 @@ export type OpenProposal = {
   title: string;
   description?: string;
   options: { id: string; label: string; description?: string }[];
+  attachments?: ProposalAttachment[];
   acceptFreeForm: boolean;
   createdAt: number;
   status: "open" | "settled";
@@ -28,20 +30,10 @@ export const ProposalsDoc = defineDoc<{ proposals: OpenProposal[] }>({
   initial: () => ({ proposals: [] }),
 });
 
-/** In-process listeners that observe opened proposals (the channel-facing stream). */
-const proposalListeners = new Set<(proposal: Proposal) => void>();
-
-/** Subscribe (in-process) to newly opened proposals. Returns an unsubscribe fn. */
-export function onProposalOpen(listener: (proposal: Proposal) => void): () => void {
-  proposalListeners.add(listener);
-  return () => proposalListeners.delete(listener);
-}
-
-/** Notify in-process listeners that a proposal opened. */
-export function notifyProposalOpen(proposal: Proposal): void {
-  for (const listener of proposalListeners) {
-    listener(proposal);
-  }
+/** Subscribe (in-process) to proposals this engine opens. Returns an unsubscribe fn. */
+export function onProposalOpen(engine: Engine, listener: (proposal: Proposal) => void): () => void {
+  engine.hitl.listeners.add(listener);
+  return () => engine.hitl.listeners.delete(listener);
 }
 
 /** Record an opened proposal as durable and open. */
@@ -52,7 +44,7 @@ export async function publishProposal(engine: Engine, proposal: Proposal): Promi
       doc.proposals.push({ ...proposal, status: "open" });
     }
   });
-  notifyProposalOpen(proposal);
+  notifyProposalOpen(engine.hitl, proposal);
 }
 
 /** Mark a proposal settled so it leaves the open list. */

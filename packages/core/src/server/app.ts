@@ -1,81 +1,125 @@
+import { timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
+import type { Context, Handler, MiddlewareHandler } from "hono";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { watchEvents } from "@earendil-works/pi-durable";
 import type { ConversationId } from "@earendil-works/pi-durable";
-import type { GateDecision, Message } from "@reework/types";
-import { settleGate } from "../hitl/gate.ts";
-import { listOpenProposals } from "../protocol/proposals.ts";
+import { ROUTES } from "@reework/types";
+import type { GateDecision, RouteId } from "@reework/types";
 import { mapDurableEvent } from "../protocol/event-mapper.ts";
-import type { Engine } from "../engine.ts";
 import { CONTEXT } from "../engine.ts";
+import { ConversationNotFound, ProposalNotFound } from "../host.ts";
+import type { AgentHost } from "../host.ts";
 
-/** Route param ids arrive as strings; conversation ids are branded numbers. */
-function conversationId(raw: string): ConversationId {
-  return Number(raw) as unknown as ConversationId;
+export interface ServerOptions {
+  /** Bearer token every route marked `auth: "token"` requires. */
+  readonly token: string;
+}
+
+/** Reject requests whose `Authorization: Bearer` header is not `token`. */
+function requireToken(token: string): MiddlewareHandler {
+  const expected = Buffer.from(`Bearer ${token}`);
+  return async (c, next) => {
+    const given = Buffer.from(c.req.header("authorization") ?? "");
+    if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
+      return c.json({ error: "unauthorized" }, 401);
+    }
+    await next();
+  };
+}
+
+async function decisionFrom(c: Context, proposalId: string): Promise<GateDecision> {
+  const body = await c.req.json<Partial<GateDecision>>().catch(() => ({}) as Partial<GateDecision>);
+  return {
+    proposalId,
+    selectedOption: typeof body.selectedOption === "string" ? body.selectedOption : null,
+    instruction: typeof body.instruction === "string" ? body.instruction : null,
+  };
 }
 
 /**
- * Build the Hono app hosting a conversation over REST + WebSocket. REST
- * exposes message submission and conversation reads; WebSocket streams the
- * agent's live events (`watchEvents`) to clients. Returns the app plus the
- * node WebSocket handle so a host can `injectWebSocket(server)`.
+ * Build the Hono app serving the interaction protocol: every route of the shared
+ * `ROUTES` table, mounted from it, over the in-process host. Returns the app
+ * plus the node WebSocket handle so a host can `injectWebSocket(server)`.
  */
-export function createServer(engine: Engine) {
+export function createServer(host: AgentHost, options: ServerOptions) {
+  const engine = host.engine;
   const app = new Hono();
-
-  app.get("/health", (c) => c.json({ ok: true }));
-
-  app.get("/conversations/:id", async (c) => {
-    const id = c.req.param("id");
-    const root = await engine.root();
-    const entries = await root.entries({ order: "descending" }, 50, undefined, CONTEXT);
-    return c.json({ id, entries: entries.items });
-  });
-
-  app.post("/conversations/:id/messages", async (c) => {
-    const id = c.req.param("id");
-    const body = await c.req.json<{ content?: string }>();
-    const result = await engine.run(String(body.content ?? ""));
-    return c.json({
-      conversationId: id,
-      message: {
-        role: "assistant",
-        content: [{ type: "text", text: result }],
-        timestamp: Date.now(),
-      } as Message,
-      result,
-    });
-  });
-
-  app.get("/conversations/:id/proposals", async (c) => {
-    const proposals = await listOpenProposals(engine);
-    return c.json({ id: c.req.param("id"), proposals });
-  });
-
-  app.post("/conversations/:id/proposals/:pid/decisions", async (c) => {
-    const pid = c.req.param("pid");
-    const body = await c.req.json<GateDecision>();
-    await settleGate(engine, { ...body, proposalId: pid });
-    return c.json({ ok: true });
-  });
-
   const nodeWebSocket = createNodeWebSocket({ app });
-  const { upgradeWebSocket } = nodeWebSocket;
 
-  app.get(
-    "/conversations/:id/ws",
-    upgradeWebSocket((c) => {
-      const id = conversationId(c.req.param("id") ?? "");
+  app.onError((error, c) => {
+    if (error instanceof ConversationNotFound) {
+      return c.json({ error: "conversation_not_found", conversationId: error.conversationId }, 404);
+    }
+    if (error instanceof ProposalNotFound) {
+      return c.json({ error: "proposal_not_found", proposalId: error.proposalId }, 404);
+    }
+    throw error;
+  });
+
+  const handlers: Record<RouteId, Handler> = {
+    health: (c) => c.json({ ok: true }),
+
+    "conversations.create": async (c) => {
+      const body = await c.req.json<{ key?: unknown }>().catch(() => ({}) as { key?: unknown });
+      const key = typeof body.key === "string" ? body.key : undefined;
+      const conversation = await host.createConversation({ key });
+      return c.json(conversation, conversation.created ? 201 : 200);
+    },
+
+    "conversations.list": async (c) => c.json({ conversations: await host.listConversations() }),
+
+    "conversations.get": async (c) => c.json(await host.readConversation(c.req.param("id") ?? "")),
+
+    "conversations.submit": async (c) => {
+      const id = c.req.param("id") ?? "";
+      const body = await c.req.json<{ content?: unknown; requestId?: unknown; mode?: unknown }>();
+      const content = typeof body.content === "string" ? body.content : "";
+      const requestId = typeof body.requestId === "string" ? body.requestId : undefined;
+      const mode = body.mode === "steer" ? "steer" : "followUp";
+      const wait = c.req.query("wait") === "true";
+      const { duplicate, ...result } = await host.submitInput(id, content, {
+        wait,
+        requestId,
+        mode,
+      });
+      return c.json({ conversationId: id, ...result }, wait || duplicate ? 200 : 202);
+    },
+
+    "conversations.abort": async (c) => {
+      await host.abort(c.req.param("id") ?? "");
+      return c.json({ ok: true });
+    },
+
+    "conversations.proposals": async (c) => {
+      const id = c.req.param("id") ?? "";
+      if (!(await host.hasConversation(id))) throw new ConversationNotFound(id);
+      return c.json({ id, proposals: await host.listProposals({ conversationId: id }) });
+    },
+
+    "conversations.decide": async (c) => {
+      const decision = await decisionFrom(c, c.req.param("pid") ?? "");
+      await host.submitDecision(decision, { conversationId: c.req.param("id") ?? "" });
+      return c.json({ ok: true });
+    },
+
+    "conversations.watch": nodeWebSocket.upgradeWebSocket((c) => {
+      const raw = c.req.param("id") ?? "";
+      const id = Number(raw) as unknown as ConversationId;
       let stream: Awaited<ReturnType<typeof watchEvents>> | undefined;
       return {
         onOpen: async (_evt, ws) => {
+          if (!(await host.hasConversation(raw))) {
+            ws.close(4404, "conversation not found");
+            return;
+          }
           stream = await watchEvents(engine.harness, id, CONTEXT);
-          ws.send(JSON.stringify({ kind: "snapshot", conversationId: id, events: [] }));
+          ws.send(JSON.stringify({ kind: "snapshot", events: [], ...(await host.snapshot(raw)) }));
           stream.start(async (events) => {
             const mapped = events
               .map((event) => mapDurableEvent(id, event))
               .filter((e) => e !== undefined);
-            ws.send(JSON.stringify({ kind: "events", conversationId: id, events: mapped }));
+            ws.send(JSON.stringify({ kind: "events", conversationId: raw, events: mapped }));
           });
         },
         onClose: () => {
@@ -83,7 +127,23 @@ export function createServer(engine: Engine) {
         },
       };
     }),
-  );
+
+    "proposals.list": async (c) => c.json({ proposals: await host.listProposals() }),
+
+    // Any open proposal by id, including gates the agent opened on its own root conversation.
+    "proposals.decide": async (c) => {
+      await host.submitDecision(await decisionFrom(c, c.req.param("pid") ?? ""));
+      return c.json({ ok: true });
+    },
+  };
+
+  const guard = requireToken(options.token);
+  for (const [id, route] of Object.entries(ROUTES) as [RouteId, (typeof ROUTES)[RouteId]][]) {
+    const handler = handlers[id];
+    if (!handler) throw new Error(`route ${id} has no handler`);
+    if (route.auth === "token") app.on(route.method, route.path, guard, handler);
+    else app.on(route.method, route.path, handler);
+  }
 
   return { app, nodeWebSocket };
 }

@@ -4,6 +4,7 @@ import type {
   ConversationDocToken,
   ConversationId,
   JsonObject,
+  SessionDocToken,
   Tx,
 } from "@earendil-works/pi-durable";
 import type { JsonValue } from "@earendil-works/chord";
@@ -19,11 +20,22 @@ export class StorageSeam {
   readonly defineDoc = defineDoc;
   readonly defineDocFamily = defineDocFamily;
 
-  constructor(private readonly engine: Engine) {}
+  private readonly engine: Engine;
+
+  constructor(engine: Engine) {
+    this.engine = engine;
+  }
 
   /** Run an atomic commit that mutates durable state inside the shared store. */
   commit<T>(change: (tx: Tx) => T | Promise<T>): Promise<T> {
     return this.engine.commit(change);
+  }
+
+  /** Read a session-scoped document's current value. */
+  async readSession<T extends JsonObject>(
+    token: SessionDocToken<T>,
+  ): Promise<Readonly<T> | undefined> {
+    return this.engine.harness.snapshot(token, CONTEXT);
   }
 
   /** Read a conversation-scoped document's current value. */
