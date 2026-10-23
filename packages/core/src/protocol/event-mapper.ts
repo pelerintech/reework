@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import type { AgentEvent as DurableEvent } from "@earendil-works/pi-durable";
 import type { AgentEvent } from "@reework/types";
@@ -7,10 +8,29 @@ import type { AgentEvent } from "@reework/types";
  * (`kind` + `conversationId` + `timestamp`). Event classes that have no
  * reework counterpart (snapshot, inbox_update, submission, etc.) return
  * `undefined` and are dropped by the caller.
+ *
+ * `state` belongs to one event stream: it remembers the message being streamed, so
+ * every `message_update` carries the id of its `message_start`. Use one per stream
+ * (`createEventMapper` does).
  */
+/** Per-stream memory of the mapper. */
+export interface EventMapperState {
+  /** Id of the message being streamed. */
+  messageId?: string;
+}
+
+/** A mapper for one event stream. */
+export function createEventMapper(
+  conversationId: ConversationId,
+): (event: DurableEvent) => AgentEvent | undefined {
+  const state: EventMapperState = {};
+  return (event) => mapDurableEvent(conversationId, event, state);
+}
+
 export function mapDurableEvent(
   conversationId: ConversationId,
   event: DurableEvent,
+  state: EventMapperState = {},
 ): AgentEvent | undefined {
   const conv = String(conversationId);
   const ts = Date.now();
@@ -31,18 +51,25 @@ export function mapDurableEvent(
         outcome: "completed",
         timestamp: ts,
       };
-    case "message_start":
+    case "message_start": {
+      state.messageId = messageIdOf(event);
+      const message = event.message as { role?: string; content?: unknown };
+      const text = textOf(message.content);
       return {
         kind: "message_start",
         conversationId: conv,
-        messageId: messageIdOf(event),
+        messageId: state.messageId,
+        ...(isRole(message.role) ? { role: message.role } : {}),
+        ...(text ? { text } : {}),
         timestamp: ts,
       };
+    }
     case "message_update":
+      state.messageId ??= `msg-${randomUUID()}`;
       return {
         kind: "message_update",
         conversationId: conv,
-        messageId: messageIdOf(event),
+        messageId: state.messageId,
         text: messageUpdateText(event),
         timestamp: ts,
       };
@@ -68,6 +95,7 @@ export function mapDurableEvent(
         kind: "tool_execution_end",
         conversationId: conv,
         callId: event.toolCallId,
+        isError: toolFailed(event),
         result: event.entry,
         timestamp: ts,
       };
@@ -91,15 +119,9 @@ export function mapDurableEvent(
   }
 }
 
-function messageIdOf(event: DurableEvent): string {
-  if (event.type === "message_start") {
-    const message = event.message as { responseId?: string };
-    return message.responseId ?? `msg-${Date.now()}`;
-  }
-  if (event.type === "message_update") {
-    return `msg-${Date.now()}`;
-  }
-  return `msg-${Date.now()}`;
+function messageIdOf(event: DurableEvent & { type: "message_start" }): string {
+  const message = event.message as { responseId?: string };
+  return message.responseId ?? `msg-${randomUUID()}`;
 }
 
 function messageUpdateText(event: {
@@ -120,4 +142,25 @@ function toolUpdateOutput(event: {
   if (!output) return "";
   if ("set" in output) return output.set;
   return output.append ?? "";
+}
+
+function toolFailed(event: { entry?: { model?: readonly unknown[] }; result?: unknown }): boolean {
+  const message = event.entry?.model?.[0] as { isError?: unknown } | undefined;
+  if (typeof message?.isError === "boolean") return message.isError;
+  return (event.result as { isError?: unknown } | undefined)?.isError === true;
+}
+
+function isRole(role: unknown): role is "system" | "user" | "assistant" | "tool" {
+  return role === "system" || role === "user" || role === "assistant" || role === "tool";
+}
+
+function textOf(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((block) => {
+      const b = block as { type?: unknown; text?: unknown };
+      return b.type === "text" && typeof b.text === "string" ? b.text : "";
+    })
+    .join("");
 }

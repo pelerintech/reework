@@ -3,6 +3,7 @@ import type { Proposal, ProposalAttachment } from "@reework/types";
 import type { Engine } from "../engine.ts";
 import { CONTEXT } from "../engine.ts";
 import { notifyProposalOpen } from "../hitl/gate.ts";
+import type { SettledProposal } from "../hitl/gate.ts";
 
 /** A proposal as recorded durably, with its open/settled status. */
 export type OpenProposal = {
@@ -47,15 +48,30 @@ export async function publishProposal(engine: Engine, proposal: Proposal): Promi
   notifyProposalOpen(engine.hitl, proposal);
 }
 
-/** Mark a proposal settled so it leaves the open list. */
-export async function markProposalSettled(engine: Engine, proposalId: string): Promise<void> {
-  await engine.commit(async (tx) => {
+/**
+ * Mark a proposal settled so it leaves the open list. Returns its conversation when
+ * this call settled it (undefined when unknown or already settled).
+ */
+export async function markProposalSettled(
+  engine: Engine,
+  proposalId: string,
+): Promise<string | undefined> {
+  return engine.commit(async (tx) => {
     const doc = (await tx.doc(ProposalsDoc)) as { proposals: OpenProposal[] };
     const found = doc.proposals.find((p) => p.id === proposalId);
-    if (found) {
-      found.status = "settled";
-    }
+    if (!found || found.status === "settled") return undefined;
+    found.status = "settled";
+    return found.conversationId;
   });
+}
+
+/** Subscribe (in-process) to proposals settled by a decision. Returns an unsubscribe fn. */
+export function onProposalSettled(
+  engine: Engine,
+  listener: (settled: SettledProposal) => void,
+): () => void {
+  engine.hitl.settledListeners.add(listener);
+  return () => engine.hitl.settledListeners.delete(listener);
 }
 
 /** Return the currently-open proposals. */

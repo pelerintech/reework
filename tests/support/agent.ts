@@ -4,10 +4,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach } from "vitest";
-import { createModels } from "@earendil-works/pi-ai/models";
-import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
-import type { FauxResponseStep } from "@earendil-works/pi-ai/providers/faux";
-import { MODEL_PROVIDER_ID, startAgent } from "@reework/core";
+import { startAgent } from "@reework/core";
+import { scriptedModel } from "@reework/core/testing";
 import type { AgentDefinition, RunningAgent, StartAgentOptions } from "@reework/core";
 
 /** The API token every test agent is started with. */
@@ -34,14 +32,7 @@ export function tmpStorage(): string {
 
 /** Faux models under the provider id `startAgent` selects, for `modelId`. */
 export function fauxModels(modelId = "m1") {
-  const faux = fauxProvider({ provider: MODEL_PROVIDER_ID, models: [{ id: modelId }] });
-  const models = createModels();
-  models.setProvider(faux.provider);
-  return {
-    models,
-    respond: (steps: FauxResponseStep[]) => faux.setResponses(steps),
-    append: (steps: FauxResponseStep[]) => faux.appendResponses(steps),
-  };
+  return scriptedModel(modelId);
 }
 
 export function testDefinition(overrides: Partial<AgentDefinition> = {}): AgentDefinition {

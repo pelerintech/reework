@@ -109,9 +109,21 @@ State lives in the SQLite file. Restart the process and unfinished runs and open
 REEWORK_TUI_URL=http://127.0.0.1:8080 REEWORK_API_TOKEN=... npx reework-tui
 ```
 
-The TUI opens on **Waiting on you**, the open proposals across every conversation. Type an option id, or free
-text for gates that accept instructions. `:N` attaches to conversation N and streams its events; `:i` returns
-to the inbox.
+#### TUI
+
+The TUI opens on the inbox: **Waiting on you** (open proposals across every conversation) and the
+conversations. A status bar shows the agent, the conversation and what it is doing (`running <tool> 12s`,
+`thinking…`, `idle`); the footer names the mode and its keys.
+
+| Where                      | Keys                                                                                                                                                                |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Inbox                      | ↑↓ select · Enter open (a proposal opens with it focused) · `:N` open conversation N                                                                                |
+| Chat (in a conversation)   | type + Enter talks to the agent · ↑↓ recall sent lines · ←→ cursor · PgUp/PgDn scroll · Esc or `:i` inbox                                                           |
+| Answer (Tab on a proposal) | ↑↓ option · Enter decide · type + Enter sends an instruction (when accepted) · → open the next attachment, PgUp/PgDn scroll it, ← or Esc fold it · Esc back to chat |
+| Anywhere                   | `/help` lists the keys                                                                                                                                              |
+
+Attachments (diffs, test output) stay folded to one line with their size until opened. Nothing is carried
+out until you choose an action option.
 
 ### Talk to it from code
 
@@ -127,6 +139,11 @@ await client.submit(id, "Is the worker healthy?");
 const [proposal] = await client.listProposals();
 await client.decide({ proposalId: proposal.id, selectedOption: "restart", instruction: null });
 ```
+
+## Writing plugins
+
+The plugin contract, its guarantees (tools may throw, replay, gated actions, workspaces, limits,
+shutdown) and the testing kit are in [docs/plugins.md](docs/plugins.md).
 
 ## Develop
 

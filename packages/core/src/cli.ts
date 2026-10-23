@@ -39,14 +39,26 @@ async function main(argv: string[]): Promise<number> {
   const { port } = await agent.listen(Number(values.port), values.host);
   console.log(`reework: agent "${module.default.name}" listening on ${port}`);
 
-  await new Promise<void>((done) => {
-    const stop = () => {
-      void agent.stop().then(done, done);
+  // First signal: stop cleanly (bounded by stop's timeout). Second signal: exit now.
+  return new Promise<number>((done) => {
+    let stopping = false;
+    const onSignal = () => {
+      if (stopping) {
+        console.error("reework: second signal, exiting now");
+        return done(130);
+      }
+      stopping = true;
+      agent.stop().then(
+        () => done(0),
+        (error: unknown) => {
+          console.error(`reework: ${error instanceof Error ? error.message : String(error)}`);
+          done(1);
+        },
+      );
     };
-    process.once("SIGINT", stop);
-    process.once("SIGTERM", stop);
+    process.on("SIGINT", onSignal);
+    process.on("SIGTERM", onSignal);
   });
-  return 0;
 }
 
 main(process.argv.slice(2)).then(

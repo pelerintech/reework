@@ -4,14 +4,16 @@ import { createRegistry, defineExtension, section } from "@earendil-works/pi-dur
 import type { AgentChange, HarnessSettings, ToolRegistration } from "@earendil-works/pi-durable";
 import type { Models } from "@earendil-works/pi-ai/models";
 import type { AgentDefinition, DeclaredModule } from "../agent-definition.ts";
-import { Engine } from "../engine.ts";
+import { CONTEXT, Engine } from "../engine.ts";
 import { installHITL } from "../hitl/gate.ts";
 import { AgentHost } from "../host.ts";
 import { createServer } from "../server/index.ts";
 import { toExtension } from "../tooling/facade.ts";
 import type { BuiltPlugin } from "../tooling/facade.ts";
 
+import { budgetExtension } from "./budget.ts";
 import { lockStorage } from "./lock.ts";
+import type { LockOptions } from "./lock.ts";
 import { customModels, MODEL_PROVIDER_ID } from "./models.ts";
 
 export { MODEL_PROVIDER_ID };
@@ -21,8 +23,13 @@ export interface StartAgentOptions {
   storagePath: string;
   /** Model catalog override (tests use faux under `MODEL_PROVIDER_ID`). */
   models?: Models;
-  /** API auth: the variable holding the bearer token. Default `REEWORK_API_TOKEN`. */
-  auth?: { tokenEnv?: string };
+  /**
+   * API auth: the bearer token itself (`token`), or the variable holding it
+   * (`tokenEnv`, default `REEWORK_API_TOKEN`). `token` wins.
+   */
+  auth?: { token?: string; tokenEnv?: string };
+  /** Storage lock timing (tests shorten the heartbeat). */
+  lock?: LockOptions;
   /** Overrides for the harness run policy, merged over the defaults below. */
   settings?: Partial<Pick<HarnessSettings, "stream" | "retry">>;
 }
@@ -39,9 +46,13 @@ export interface RunningAgent {
   readonly host: AgentHost;
   readonly app: ReturnType<typeof createServer>["app"];
   /** Serve the app (REST + WebSocket) on `port`; `0` picks a free port. */
-  listen(port: number, hostname?: string): Promise<{ port: number; close(): Promise<void> }>;
-  /** Stop the server, the engine, and release the storage lock. */
-  stop(): Promise<void>;
+  listen(port: number, hostname?: string): Promise<{ port: number; close: () => Promise<void> }>;
+  /**
+   * Stop the server and the engine (running tools get their abort signal) and release
+   * the storage lock. Rejects if the engine has not closed within `timeoutMs` (default
+   * 8000, below Docker's 10 s stop grace); the lock is released either way.
+   */
+  stop(options?: { timeoutMs?: number }): Promise<void>;
 }
 
 /**
@@ -54,7 +65,7 @@ export async function startAgent(
   options: StartAgentOptions,
 ): Promise<RunningAgent> {
   const tokenEnv = options.auth?.tokenEnv ?? "REEWORK_API_TOKEN";
-  const token = process.env[tokenEnv];
+  const token = options.auth?.token ?? process.env[tokenEnv];
   if (!token) throw new Error(`API token variable ${tokenEnv} is not set`);
   const models = options.models ?? customModels(agent.model);
   const built = [...agent.plugins, ...agent.channels].map(buildPlugin);
@@ -68,6 +79,14 @@ export async function startAgent(
     }),
   );
   for (const plugin of built) registry.install(toExtension(plugin.name, plugin.built));
+  // The engine and host exist only once boot opens them (before any run resumes).
+  const opened: Opened = {};
+  const budget = budgetExtension(
+    agent.limits,
+    () => opened.engine!,
+    (id) => opened.host!.abort(id),
+  );
+  if (budget) registry.install(budget);
 
   const modelTools = agent.mission.tools ? selectTools(built, agent.mission.tools) : undefined;
   const providers = built.filter((plugin) => plugin.built.workspace);
@@ -75,9 +94,9 @@ export async function startAgent(
     const names = providers.map((p) => `"${p.name}"`).join(" and ");
     throw new Error(`only one plugin may provide workspaces; both ${names} do`);
   }
-  const unlock = lockStorage(options.storagePath);
+  const unlock = await lockStorage(options.storagePath, options.lock);
   try {
-    return await boot(agent, options, models, built, registry, modelTools, token, unlock);
+    return await boot(agent, options, models, built, registry, modelTools, token, unlock, opened);
   } catch (error) {
     unlock();
     throw error;
@@ -93,6 +112,7 @@ async function boot(
   modelTools: ToolRegistration[] | undefined,
   token: string,
   unlock: () => void,
+  opened: Opened,
 ): Promise<RunningAgent> {
   const settings: HarnessSettings = {
     stream: { ...DEFAULT_SETTINGS.stream, ...options.settings?.stream },
@@ -111,6 +131,8 @@ async function boot(
   };
   const workspace = built.find((plugin) => plugin.built.workspace)?.built.workspace;
   const host = new AgentHost(engine, agentChange, workspace);
+  opened.engine = engine;
+  opened.host = host;
   for (const plugin of built) {
     try {
       await plugin.built.setup?.({ host, storage: engine.storage, config: plugin.config });
@@ -120,7 +142,7 @@ async function boot(
       throw new Error(`plugin "${plugin.name}" setup failed: ${message}`, { cause: error });
     }
   }
-  const { app, nodeWebSocket } = createServer(host, { token });
+  const { app, nodeWebSocket } = createServer(host, { token, name: agent.name });
   agent.routes?.(app, host);
   // Continue whatever the previous process left unfinished: runs, gates, tasks.
   engine.resume();
@@ -147,15 +169,50 @@ async function boot(
         server.once("error", reject);
       });
     },
-    async stop() {
+    async stop({ timeoutMs = DEFAULT_STOP_TIMEOUT_MS } = {}) {
+      let timer: NodeJS.Timeout | undefined;
+      const timedOut = new Promise<"timeout">((resolve) => {
+        timer = setTimeout(() => resolve("timeout"), timeoutMs);
+      });
       try {
         await Promise.all([...servers].map(closeServer));
-        await engine.close();
+        const still = await stillRunning(engine);
+        const closed = await Promise.race([engine.close().then(() => "closed" as const), timedOut]);
+        if (closed === "timeout") {
+          throw new Error(
+            `agent did not stop within ${timeoutMs} ms; still running: ${still || "unknown work"}`,
+          );
+        }
       } finally {
+        clearTimeout(timer);
         unlock();
       }
     },
   };
+}
+
+const DEFAULT_STOP_TIMEOUT_MS = 8_000;
+
+/** The running tasks, for a stop that times out: `<task kind> (conversation <id>)`. */
+async function stillRunning(engine: Engine): Promise<string> {
+  try {
+    const inspection = await engine.harness.inspect(CONTEXT);
+    return inspection.tasks
+      .filter((task) => task.state.kind === "running")
+      .map((task) => {
+        const record = task.record as { kind?: string; conversationId?: number };
+        return `${record.kind ?? "task"} (conversation ${record.conversationId ?? "-"})`;
+      })
+      .join(", ");
+  } catch {
+    return "";
+  }
+}
+
+/** What hooks installed before the engine opens reach once it has. */
+interface Opened {
+  engine?: Engine;
+  host?: AgentHost;
 }
 
 interface Built {

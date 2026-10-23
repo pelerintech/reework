@@ -82,10 +82,19 @@ export interface HitlState {
   readonly pending: Map<string, (decision: GateDecision) => void>;
   /** In-process listeners for newly opened proposals. */
   readonly listeners: Set<(proposal: Proposal) => void>;
+  /** In-process listeners for proposals settled by a decision. */
+  readonly settledListeners: Set<(settled: SettledProposal) => void>;
   /** The developer `run` of each gated action, by tool name. */
   readonly runs: Map<string, GatedRun>;
   /** The owning engine's storage seam, set when the engine opens. */
   storage?: StorageSeam;
+}
+
+/** A proposal settled by a human decision. */
+export interface SettledProposal {
+  readonly proposalId: string;
+  readonly conversationId: string;
+  readonly decision: GateDecision;
 }
 
 const states = new WeakMap<object, HitlState>();
@@ -94,7 +103,12 @@ const states = new WeakMap<object, HitlState>();
 export function hitlState(registry: RegistryReader): HitlState {
   let state = states.get(registry);
   if (!state) {
-    state = { pending: new Map(), listeners: new Set(), runs: new Map() };
+    state = {
+      pending: new Map(),
+      listeners: new Set(),
+      settledListeners: new Set(),
+      runs: new Map(),
+    };
     states.set(registry, state);
   }
   return state;
@@ -126,7 +140,12 @@ export async function settleGate(engine: Engine, decision: GateDecision): Promis
   await engine.commit(async (tx) => {
     (await tx.doc(GateDecisionDoc, proposalId, proposalId)).decision = decision;
   });
-  await markProposalSettled(engine, proposalId);
+  const conversationId = await markProposalSettled(engine, proposalId);
+  if (conversationId !== undefined) {
+    for (const listener of engine.hitl.settledListeners) {
+      listener({ proposalId, conversationId, decision });
+    }
+  }
   const wake = engine.hitl.pending.get(proposalId);
   if (wake) {
     engine.hitl.pending.delete(proposalId);
@@ -358,7 +377,12 @@ function describeOutcome(
 }
 
 /** Task tokens used to create HITL tasks; the registry runs its own per-state copies. */
-const tokens = createHitlTasks({ pending: new Map(), listeners: new Set(), runs: new Map() });
+const tokens = createHitlTasks({
+  pending: new Map(),
+  listeners: new Set(),
+  settledListeners: new Set(),
+  runs: new Map(),
+});
 export const GateTask = tokens.GateTask;
 export const GatedActionTask = tokens.GatedActionTask;
 export const GatedToolTask = tokens.GatedToolTask;

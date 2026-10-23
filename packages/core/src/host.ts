@@ -1,6 +1,6 @@
 import { configure } from "@earendil-works/pi-durable";
 import type { AgentChange, ConversationId, EntryRecord } from "@earendil-works/pi-durable";
-import type { Message, Proposal } from "@reework/types";
+import type { Message, Proposal, TranscriptItem } from "@reework/types";
 import type { Engine } from "./engine.ts";
 import { CONTEXT } from "./engine.ts";
 import { ConversationsDoc } from "./protocol/conversations.ts";
@@ -169,7 +169,8 @@ export class AgentHost {
     const running = inspection.submissions.some(
       (s) => String(s.conversationId) === id && s.status === "placed",
     );
-    return { conversationId: id, messages, proposals, running };
+    const transcript = toTranscript(entries, running);
+    return { conversationId: id, messages, proposals, running, transcript };
   }
 
   /** Stop the conversation's current run. Background work such as open gates is untouched. */
@@ -216,6 +217,8 @@ export interface ConversationSnapshot {
   readonly proposals: readonly Proposal[];
   /** Whether a run is answering input right now. */
   readonly running: boolean;
+  /** Messages and tool calls so far, oldest first; running calls included. */
+  readonly transcript: readonly TranscriptItem[];
 }
 
 export class ConversationNotFound extends Error {
@@ -253,4 +256,67 @@ export function toMessage(entry: EntryRecord): Message | undefined {
     })
     .map((b) => ({ type: "text" as const, text: b.text }));
   return { role: model.role, content, timestamp: model.timestamp ?? Date.now() };
+}
+
+/**
+ * The transcript of a conversation's entries: user and assistant text, and each tool
+ * call with its outcome. A call without a result is `running` while a run is active,
+ * otherwise it was cut off and counts as an error.
+ */
+export function toTranscript(entries: readonly EntryRecord[], running: boolean): TranscriptItem[] {
+  const items: TranscriptItem[] = [];
+  const calls = new Map<string, Extract<TranscriptItem, { type: "tool" }>>();
+  for (const entry of entries) {
+    const model = entry.model?.[0] as
+      | {
+          role?: string;
+          content?: unknown;
+          timestamp?: number;
+          toolCallId?: string;
+          isError?: boolean;
+        }
+      | undefined;
+    if (!model) continue;
+    const timestamp = model.timestamp ?? 0;
+    if (model.role === "toolResult" && model.toolCallId) {
+      const call = calls.get(model.toolCallId);
+      if (call) {
+        call.status = model.isError ? "error" : "done";
+        call.endedAt = timestamp;
+      }
+      continue;
+    }
+    if (model.role !== "user" && model.role !== "assistant") continue;
+    const blocks =
+      typeof model.content === "string"
+        ? [{ type: "text", text: model.content }]
+        : Array.isArray(model.content)
+          ? (model.content as {
+              type?: string;
+              text?: string;
+              id?: string;
+              name?: string;
+              arguments?: unknown;
+            }[])
+          : [];
+    const text = blocks
+      .filter((b) => b.type === "text" && typeof b.text === "string")
+      .map((b) => b.text)
+      .join("");
+    if (text) items.push({ type: "message", role: model.role, text, timestamp });
+    for (const block of blocks) {
+      if (block.type !== "toolCall" || !block.id) continue;
+      const call: Extract<TranscriptItem, { type: "tool" }> = {
+        type: "tool",
+        callId: block.id,
+        name: block.name ?? "",
+        args: block.arguments ?? {},
+        status: running ? "running" : "error",
+        startedAt: timestamp,
+      };
+      calls.set(block.id, call);
+      items.push(call);
+    }
+  }
+  return items;
 }

@@ -20,9 +20,12 @@ Prefer:
 
 - **API** E2E is exercised in-process via Hono's `app.request()` harness — no
   separate server process, keeping API tests fast and hermetic.
-- **UI** main-workflow E2E uses Playwright. This is **forward policy**: the
-  partner console (`packages/ui`) is only a minimal empty shell in `v01`, so no
-  Playwright UI E2E runs yet. It becomes active once the UI console exists.
+- **TUI** E2E renders the real `AgentTui` with `ink-testing-library` against a real
+  in-process agent (`@reework/core/testing`), types keys, and asserts on the rendered
+  frames (`tests/tui-*.test.tsx`). TUI logic lives in `.ts` modules, which the coverage
+  gate counts; `.tsx` views are exercised by these tests.
+- **Web UI** main-workflow E2E uses Playwright. This is **forward policy**: the
+  partner console (`packages/ui`) is not built yet, so no Playwright E2E runs yet.
 
 ## LLM boundary
 

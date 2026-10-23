@@ -57,5 +57,7 @@ jobs:
         run: pnpm -r --filter "./packages/*" exec publint --strict
       - name: attw
         run: pnpm -r --filter "./packages/*" exec attw --pack . --profile esm-only
+      - name: slow tests (pack:dev)
+        run: pnpm test:slow
       - name: pack-smoke
         run: node scripts/pack-smoke.mjs

@@ -6,6 +6,9 @@
 import type { Hono } from "hono";
 import type { AgentHost } from "./host.ts";
 import type { ReeworkPlugin } from "./tooling/facade.ts";
+import type { RunLimits } from "./runtime/budget.ts";
+
+export type { RunLimits };
 
 export type AgentModelApi = "openai-completions" | "openai-responses" | "anthropic-messages";
 
@@ -25,6 +28,16 @@ export interface AgentModelProvider {
 export interface AgentModel {
   provider: AgentModelProvider;
   modelId: string;
+  /** Context window in tokens; compaction keeps conversations within it. Default 128000. */
+  contextWindow?: number;
+  /** Output-token cap sent with every request. Default 8192; must be below `contextWindow`. */
+  maxTokens?: number;
+  /**
+   * Most requests in flight to the endpoint at once, across every conversation; further
+   * requests wait for a slot (the wait does not count against stream timeouts). Default
+   * unlimited.
+   */
+  maxConcurrentRequests?: number;
 }
 
 /** A declared plugin or channel: a plugin factory with the config it is built from. */
@@ -46,6 +59,8 @@ export interface AgentDefinition {
   plugins: DeclaredModule[];
   channels: DeclaredModule[];
   mission: AgentMission;
+  /** Bounds on one run (the work answering an input). */
+  limits?: RunLimits;
   /**
    * Mount custom routes (e.g. a webhook) next to the built-in protocol. They get
    * the in-process host and are NOT behind the API token: authenticate them

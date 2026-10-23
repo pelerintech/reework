@@ -5,8 +5,9 @@ import { createNodeWebSocket } from "@hono/node-ws";
 import { watchEvents } from "@earendil-works/pi-durable";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { ROUTES } from "@reework/types";
-import type { GateDecision, RouteId } from "@reework/types";
-import { mapDurableEvent } from "../protocol/event-mapper.ts";
+import type { AgentEvent, GateDecision, RouteId } from "@reework/types";
+import { createEventMapper } from "../protocol/event-mapper.ts";
+import { onProposalOpen, onProposalSettled } from "../protocol/proposals.ts";
 import { CONTEXT } from "../engine.ts";
 import { ConversationNotFound, ProposalNotFound } from "../host.ts";
 import type { AgentHost } from "../host.ts";
@@ -14,6 +15,8 @@ import type { AgentHost } from "../host.ts";
 export interface ServerOptions {
   /** Bearer token every route marked `auth: "token"` requires. */
   readonly token: string;
+  /** The agent's name, reported by `/health`. */
+  readonly name?: string;
 }
 
 /** Reject requests whose `Authorization: Bearer` header is not `token`. */
@@ -58,7 +61,8 @@ export function createServer(host: AgentHost, options: ServerOptions) {
   });
 
   const handlers: Record<RouteId, Handler> = {
-    health: (c) => c.json({ ok: true }),
+    health: (c) =>
+      c.json(options.name === undefined ? { ok: true } : { ok: true, name: options.name }),
 
     "conversations.create": async (c) => {
       const body = await c.req.json<{ key?: unknown }>().catch(() => ({}) as { key?: unknown });
@@ -107,6 +111,7 @@ export function createServer(host: AgentHost, options: ServerOptions) {
       const raw = c.req.param("id") ?? "";
       const id = Number(raw) as unknown as ConversationId;
       let stream: Awaited<ReturnType<typeof watchEvents>> | undefined;
+      const unsubscribe: (() => void)[] = [];
       return {
         onOpen: async (_evt, ws) => {
           if (!(await host.hasConversation(raw))) {
@@ -115,14 +120,38 @@ export function createServer(host: AgentHost, options: ServerOptions) {
           }
           stream = await watchEvents(engine.harness, id, CONTEXT);
           ws.send(JSON.stringify({ kind: "snapshot", events: [], ...(await host.snapshot(raw)) }));
+          const map = createEventMapper(id);
           stream.start(async (events) => {
-            const mapped = events
-              .map((event) => mapDurableEvent(id, event))
-              .filter((e) => e !== undefined);
+            const mapped = events.map(map).filter((e) => e !== undefined);
             ws.send(JSON.stringify({ kind: "events", conversationId: raw, events: mapped }));
           });
+          const send = (event: AgentEvent) =>
+            ws.send(JSON.stringify({ kind: "events", conversationId: raw, events: [event] }));
+          unsubscribe.push(
+            onProposalOpen(engine, (proposal) => {
+              if (proposal.conversationId !== raw) return;
+              send({
+                kind: "proposal_opened",
+                conversationId: raw,
+                proposal,
+                timestamp: Date.now(),
+              });
+            }),
+            onProposalSettled(engine, ({ proposalId, conversationId, decision }) => {
+              if (conversationId !== raw) return;
+              send({
+                kind: "proposal_closed",
+                conversationId: raw,
+                proposalId,
+                selectedOption: decision.selectedOption,
+                instruction: decision.instruction,
+                timestamp: Date.now(),
+              });
+            }),
+          );
         },
         onClose: () => {
+          for (const off of unsubscribe) off();
           void stream?.stop();
         },
       };

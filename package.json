@@ -10,7 +10,9 @@
     "build": "pnpm -r --filter \"./packages/*\" build",
     "prepare": "husky",
     "check:packages": "node scripts/check-dist.mjs && pnpm -r --filter \"./packages/*\" exec publint --strict && pnpm -r --filter \"./packages/*\" exec attw --pack . --profile esm-only",
-    "smoke:pack": "node scripts/pack-smoke.mjs"
+    "smoke:pack": "node scripts/pack-smoke.mjs",
+    "test:slow": "REEWORK_SLOW=1 vp test tests/slow",
+    "pack:dev": "node scripts/pack-dev.mjs"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
@@ -25,10 +27,14 @@
     "@reework/tui": "workspace:*",
     "@reework/types": "workspace:*",
     "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
     "@types/ws": "^8.18.2",
     "@vitest/coverage-v8": "5.0.5",
     "husky": "^9.1.7",
+    "ink": "^8.0.0",
+    "ink-testing-library": "4.0.0",
     "publint": "^0.3.25",
+    "react": "19.3.1",
     "typescript": "^5.9.3",
     "vite-plus": "1.3.0",
     "vitest": "5.0.5",

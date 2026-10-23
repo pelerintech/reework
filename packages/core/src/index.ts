@@ -8,6 +8,7 @@ export type {
   AgentModelApi,
   AgentMission,
   DeclaredModule,
+  RunLimits,
 } from "./agent-definition.ts";
 
 export { AgentHost, ConversationNotFound, ProposalNotFound } from "./host.ts";
@@ -21,7 +22,7 @@ export type {
   SubmitResult,
 } from "./host.ts";
 
-export { Engine, createMockModels, CONTEXT } from "./engine.ts";
+export { Engine, CONTEXT } from "./engine.ts";
 export type { EngineOptions } from "./engine.ts";
 
 export {
@@ -76,10 +77,11 @@ export {
 
 export { gatedAction } from "./hitl/gated-action-tool.ts";
 
-export { listOpenProposals, onProposalOpen } from "./protocol/proposals.ts";
+export { listOpenProposals, onProposalOpen, onProposalSettled } from "./protocol/proposals.ts";
 export type { OpenProposal } from "./protocol/proposals.ts";
 
-export { mapDurableEvent } from "./protocol/event-mapper.ts";
+export { createEventMapper, mapDurableEvent } from "./protocol/event-mapper.ts";
+export type { EventMapperState } from "./protocol/event-mapper.ts";
 export type {
   GatedActionDefinition,
   GatedActionGate,
@@ -93,4 +95,5 @@ export type {
   ActionOutcome,
   ProposalOption,
   HitlState,
+  SettledProposal,
 } from "./hitl/gate.ts";

@@ -19,7 +19,11 @@ export default defineConfig({
     },
   },
   test: {
-    include: ["tests/**/*.test.ts"],
+    include: ["tests/**/*.test.ts", "tests/**/*.test.tsx"],
+    // Slow checks (packing) run only with REEWORK_SLOW=1 (`pnpm test:slow`).
+    exclude: process.env.REEWORK_SLOW
+      ? ["**/node_modules/**"]
+      : ["**/node_modules/**", "tests/slow/**"],
     environment: "node",
     coverage: {
       provider: "v8",

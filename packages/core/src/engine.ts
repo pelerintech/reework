@@ -1,6 +1,5 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels, type Models } from "@earendil-works/pi-ai/models";
-import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { AssistantEntry, createRegistry, Harness } from "@earendil-works/pi-durable";
 import type {
   AgentChange,
@@ -22,21 +21,12 @@ function defaultAgent(): AgentChange {
   return { model: { provider: "faux", modelId: "faux-1" } };
 }
 
-/** Build a Models catalog with a mock (faux) provider at the LLM boundary. */
-export function createMockModels(): {
-  models: Models;
-  setResponses: (responses: unknown[]) => void;
-} {
-  const faux = fauxProvider();
+/** The fallback catalog when none is given: the mock (faux) model, loaded only then. */
+async function fallbackModels(): Promise<Models> {
+  const { fauxProvider } = await import("@earendil-works/pi-ai/providers/faux");
   const models = createModels();
-  models.setProvider(faux.provider);
-  return {
-    models,
-    setResponses: (responses) => {
-      // The faux provider validates queued responses as the harness consumes them.
-      (faux as unknown as { setResponses: (r: unknown[]) => void }).setResponses(responses);
-    },
-  };
+  models.setProvider(fauxProvider().provider);
+  return models;
 }
 
 export interface EngineOptions {
@@ -70,7 +60,7 @@ export class Engine {
   }
 
   static async open(options: EngineOptions): Promise<Engine> {
-    const models = options.models ?? createMockModels().models;
+    const models = options.models ?? (await fallbackModels());
     const registry = options.registry ?? createRegistry();
     const storage = await openNodeSqliteStorage(options.storagePath);
     collectGatedRuns(registry);

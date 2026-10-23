@@ -45,6 +45,8 @@ export type AgentEventKind =
   | "run_end"
   | "compaction_start"
   | "compaction_end"
+  | "proposal_opened"
+  | "proposal_closed"
   | "snapshot";
 
 export interface AgentEventBase {
@@ -56,6 +58,10 @@ export interface AgentEventBase {
 export interface MessageStartEvent extends AgentEventBase {
   kind: "message_start";
   messageId: string;
+  /** Who the message is from; `assistant` text then streams as `message_update`. */
+  role?: MessageRole;
+  /** The text a message starts with (a user's input arrives whole). */
+  text?: string;
 }
 
 export interface MessageUpdateEvent extends AgentEventBase {
@@ -80,6 +86,8 @@ export interface ToolExecutionUpdateEvent extends AgentEventBase {
 export interface ToolExecutionEndEvent extends AgentEventBase {
   kind: "tool_execution_end";
   callId: string;
+  /** Whether the tool failed (it threw, was blocked, or was interrupted). */
+  isError: boolean;
   result?: unknown;
 }
 
@@ -105,6 +113,39 @@ export interface CompactionEndEvent extends AgentEventBase {
   error?: string;
 }
 
+/** One item of a conversation's transcript: a message, or a tool call with how it went. */
+export type TranscriptItem =
+  | {
+      type: "message";
+      role: "user" | "assistant";
+      text: string;
+      timestamp: number;
+    }
+  | {
+      type: "tool";
+      callId: string;
+      name: string;
+      args: unknown;
+      /** `running` while it executes; a call left without result by an ended run is `error`. */
+      status: "running" | "done" | "error";
+      startedAt: number;
+      endedAt?: number;
+    };
+
+/** A gated action asked a human; the proposal waits for a decision. */
+export interface ProposalOpenedEvent extends AgentEventBase {
+  kind: "proposal_opened";
+  proposal: Proposal;
+}
+
+/** A proposal was decided and left the open list. */
+export interface ProposalClosedEvent extends AgentEventBase {
+  kind: "proposal_closed";
+  proposalId: string;
+  selectedOption: string | null;
+  instruction: string | null;
+}
+
 export interface SnapshotEvent extends AgentEventBase {
   kind: "snapshot";
   events: AgentEvent[];
@@ -114,6 +155,8 @@ export interface SnapshotEvent extends AgentEventBase {
   proposals?: Proposal[];
   /** Whether a run is answering input right now. */
   running?: boolean;
+  /** Messages and tool calls so far, oldest first; running calls included. */
+  transcript?: TranscriptItem[];
 }
 
 export type AgentEvent =
@@ -126,6 +169,8 @@ export type AgentEvent =
   | RunEndEvent
   | CompactionStartEvent
   | CompactionEndEvent
+  | ProposalOpenedEvent
+  | ProposalClosedEvent
   | SnapshotEvent;
 
 export interface AgentEventStream {
@@ -240,7 +285,7 @@ export interface RouteSpec {
 }
 
 export const ROUTES = {
-  health: { method: "GET", path: "/health", auth: "open", summary: "Liveness" },
+  health: { method: "GET", path: "/health", auth: "open", summary: "Liveness and the agent name" },
   "conversations.create": {
     method: "POST",
     path: "/conversations",

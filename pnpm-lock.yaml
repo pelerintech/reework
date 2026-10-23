@@ -44,6 +44,9 @@ importers:
       '@types/node':
         specifier: ^24.19.2
         version: 24.19.2
+      '@types/react':
+        specifier: ^19.3.0
+        version: 19.3.0
       '@types/ws':
         specifier: ^8.18.2
         version: 8.18.2
@@ -53,9 +56,18 @@ importers:
       husky:
         specifier: ^9.1.7
         version: 9.1.7
+      ink:
+        specifier: ^8.0.0
+        version: 8.0.0(@types/react@19.3.0)(react@19.3.1)
+      ink-testing-library:
+        specifier: 4.0.0
+        version: 4.0.0(@types/react@19.3.0)
       publint:
         specifier: ^0.3.25
         version: 0.3.25
+      react:
+        specifier: 19.3.1
+        version: 19.3.1
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -1485,6 +1497,15 @@ packages:
   ini@6.0.0:
     resolution: {integrity: sha512-IBTdIkzZNOpqm7q3dRqJvMaldXjDHWkEDfrwGEQTs5eaQMWV+djAhR+wahyNNMAa+qpbDUhBMVt4ZKNwpPm7xQ==}
     engines: {node: ^20.17.0 || >=22.9.0}
+
+  ink-testing-library@4.0.0:
+    resolution: {integrity: sha512-yF92kj3pmBvk7oKbSq5vEALO//o7Z9Ck/OaLNlkzXNeYdwfpxMQkSowGTFUCS5MSu9bWfSZMewGpp7bFc66D7Q==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      '@types/react': '>=18.0.0'
+    peerDependenciesMeta:
+      '@types/react':
+        optional: true
 
   ink@8.0.0:
     resolution: {integrity: sha512-M2aFwZOqmkFxCwedy6xrP4E+DGoK57iahAFnfTqNyOyJ54O7DZzu027z/NI8EGy44Sw9O9BcbTF4QEUS2GHAtg==}
@@ -3465,6 +3486,10 @@ snapshots:
   indent-string@5.0.0: {}
 
   ini@6.0.0: {}
+
+  ink-testing-library@4.0.0(@types/react@19.3.0):
+    optionalDependencies:
+      '@types/react': 19.3.0
 
   ink@8.0.0(@types/react@19.3.0)(react@19.3.1):
     dependencies:

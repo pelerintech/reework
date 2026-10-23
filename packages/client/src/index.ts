@@ -12,6 +12,7 @@ import type {
   SnapshotEvent,
   SubmissionAccepted,
   SubmissionAnswered,
+  TranscriptItem,
 } from "@reework/types";
 
 export interface ClientOptions {
@@ -43,7 +44,12 @@ export interface SubmitOptions {
 
 /** A frame of `watch`: the snapshot first, then batches of live events. */
 export type WatchFrame =
-  | (SnapshotEvent & { messages: Message[]; proposals: Proposal[]; running: boolean })
+  | (SnapshotEvent & {
+      messages: Message[];
+      proposals: Proposal[];
+      running: boolean;
+      transcript: TranscriptItem[];
+    })
   | { kind: "events"; conversationId: string; events: AgentEvent[] };
 
 export class ProtocolError extends Error {
@@ -97,8 +103,9 @@ export function createClient(options: ClientOptions) {
   return {
     call,
 
-    async health(): Promise<{ ok: boolean }> {
-      return (await call<{ ok: boolean }>("health")).body;
+    /** Liveness, and the agent's name. */
+    async health(): Promise<{ ok: boolean; name?: string }> {
+      return (await call<{ ok: boolean; name?: string }>("health")).body;
     },
 
     async createConversation(input: { key?: string } = {}): Promise<ConversationCreated> {
@@ -174,3 +181,6 @@ export function createClient(options: ClientOptions) {
 }
 
 export type ReeworkClient = ReturnType<typeof createClient>;
+
+export { applyFrame, emptyView } from "./view.ts";
+export type { ConversationView, ViewItem, ViewMessage, ViewTool } from "./view.ts";

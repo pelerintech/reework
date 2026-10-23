@@ -17,10 +17,7 @@ const tarballs = join(work, "tarballs");
 const consumer = join(work, "consumer");
 console.log(`pack-smoke: working in ${work}`);
 
-run("pnpm", ["-r", "--filter", "./packages/*", "build"], ROOT);
-for (const name of PACKAGES) {
-  run("pnpm", ["pack", "--pack-destination", tarballs], join(ROOT, "packages", name));
-}
+run("pnpm", ["pack:dev", "--out", tarballs], ROOT);
 const tarball = (name) => {
   const file = readdirSync(tarballs).find((f) => f.startsWith(`reework-${name}-`));
   if (!file) throw new Error(`no tarball for ${name}`);
@@ -98,8 +95,58 @@ console.log("talk: ok");
 `,
 );
 
+writeFileSync(
+  join(consumer, "agent.test.ts"),
+  `// An out-of-tree agent test: only the published packages and the testing kit.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { defineTool, definePlugin, gatedAction, Type } from "@reework/core";
+import type { AgentDefinition } from "@reework/core";
+import { startTestAgent, text, toolCall, waitForIdle, waitForProposal } from "@reework/core/testing";
+
+const ops = definePlugin("ops", () => ({
+  tools: [
+    defineTool({
+      name: "status",
+      description: "Worker status",
+      parameters: Type.Object({}),
+      execute: async () => ({ output: [{ type: "text" as const, text: "degraded" }] }),
+    }),
+    gatedAction({
+      name: "restart",
+      gate: { title: "Restart the worker?", options: [{ id: "go", label: "Restart" }] },
+      run: async () => "restarted",
+    }),
+  ],
+}));
+
+const definition: AgentDefinition = {
+  name: "consumer-agent",
+  model: { provider: { baseUrl: "http://127.0.0.1:9/v1", apiKeyEnv: "UNUSED" }, modelId: "m1" },
+  plugins: [{ plugin: ops, config: {} }],
+  channels: [],
+  mission: { role: "You keep the worker healthy." },
+};
+
+test("a gated action is proposed, decided, and the agent resumes with the outcome", async () => {
+  const { agent, model, dispose } = await startTestAgent(definition);
+  model.respond([toolCall("status"), toolCall("restart"), text("asked"), text("worker restarted")]);
+  const { id } = await agent.host.createConversation();
+  await agent.host.submitInput(id, "the worker is slow");
+  const proposal = await waitForProposal(agent.host, id);
+  assert.equal(proposal.title, "Restart the worker?");
+  await agent.host.submitDecision({ proposalId: proposal.id, selectedOption: "go", instruction: null });
+  await waitForIdle(agent.host, id);
+  const { messages } = await agent.host.snapshot(id);
+  assert.match(JSON.stringify(messages.at(-1)), /worker restarted/);
+  await dispose();
+});
+`,
+);
+
 run("npm", ["install", "--no-audit", "--no-fund", "--loglevel=error"], consumer);
 run("npx", ["tsc", "-p", "."], consumer);
+run("node", ["--test", "agent.test.ts"], consumer);
 
 const env = { ...process.env, SMOKE_LLM_KEY: "k", REEWORK_API_TOKEN: "smoke-token" };
 const agent = spawn(
@@ -134,4 +181,6 @@ const code = await new Promise((resolveExit) => {
   agent.kill("SIGTERM");
 });
 if (code !== 0) throw new Error(`agent exited ${code} on SIGTERM`);
-console.log("pack-smoke: ✓ tarballs install, type-check, start, and serve the protocol");
+console.log(
+  "pack-smoke: ✓ tarballs install, type-check, test with the kit, start, and serve the protocol",
+);

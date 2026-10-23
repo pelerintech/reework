@@ -5,7 +5,11 @@ import type { IncomingHttpHeaders } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach } from "vitest";
 
-export type FakeReply = { text: string } | { status: number; body?: string };
+/** A scripted reply; `usage.input` is the prompt-token count the endpoint reports. */
+export type FakeReply =
+  | { text: string; usage?: { input: number; output?: number }; delayMs?: number }
+  | { toolCall: { name: string; args?: Record<string, unknown> } }
+  | { status: number; body?: string };
 
 export interface RecordedRequest {
   readonly path: string;
@@ -19,6 +23,8 @@ export interface FakeLlm {
   /** Base URL without `/v1`, for Anthropic-style endpoints (the SDK appends `/v1`). */
   readonly root: string;
   readonly requests: RecordedRequest[];
+  /** Requests being answered right now, and the most seen at once. */
+  readonly load: { inFlight: number; peak: number };
   /** Queue replies; once empty, every request answers `"ok"`. */
   script(...replies: FakeReply[]): void;
   close(): Promise<void>;
@@ -34,7 +40,27 @@ function sse(event: string | undefined, data: unknown): string {
   return `${event ? `event: ${event}\n` : ""}data: ${typeof data === "string" ? data : JSON.stringify(data)}\n\n`;
 }
 
-function openAiStream(text: string, model: string): string {
+function openAiToolCall(name: string, args: Record<string, unknown>, model: string): string {
+  const base = { id: "chatcmpl-fake", object: "chat.completion.chunk", created: 0, model };
+  const call = {
+    index: 0,
+    id: `call_${name}`,
+    type: "function",
+    function: { name, arguments: JSON.stringify(args) },
+  };
+  return [
+    sse(undefined, {
+      ...base,
+      choices: [
+        { index: 0, delta: { role: "assistant", tool_calls: [call] }, finish_reason: null },
+      ],
+    }),
+    sse(undefined, { ...base, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }),
+    sse(undefined, "[DONE]"),
+  ].join("");
+}
+
+function openAiStream(text: string, model: string, usage = { input: 1, output: 1 }): string {
   const base = { id: "chatcmpl-fake", object: "chat.completion.chunk", created: 0, model };
   return [
     sse(undefined, {
@@ -45,7 +71,11 @@ function openAiStream(text: string, model: string): string {
     sse(undefined, {
       ...base,
       choices: [],
-      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      usage: {
+        prompt_tokens: usage.input,
+        completion_tokens: usage.output,
+        total_tokens: usage.input + usage.output,
+      },
     }),
     sse(undefined, "[DONE]"),
   ].join("");
@@ -88,11 +118,15 @@ function anthropicStream(text: string, model: string): string {
 
 export async function startFakeLlm(): Promise<FakeLlm> {
   const requests: RecordedRequest[] = [];
+  const load = { inFlight: 0, peak: 0 };
   const queue: FakeReply[] = [];
   const server = createServer((req, res) => {
     let raw = "";
     req.on("data", (chunk) => (raw += chunk));
-    req.on("end", () => {
+    req.on("end", async () => {
+      load.inFlight += 1;
+      load.peak = Math.max(load.peak, load.inFlight);
+      res.once("close", () => (load.inFlight -= 1));
       const body = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
       requests.push({ path: req.url ?? "", headers: req.headers, body });
       const reply = queue.shift() ?? { text: "ok" };
@@ -101,12 +135,21 @@ export async function startFakeLlm(): Promise<FakeLlm> {
         res.end(reply.body ?? JSON.stringify({ error: { message: "scripted failure" } }));
         return;
       }
+      if ("toolCall" in reply) {
+        res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+        res.end(openAiToolCall(reply.toolCall.name, reply.toolCall.args ?? {}, "m1"));
+        return;
+      }
+      if (reply.delayMs) await new Promise((resolve) => setTimeout(resolve, reply.delayMs));
       const model = typeof body.model === "string" ? body.model : "m1";
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
       res.end(
         (req.url ?? "").split("?")[0].endsWith("/messages")
           ? anthropicStream(reply.text, model)
-          : openAiStream(reply.text, model),
+          : openAiStream(reply.text, model, {
+              input: reply.usage?.input ?? 1,
+              output: reply.usage?.output ?? 1,
+            }),
       );
     });
   });
@@ -116,6 +159,7 @@ export async function startFakeLlm(): Promise<FakeLlm> {
     url: `http://127.0.0.1:${port}/v1`,
     root: `http://127.0.0.1:${port}`,
     requests,
+    load,
     script: (...replies) => queue.push(...replies),
     close: () => new Promise((resolve) => server.close(() => resolve())),
   };

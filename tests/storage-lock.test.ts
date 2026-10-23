@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { startAgent } from "@reework/core";
 import { fauxModels, testDefinition, tmpStorage } from "./support/agent.ts";
@@ -42,5 +42,70 @@ describe("one process owns a storage file", () => {
     const agent = await start(storagePath);
     await expect(start(storagePath)).rejects.toThrow(/already owned/);
     await agent.stop();
+  });
+});
+
+describe("a lock from another host", () => {
+  const heartbeatMs = 60;
+  const startFast = (storagePath: string) =>
+    startAgent(testDefinition(), {
+      storagePath,
+      models: fauxModels().models,
+      lock: { heartbeatMs },
+    });
+  const foreignLock = (beat: number) =>
+    JSON.stringify({ pid: 4242, host: "other-host", startedAt: 1, beat, heartbeatMs });
+
+  it("is respected while its owner keeps beating", async () => {
+    const storagePath = tmpStorage();
+    writeFileSync(`${storagePath}.lock`, foreignLock(Date.now()));
+    const beating = setInterval(
+      () => writeFileSync(`${storagePath}.lock`, foreignLock(Date.now())),
+      heartbeatMs / 2,
+    );
+    try {
+      await expect(startFast(storagePath)).rejects.toThrow(/process 4242 on host other-host/);
+    } finally {
+      clearInterval(beating);
+    }
+  });
+
+  it("is taken over once its heartbeat stops, whatever the clocks say", async () => {
+    const storagePath = tmpStorage();
+    // A beat far in the future: a skewed clock must not keep a dead owner alive.
+    writeFileSync(`${storagePath}.lock`, foreignLock(Date.now() + 3_600_000));
+    const agent = await startFast(storagePath);
+    const lock = JSON.parse(readFileSync(`${storagePath}.lock`, "utf8")) as { pid: number };
+    expect(lock.pid).toBe(process.pid);
+    await agent.stop();
+  });
+
+  it("lets exactly one of two racing starters take a stale lock", async () => {
+    const storagePath = tmpStorage();
+    writeFileSync(`${storagePath}.lock`, foreignLock(1));
+    const results = await Promise.allSettled([startFast(storagePath), startFast(storagePath)]);
+    const started = results.filter((r) => r.status === "fulfilled");
+    expect(started).toHaveLength(1);
+    await (
+      started[0] as PromiseFulfilledResult<Awaited<ReturnType<typeof startFast>>>
+    ).value.stop();
+  });
+});
+
+describe("the owner's heartbeat", () => {
+  it("keeps beating while the agent runs", async () => {
+    const storagePath = tmpStorage();
+    const agent = await startAgent(testDefinition(), {
+      storagePath,
+      models: fauxModels().models,
+      lock: { heartbeatMs: 40 },
+    });
+    const beat = () =>
+      (JSON.parse(readFileSync(`${storagePath}.lock`, "utf8")) as { beat: number }).beat;
+    const first = beat();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(beat()).toBeGreaterThan(first);
+    await agent.stop();
+    expect(existsSync(`${storagePath}.lock`)).toBe(false);
   });
 });
