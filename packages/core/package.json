@@ -1,11 +1,32 @@
 {
   "name": "@reework/core",
   "version": "0.1.0",
+  "description": "Build durable, human-in-the-loop AI agents on pi-durable: plugins, gated actions, an HTTP/WS protocol and a testing kit.",
+  "keywords": [
+    "agent",
+    "ai-agents",
+    "durable",
+    "human-in-the-loop",
+    "llm",
+    "reework"
+  ],
+  "homepage": "https://github.com/pelerintech/reework/tree/main/packages/core#readme",
+  "bugs": {
+    "url": "https://github.com/pelerintech/reework/issues"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pelerintech/reework.git",
+    "directory": "packages/core"
+  },
   "bin": {
     "reework": "./dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
   "type": "module",
   "exports": {
@@ -30,7 +51,9 @@
         "types": "./dist/testing.d.ts",
         "import": "./dist/testing.js"
       }
-    }
+    },
+    "access": "public",
+    "provenance": true
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json"

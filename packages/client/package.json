@@ -1,8 +1,27 @@
 {
   "name": "@reework/client",
   "version": "0.1.0",
+  "description": "Client for reework agents: REST + WebSocket protocol and a conversation view model.",
+  "keywords": [
+    "ai-agents",
+    "client",
+    "reework",
+    "websocket"
+  ],
+  "homepage": "https://github.com/pelerintech/reework/tree/main/packages/client#readme",
+  "bugs": {
+    "url": "https://github.com/pelerintech/reework/issues"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pelerintech/reework.git",
+    "directory": "packages/client"
+  },
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
   "type": "module",
   "exports": {
@@ -18,7 +37,9 @@
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"
       }
-    }
+    },
+    "access": "public",
+    "provenance": true
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json"

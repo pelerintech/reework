@@ -140,6 +140,11 @@ const [proposal] = await client.listProposals();
 await client.decide({ proposalId: proposal.id, selectedOption: "restart", instruction: null });
 ```
 
+## Architecture
+
+How an agent project, `@reework/core` and pi-durable fit together, with a diagram:
+[docs/architecture.md](docs/architecture.md).
+
 ## Writing plugins
 
 The plugin contract, its guarantees (tools may throw, replay, gated actions, workspaces, limits,
