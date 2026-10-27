@@ -27,6 +27,10 @@ flowchart TB
     host["AgentHost<br/>keyed conversations · input · abort · snapshot"]
     hitl["HITL<br/>proposals · decisions · replay-safe gates"]
     policy["Run policy<br/>model limits · request cap · tool budget"]
+    cases["Cases<br/>case fields · lifecycle · update_case"]
+    files["Files<br/>content-addressed · per case"]
+    hooks["Hooks<br/>tool · model · compaction"]
+    models["Named models<br/>ctx.models.complete · per-model cap"]
     facade["Facade<br/>definePlugin · defineTool · Type"]
   end
 
@@ -51,12 +55,19 @@ flowchart TB
 
   boot --> server
   boot --> host
+  boot --> cases
+  boot --> files
   server --> host
   host --> hitl
+  host --> cases
+  host --> files
   host --> durable
   hitl --> durable
   policy --> durable
   facade --> durable
+  facade --> hooks
+  facade --> models
+  files --> sqlite
   durable --> sqlite
   durable --> piai
   piai --> model
@@ -64,13 +75,13 @@ flowchart TB
 
 ## The layers
 
-| Layer                                    | Owns                                                                                                                                                                 | Does not own                                                            |
-| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| **Agent project**                        | The agent definition, its plugins (tools, gated actions, workspace), custom routes, deployment, tests                                                                | Durability, the protocol, approvals mechanics                           |
-| **`@reework/core`**                      | Booting an agent from a definition, the in-process `AgentHost` and its HTTP/WS protocol, gated actions and proposals, run policy, the plugin facade, the testing kit | Anything about a particular domain (no domain tools, routes or clients) |
-| **`@reework/client` / `@reework/types`** | The protocol client and its conversation view; the shared vocabulary (`Message`, `AgentEvent`, `Proposal`, `ROUTES`)                                                 | Rendering                                                               |
-| **`@reework/tui`**                       | The native operator surface, drawn from the client's view                                                                                                            | Agent logic (it is only a client)                                       |
-| **pi-durable / pi-ai**                   | Durable execution over SQLite, tool replay, compaction; model wire protocols                                                                                         | — (reached only through the facade)                                     |
+| Layer                                    | Owns                                                                                                                                                                                                          | Does not own                                                            |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| **Agent project**                        | The agent definition, its plugins (tools, gated actions, workspace), custom routes, deployment, tests                                                                                                         | Durability, the protocol, approvals mechanics                           |
+| **`@reework/core`**                      | Booting an agent from a definition, the in-process `AgentHost` and its HTTP/WS protocol, gated actions and proposals, cases and files, named models and hooks, run policy, the plugin facade, the testing kit | Anything about a particular domain (no domain tools, routes or clients) |
+| **`@reework/client` / `@reework/types`** | The protocol client and its conversation view; the shared vocabulary (`Message`, `AgentEvent`, `Proposal`, `ROUTES`)                                                                                          | Rendering                                                               |
+| **`@reework/tui`**                       | The native operator surface, drawn from the client's view                                                                                                                                                     | Agent logic (it is only a client)                                       |
+| **pi-durable / pi-ai**                   | Durable execution over SQLite, tool replay, compaction; model wire protocols                                                                                                                                  | — (reached only through the facade)                                     |
 
 ## How work flows
 
@@ -84,7 +95,19 @@ flowchart TB
 4. **A human decides** on any surface (TUI, client, API). The action runs, and the agent is resumed with the
    decision and the result as a new message.
 5. **Surfaces watch** the conversation's stream — messages, tool calls with status, proposals opening and
-   closing — and render it from `@reework/client`'s view.
+   closing, case updates — and render it from `@reework/client`'s view.
+
+## Cases, files, hooks and named models
+
+Every conversation is a **case**: fields stored flat on the conversation record, written by the host,
+plugins (`ctx.case`), the `update_case` model tool and HTTP, validated field by field, with a lifecycle
+(closing refused with open proposals, input reopening a closed case). Files are content-addressed bytes
+beside the SQLite file, listed per case, uploaded/downloaded over the protocol and read/added by plugins
+(`ctx.files`) and gated-action attachments. Hooks (`beforeTool`, `afterTool`, `beforeModelRequest`,
+`afterModelResponse`, `onAnswer`, `beforeCompaction`) let plugins shape the run; named models give a
+plugin its own endpoint (`ctx.models.complete`) with its own request cap. All of these reach pi-durable
+only through the facade; the facade's `@reework/core/internal` entry (the `Engine`, the storage seam) is
+**unstable** and only for the framework's own tests.
 
 ## Deploying
 
