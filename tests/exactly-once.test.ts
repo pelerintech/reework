@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { Type } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { defineDoc } from "@earendil-works/pi-durable";
-import { CONTEXT, definePlugin, defineTool, once, onceInCommit } from "@reework/core";
+import { definePlugin, defineTool } from "@reework/core";
+import { CONTEXT, onceInCommit, toolInternal, engineOf } from "@reework/core/internal";
+
 import type { RunningAgent } from "@reework/core";
 import {
   fauxModels,
@@ -35,10 +37,11 @@ describe("exactly-once helpers for replay-safe plugin tools", () => {
           description: "Push the branch.",
           parameters: Type.Object({}, { additionalProperties: false }),
           replay: "safe",
-          async execute(_args, api, context) {
-            const pushed = await once(api, "push", context, async () => {
-              pushes.push("oncall/42");
-              return "pushed oncall/42";
+          async execute(_args, ctx) {
+            const { api, context } = toolInternal(ctx);
+            const pushed = await ctx.once("push", async () => {
+              pushes.push("effect/42");
+              return "pushed effect/42";
             });
             await onceInCommit(api, context, async (tx) => {
               (await tx.doc(Counter)).n += 1;
@@ -51,7 +54,7 @@ describe("exactly-once helpers for replay-safe plugin tools", () => {
                 context.abortSignal?.addEventListener("abort", () => reject(new Error("crashed")));
               });
             }
-            return { output: [{ type: "text", text: pushed }] };
+            return pushed;
           },
         }),
       ],
@@ -73,7 +76,7 @@ describe("exactly-once helpers for replay-safe plugin tools", () => {
     await agent.host.submitInput(id, "push it");
     await eventually(() => crashed);
     await eventually(async () =>
-      agent.engine
+      engineOf(agent)
         .commit(() => ({}))
         .then(
           () => false,
@@ -84,9 +87,9 @@ describe("exactly-once helpers for replay-safe plugin tools", () => {
     crashing = false;
     const second = await start([fauxAssistantMessage("pushed")]);
     await eventually(async () =>
-      JSON.stringify(await second.host.readConversation(id)).includes("pushed oncall/42"),
+      JSON.stringify(await second.host.readConversation(id)).includes("pushed effect/42"),
     );
-    expect(pushes).toEqual(["oncall/42"]);
-    expect((await second.engine.harness.snapshot(Counter, CONTEXT))?.n).toBe(1);
+    expect(pushes).toEqual(["effect/42"]);
+    expect((await engineOf(second).harness.snapshot(Counter, CONTEXT))?.n).toBe(1);
   }, 20_000);
 });

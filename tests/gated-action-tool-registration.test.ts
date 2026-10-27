@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createRegistry } from "@earendil-works/pi-durable";
-import { gatedAction, toExtension } from "@reework/core";
+import { gatedAction } from "@reework/core";
+import { toExtension } from "@reework/core/internal";
 
 describe("a gated-action tool registers as a callable tool via the facade", () => {
   it("is installed into a registry and offered as a callable tool by name", () => {

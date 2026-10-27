@@ -2,7 +2,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { Engine } from "@reework/core";
+
+import { Engine } from "@reework/core/internal";
 
 const open: Engine[] = [];
 

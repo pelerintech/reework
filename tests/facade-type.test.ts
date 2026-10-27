@@ -12,7 +12,7 @@ describe("plugins build tool schemas from @reework/core alone", () => {
           description: "Double a number.",
           parameters: Type.Object({ n: Type.Number() }, { additionalProperties: false }),
           async execute(args) {
-            return { output: [{ type: "text", text: `result=${args.n * 2}` }] };
+            return `result=${args.n * 2}`;
           },
         }),
       ],

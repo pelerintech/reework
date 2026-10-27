@@ -59,27 +59,49 @@ writeFileSync(
 );
 writeFileSync(
   join(consumer, "agent.ts"),
-  `import { defineAgent, definePlugin, gatedAction } from "@reework/core";
+  `import { Type, defineAgent, definePlugin, defineTool, gatedAction } from "@reework/core";
 import type { Proposal } from "@reework/types";
 
 const describe = (proposal: Proposal): string => proposal.title;
 
-const ops = definePlugin("ops", (config: { service: string }) => ({
-  tools: [
-    gatedAction({
-      name: "restart",
-      gate: { title: \`Restart \${config.service}?\`, options: [{ id: "go", label: "Go" }] },
-      run: async () => describe({ id: "x", conversationId: "1", title: "done", options: [], acceptFreeForm: false, createdAt: 0 }),
-    }),
-  ],
-}));
+const ops = definePlugin(
+  "ops",
+  (config: { service: string }) => ({
+    tools: [
+      defineTool({
+        name: "status",
+        description: "Worker status",
+        parameters: Type.Object({}),
+        execute: async (_args, ctx) => (await ctx.models.complete("fast", { messages: "status?" })).text,
+      }),
+      gatedAction({
+        name: "restart",
+        parameters: Type.Object({ fileId: Type.Optional(Type.String()) }),
+        gate: (args) => ({
+          title: \`Restart \${config.service}?\`,
+          options: [{ id: "go", label: "Go" }],
+          ...(args.fileId ? { attachments: [{ kind: "file" as const, fileId: args.fileId }] } : {}),
+        }),
+        run: async () =>
+          describe({ id: "x", conversationId: "1", title: "done", options: [], acceptFreeForm: false, createdAt: 0 }),
+      }),
+    ],
+    hooks: {
+      async afterTool(_call, _result, ctx) {
+        await ctx.case.update({ tags: ["audited"] });
+      },
+    },
+  }),
+  { models: ["fast"] },
+);
 
 export default defineAgent({
   name: "pack-smoke",
   model: { provider: { baseUrl: "http://127.0.0.1:9/v1", apiKeyEnv: "SMOKE_LLM_KEY" }, modelId: "m1" },
+  models: { fast: { provider: { baseUrl: "http://127.0.0.1:9/v1", apiKeyEnv: "SMOKE_LLM_KEY" }, modelId: "fast" } },
   plugins: [{ plugin: ops, config: { service: "worker" } }],
   channels: [],
-  mission: { role: "You are a pack-smoke agent.", tools: ["restart"] },
+  mission: { role: "You are a pack-smoke agent.", tools: ["status", "restart"] },
 });
 `,
 );
@@ -100,46 +122,73 @@ writeFileSync(
   `// An out-of-tree agent test: only the published packages and the testing kit.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { defineTool, definePlugin, gatedAction, Type } from "@reework/core";
+import { Type, defineTool, definePlugin, gatedAction } from "@reework/core";
 import type { AgentDefinition } from "@reework/core";
-import { startTestAgent, text, toolCall, waitForIdle, waitForProposal } from "@reework/core/testing";
+import { addFile, startTestAgent, text, toolCall, waitForIdle, waitForProposal } from "@reework/core/testing";
 
-const ops = definePlugin("ops", () => ({
-  tools: [
-    defineTool({
-      name: "status",
-      description: "Worker status",
-      parameters: Type.Object({}),
-      execute: async () => ({ output: [{ type: "text" as const, text: "degraded" }] }),
-    }),
-    gatedAction({
-      name: "restart",
-      gate: { title: "Restart the worker?", options: [{ id: "go", label: "Restart" }] },
-      run: async () => "restarted",
-    }),
-  ],
-}));
+const ops = definePlugin(
+  "ops",
+  () => ({
+    tools: [
+      defineTool({
+        name: "status",
+        description: "Worker status",
+        parameters: Type.Object({}),
+        execute: async (_args, ctx) => (await ctx.models.complete("fast", { messages: "status?" })).text,
+      }),
+      gatedAction({
+        name: "restart",
+        parameters: Type.Object({ fileId: Type.Optional(Type.String()) }),
+        gate: (args) => ({
+          title: "Restart the worker?",
+          options: [{ id: "go", label: "Restart" }],
+          ...(args.fileId ? { attachments: [{ kind: "file" as const, fileId: args.fileId }] } : {}),
+        }),
+        run: async () => "restarted",
+      }),
+    ],
+    hooks: {
+      async afterTool(_call, _result, ctx) {
+        await ctx.case.update({ tags: ["audited"] });
+      },
+    },
+  }),
+  { models: ["fast"] },
+);
 
 const definition: AgentDefinition = {
   name: "consumer-agent",
   model: { provider: { baseUrl: "http://127.0.0.1:9/v1", apiKeyEnv: "UNUSED" }, modelId: "m1" },
+  models: { fast: { provider: { baseUrl: "http://127.0.0.1:9/v1", apiKeyEnv: "UNUSED" }, modelId: "fast" } },
   plugins: [{ plugin: ops, config: {} }],
   channels: [],
   mission: { role: "You keep the worker healthy." },
 };
 
-test("a gated action is proposed, decided, and the agent resumes with the outcome", async () => {
-  const { agent, model, dispose } = await startTestAgent(definition);
-  model.respond([toolCall("status"), toolCall("restart"), text("asked"), text("worker restarted")]);
-  const { id } = await agent.host.createConversation();
-  await agent.host.submitInput(id, "the worker is slow");
-  const proposal = await waitForProposal(agent.host, id);
+test("the v06 contract works from the tarballs", async () => {
+  const test = await startTestAgent(definition);
+  test.models.fast.respond([text("fast: degraded")]);
+  const { id } = await test.agent.host.createConversation();
+  const file = await addFile(test, id, { name: "log.txt", bytes: new TextEncoder().encode("log") });
+  test.model.respond([
+    toolCall("status"),
+    toolCall("update_case", { stage: "triaged" }),
+    toolCall("restart", { fileId: file.id }),
+    text("asked"),
+    text("worker restarted"),
+  ]);
+  await test.agent.host.submitInput(id, "the worker is slow");
+  const proposal = await waitForProposal(test.agent.host, id);
   assert.equal(proposal.title, "Restart the worker?");
-  await agent.host.submitDecision({ proposalId: proposal.id, selectedOption: "go", instruction: null });
-  await waitForIdle(agent.host, id);
-  const { messages } = await agent.host.snapshot(id);
+  assert.equal(proposal.attachments?.[0]?.kind, "file");
+  const c = await test.agent.host.getCase(id);
+  assert.equal(c.stage, "triaged");
+  assert.ok(c.tags.includes("audited"));
+  await test.agent.host.submitDecision({ proposalId: proposal.id, selectedOption: "go", instruction: null });
+  await waitForIdle(test.agent.host, id);
+  const { messages } = await test.agent.host.snapshot(id);
   assert.match(JSON.stringify(messages.at(-1)), /worker restarted/);
-  await dispose();
+  await test.dispose();
 });
 `,
 );

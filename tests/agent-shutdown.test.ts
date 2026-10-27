@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Type, defineTool, definePlugin } from "@reework/core";
 import type { AgentDefinition } from "@reework/core";
+import { engineOf } from "@reework/core/internal";
 import { scriptedModel, startTestAgent, text, toolCall, waitFor } from "@reework/core/testing";
 
 function agentWith(execute: (signal: AbortSignal | undefined) => Promise<void>): AgentDefinition {
@@ -15,9 +16,9 @@ function agentWith(execute: (signal: AbortSignal | undefined) => Promise<void>):
         name: "long_job",
         description: "Runs for a long time",
         parameters: Type.Object({}),
-        execute: async (_args, _api, context) => {
-          await execute(context.abortSignal);
-          return { output: [{ type: "text" as const, text: "job done" }] };
+        execute: async (_args, ctx) => {
+          await execute(ctx.signal);
+          return "job done";
         },
       }),
     ],
@@ -53,7 +54,7 @@ describe("stopping an agent", () => {
 
     await agent.stop();
     expect(signal?.aborted).toBe(true);
-    expect(existsSync(`${agent.engine.path}.lock`)).toBe(false);
+    expect(existsSync(`${engineOf(agent).path}.lock`)).toBe(false);
   });
 
   it("gives up after its timeout on a tool that ignores the signal, and releases the lock", async () => {
@@ -73,7 +74,7 @@ describe("stopping an agent", () => {
     const begun = Date.now();
     await expect(agent.stop({ timeoutMs: 500 })).rejects.toThrow(/did not stop within 500 ms/);
     expect(Date.now() - begun).toBeLessThan(1_500);
-    expect(existsSync(`${agent.engine.path}.lock`)).toBe(false);
+    expect(existsSync(`${engineOf(agent).path}.lock`)).toBe(false);
     finish();
   });
 

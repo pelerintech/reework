@@ -9,6 +9,7 @@ import { afterEach } from "vitest";
 export type FakeReply =
   | { text: string; usage?: { input: number; output?: number }; delayMs?: number }
   | { toolCall: { name: string; args?: Record<string, unknown> } }
+  | { toolCalls: Array<{ name: string; args?: Record<string, unknown> }> }
   | { status: number; body?: string };
 
 export interface RecordedRequest {
@@ -40,20 +41,21 @@ function sse(event: string | undefined, data: unknown): string {
   return `${event ? `event: ${event}\n` : ""}data: ${typeof data === "string" ? data : JSON.stringify(data)}\n\n`;
 }
 
-function openAiToolCall(name: string, args: Record<string, unknown>, model: string): string {
+function openAiToolCall(
+  calls: Array<{ name: string; args?: Record<string, unknown> }>,
+  model: string,
+): string {
   const base = { id: "chatcmpl-fake", object: "chat.completion.chunk", created: 0, model };
-  const call = {
-    index: 0,
-    id: `call_${name}`,
+  const tool_calls = calls.map((call, index) => ({
+    index,
+    id: `call_${call.name}_${index}`,
     type: "function",
-    function: { name, arguments: JSON.stringify(args) },
-  };
+    function: { name: call.name, arguments: JSON.stringify(call.args ?? {}) },
+  }));
   return [
     sse(undefined, {
       ...base,
-      choices: [
-        { index: 0, delta: { role: "assistant", tool_calls: [call] }, finish_reason: null },
-      ],
+      choices: [{ index: 0, delta: { role: "assistant", tool_calls }, finish_reason: null }],
     }),
     sse(undefined, { ...base, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }),
     sse(undefined, "[DONE]"),
@@ -137,7 +139,14 @@ export async function startFakeLlm(): Promise<FakeLlm> {
       }
       if ("toolCall" in reply) {
         res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
-        res.end(openAiToolCall(reply.toolCall.name, reply.toolCall.args ?? {}, "m1"));
+        res.end(
+          openAiToolCall([{ name: reply.toolCall.name, args: reply.toolCall.args ?? {} }], "m1"),
+        );
+        return;
+      }
+      if ("toolCalls" in reply) {
+        res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+        res.end(openAiToolCall(reply.toolCalls, "m1"));
         return;
       }
       if (reply.delayMs) await new Promise((resolve) => setTimeout(resolve, reply.delayMs));

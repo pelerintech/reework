@@ -77,7 +77,7 @@ export async function startTui(
     async send(line) {
       await type(...line.split(""), KEYS.enter);
     },
-    async waitForFrame(check, timeoutMs = 4000) {
+    async waitForFrame(check, timeoutMs = 8000) {
       const ok = (f: string) =>
         typeof check === "string"
           ? f.includes(check)

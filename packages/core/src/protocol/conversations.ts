@@ -1,4 +1,5 @@
 import { defineDoc } from "@earendil-works/pi-durable";
+import type { CasePriority, CaseStatus } from "@reework/types";
 
 /** A conversation the protocol created, as recorded durably. */
 export type ConversationRecord = {
@@ -7,6 +8,16 @@ export type ConversationRecord = {
   createdAt: number;
   /** The conversation's workspace directory, when a provider made one. */
   cwd?: string;
+  // Case fields, stored flat on the record (absent on v05-shaped records).
+  title?: string;
+  summary?: string;
+  status?: CaseStatus;
+  priority?: CasePriority;
+  stage?: string;
+  tags?: string[];
+  dueAt?: number;
+  closedAt?: number;
+  caseUpdatedAt?: number;
 };
 
 /**

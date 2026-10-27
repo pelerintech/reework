@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { mapDurableEvent } from "@reework/core";
+
+import { mapDurableEvent } from "@reework/core/internal";
 
 /** A fake conversation id (numbers are branded). */
 const conv = 1 as unknown as Parameters<typeof mapDurableEvent>[0];

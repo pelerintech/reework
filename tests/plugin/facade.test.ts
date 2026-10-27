@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { createRegistry } from "@earendil-works/pi-durable";
-import { definePlugin, section, toExtension } from "@reework/core";
+import { definePlugin, section } from "@reework/core";
+import { toExtension } from "@reework/core/internal";
+
 import { GreetingPlugin } from "./sample-plugin.js";
 
 describe("the facade turns plugins into pi-durable extensions", () => {

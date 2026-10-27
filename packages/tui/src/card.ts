@@ -24,10 +24,13 @@ export function cardLines(proposal: Proposal, focus: CardFocus): CardLine[] {
     { text: `conversation ${proposal.conversationId}`, style: "meta" },
   ];
   (proposal.attachments ?? []).forEach((attachment, i) => {
-    const count = attachment.content.split("\n").length;
     const marker = focus.open === i ? "▾" : "▸";
+    const detail =
+      attachment.kind === "file"
+        ? `${attachment.name ?? attachment.fileId}, ${attachment.mimeType ?? "application/octet-stream"}, ${attachment.size ?? 0} bytes`
+        : `${attachment.kind}, ${attachment.content.split("\n").length} lines`;
     lines.push({
-      text: `  ${marker} ${attachment.title ?? attachment.kind} (${attachment.kind}, ${count} lines)`,
+      text: `  ${marker} ${attachment.title ?? attachment.kind} (${detail})`,
       style: "attachment",
     });
   });

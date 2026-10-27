@@ -15,26 +15,7 @@ function setup(limits?: AgentDefinition["limits"]) {
         parameters: Type.Object({}),
         execute: async () => {
           executed.push("step");
-          return { output: [{ type: "text" as const, text: "stepped" }] };
-        },
-      }),
-      defineTool({
-        name: "inner",
-        description: "Called by other tools",
-        parameters: Type.Object({}),
-        execute: async () => {
-          executed.push("inner");
-          return { output: [{ type: "text" as const, text: "inner done" }] };
-        },
-      }),
-      defineTool({
-        name: "outer",
-        description: "Calls inner",
-        parameters: Type.Object({}),
-        execute: async (_args, api, context) => {
-          executed.push("outer");
-          await api.executeTool("inner", {}, context);
-          return { output: [{ type: "text" as const, text: "outer done" }] };
+          return "stepped";
         },
       }),
       gatedAction({
@@ -112,16 +93,6 @@ describe("the run budget", () => {
     await agent.host.submitInput(id, "first", { wait: true });
     await agent.host.submitInput(id, "second", { wait: true });
     expect(executed).toEqual(["step", "step"]);
-    await dispose();
-  });
-
-  it("does not count calls a tool makes itself", async () => {
-    const { definition, executed } = setup({ toolRoundsPerRun: 1 });
-    const { agent, model, dispose } = await startTestAgent(definition);
-    model.respond([toolCall("outer"), text("done")]);
-    const { id } = await agent.host.createConversation();
-    await agent.host.submitInput(id, "go", { wait: true });
-    expect(executed).toEqual(["outer", "inner"]);
     await dispose();
   });
 

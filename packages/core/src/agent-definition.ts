@@ -38,6 +38,12 @@ export interface AgentModel {
    * unlimited.
    */
   maxConcurrentRequests?: number;
+  /**
+   * For named models only: the input modalities this model accepts. Default
+   * `["text"]`; add `"image"` for a vision model. The conversation model stays
+   * text-only.
+   */
+  input?: readonly ("text" | "image")[];
 }
 
 /** A declared plugin or channel: a plugin factory with the config it is built from. */
@@ -53,9 +59,35 @@ export interface AgentMission {
   tools?: string[];
 }
 
+/** A case field the `update_case` tool may write. */
+export type CaseToolField =
+  | "title"
+  | "summary"
+  | "stage"
+  | "priority"
+  | "tags"
+  | "dueAt"
+  | "status";
+
+/** How the model may write a case. */
+export interface AgentCasesConfig {
+  /**
+   * The `update_case` model tool. `false` turns it off (the model is not offered
+   * it). Omitted, it is offered with every case field; `{ fields }` narrows the
+   * fields it may write and that appear in its schema.
+   */
+  modelTool?: false | { readonly fields?: readonly CaseToolField[] };
+}
+
 export interface AgentDefinition {
   name: string;
   model: AgentModel;
+  /** How the model may write a case. */
+  cases?: AgentCasesConfig;
+  /** Named models a plugin may call, keyed by name. `main` is reserved. */
+  models?: Record<string, AgentModel>;
+  /** Bounds on files. Default max size: 10 MiB. */
+  files?: { readonly maxBytes?: number };
   plugins: DeclaredModule[];
   channels: DeclaredModule[];
   mission: AgentMission;

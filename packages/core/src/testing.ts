@@ -6,15 +6,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createModels } from "@earendil-works/pi-ai/models";
-import type { Models } from "@earendil-works/pi-ai/models";
+import type { Models, MutableModels } from "@earendil-works/pi-ai/models";
 import {
   fauxAssistantMessage,
   fauxProvider,
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import type { FauxResponseStep } from "@earendil-works/pi-ai/providers/faux";
-import type { Proposal } from "@reework/types";
-import type { AgentDefinition } from "./agent-definition.ts";
+import type { FileRecord, Proposal } from "@reework/types";
+import type { AgentDefinition, AgentModel } from "./agent-definition.ts";
 import type { AgentHost } from "./host.ts";
 import { CONTEXT } from "./engine.ts";
 import { MODEL_PROVIDER_ID, startAgent } from "./runtime/bootstrap.ts";
@@ -41,6 +41,11 @@ export interface ScriptedModel {
   respond(steps: ScriptedStep[]): void;
   /** Queue more replies after the current ones. */
   append(steps: ScriptedStep[]): void;
+  /** One scripted model per declared named model, keyed by name. */
+  readonly named: Record<
+    string,
+    { respond(steps: ScriptedStep[]): void; append(steps: ScriptedStep[]): void }
+  >;
 }
 
 /** A model that answers from a script, registered where the agent's model is looked up. */
@@ -56,7 +61,23 @@ export function scriptedModel(modelId: string, streaming: ScriptedStreaming = {}
     models,
     respond: (steps) => faux.setResponses(steps),
     append: (steps) => faux.appendResponses(steps),
+    named: {},
   };
+}
+
+/** Register one scripted model per declared named model into a catalog built by `scriptedModel`. */
+function registerNamedModels(model: ScriptedModel, named: Record<string, AgentModel>): void {
+  for (const [name, def] of Object.entries(named)) {
+    const nf = fauxProvider({
+      provider: `reework.model.${name}`,
+      models: [{ id: def.modelId }],
+    });
+    (model.models as MutableModels).setProvider(nf.provider);
+    model.named[name] = {
+      respond: (steps) => nf.setResponses(steps),
+      append: (steps) => nf.appendResponses(steps),
+    };
+  }
 }
 
 /**
@@ -97,6 +118,8 @@ export interface TestAgent {
   readonly agent: RunningAgent;
   /** The scripted model the agent uses (unless `models` was passed). */
   readonly model: ScriptedModel;
+  /** One scripted model per declared named model, keyed by name (same as `model.named`). */
+  readonly models: ScriptedModel["named"];
   /** The API token the agent was started with. */
   readonly token: string;
   /** Stop the agent and remove its temporary storage. */
@@ -112,6 +135,7 @@ export async function startTestAgent(
   options: Partial<StartAgentOptions> = {},
 ): Promise<TestAgent> {
   const model = scriptedModel(definition.model.modelId);
+  registerNamedModels(model, definition.models ?? {});
   const token = randomBytes(16).toString("hex");
   const storagePath =
     options.storagePath ?? join(mkdtempSync(join(tmpdir(), "reework-test-")), "agent.sqlite");
@@ -125,6 +149,7 @@ export async function startTestAgent(
   return {
     agent,
     model,
+    models: model.named,
     token: options.auth?.token ?? token,
     dispose: async () => {
       if (disposed) return;
@@ -152,6 +177,31 @@ export async function waitFor<T>(
     if (Date.now() >= deadline) throw new Error(`waitFor: condition not met within ${timeoutMs}ms`);
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
+}
+
+/** The tools offered to the model for a conversation: names and parameter schemas.
+ *  Accepts a `TestAgent` or its `RunningAgent`; honors `mission.tools` narrowing. */
+export function offeredTools(
+  target: RunningAgent | TestAgent,
+  _conversationId: string,
+): { name: string; parameters: unknown }[] {
+  const running = "host" in target ? (target as RunningAgent) : (target as TestAgent).agent;
+  const missionTools = running.agent.mission.tools;
+  const tools = running.host.engine.registry
+    .snapshot()
+    .tools()
+    .filter(({ tool }) => tool.callers === undefined || tool.callers.includes("model"))
+    .map(({ tool }) => ({ name: tool.name, parameters: tool.parameters }));
+  return missionTools ? tools.filter((t) => missionTools.includes(t.name)) : tools;
+}
+
+/** Upload bytes to a conversation through the host; returns the stored record. */
+export function addFile(
+  test: TestAgent,
+  conversationId: string,
+  input: { name: string; mimeType?: string; bytes: Uint8Array },
+): Promise<FileRecord> {
+  return test.agent.host.addFile(conversationId, input);
 }
 
 /** Wait until the conversation has an open proposal and return the oldest. */

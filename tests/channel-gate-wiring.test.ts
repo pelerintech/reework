@@ -4,16 +4,16 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createRegistry } from "@earendil-works/pi-durable";
 import type { Proposal } from "@reework/types";
+import { onProposalOpen } from "@reework/core";
+import type { ActionOutcome } from "@reework/core";
 import {
   CONTEXT,
   Engine,
   installHITL,
-  onProposalOpen,
   openGatedAction,
   settleGate,
   waitForOutcome,
-} from "@reework/core";
-import type { ActionOutcome } from "@reework/core";
+} from "@reework/core/internal";
 
 const open: Engine[] = [];
 

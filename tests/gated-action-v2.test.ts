@@ -4,7 +4,9 @@ import type { TSchema } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { FauxResponseStep } from "@earendil-works/pi-ai/providers/faux";
 import type { GateDecision } from "@reework/types";
-import { definePlugin, gatedAction, listOpenProposals, settleGate } from "@reework/core";
+import { definePlugin, gatedAction, listOpenProposals } from "@reework/core";
+import { settleGate, engineOf } from "@reework/core/internal";
+
 import type { GatedActionDefinition } from "@reework/core";
 import { authedApp, fauxModels, startTestAgent, testDefinition } from "./support/agent.ts";
 import { eventually } from "./support/wait.ts";
@@ -49,8 +51,8 @@ describe("gated action v2", () => {
     const { id } = await agent.host.createConversation();
     await agent.host.submitInput(id, "restart svc-a", { wait: true });
 
-    const [proposal] = await listOpenProposals(agent.engine);
-    await settleGate(agent.engine, { proposalId: proposal.id, ...decide("go") });
+    const [proposal] = await listOpenProposals(engineOf(agent));
+    await settleGate(engineOf(agent), { proposalId: proposal.id, ...decide("go") });
 
     await eventually(() => runs.length === 1);
     expect(runs[0].args).toEqual({ target: "svc-a" });
@@ -110,7 +112,7 @@ describe("gated action v2", () => {
     const { id } = await agent.host.createConversation();
     await agent.host.submitInput(id, "fix it", { wait: true });
     const [proposal] = await agent.host.listProposals();
-    await settleGate(agent.engine, { proposalId: proposal.id, ...decide("open") });
+    await settleGate(engineOf(agent), { proposalId: proposal.id, ...decide("open") });
 
     await eventually(async () =>
       JSON.stringify(await agent.host.readConversation(id)).includes("verified the MR"),
@@ -140,7 +142,7 @@ describe("gated action v2", () => {
     const { id } = await agent.host.createConversation();
     await agent.host.submitInput(id, "fix it", { wait: true });
     const [proposal] = await agent.host.listProposals();
-    await settleGate(agent.engine, {
+    await settleGate(engineOf(agent), {
       proposalId: proposal.id,
       ...decide(null, "also add a regression test"),
     });
@@ -173,7 +175,7 @@ describe("gated action v2", () => {
     const { id } = await agent.host.createConversation();
     await agent.host.submitInput(id, "fix it", { wait: true });
     const [proposal] = await agent.host.listProposals();
-    await settleGate(agent.engine, { proposalId: proposal.id, ...decide("open") });
+    await settleGate(engineOf(agent), { proposalId: proposal.id, ...decide("open") });
 
     await eventually(async () =>
       JSON.stringify(await agent.host.readConversation(id)).includes("investigating"),

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { Type } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { definePlugin, gatedAction, settleGate } from "@reework/core";
+import { definePlugin, gatedAction } from "@reework/core";
+import { settleGate, engineOf } from "@reework/core/internal";
+
 import {
   fauxModels,
   startTestAgent,
@@ -50,7 +52,7 @@ describe("a gated action across a restart mid-gate", () => {
     const faux2 = fauxModels();
     faux2.respond([fauxAssistantMessage("worker-3 is back")]);
     const second = await startTestAgent(def, { storagePath, models: faux2.models });
-    await settleGate(second.engine, {
+    await settleGate(engineOf(second), {
       proposalId: proposal.id,
       selectedOption: "go",
       instruction: null,

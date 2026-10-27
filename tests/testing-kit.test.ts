@@ -12,6 +12,7 @@ import {
   waitForProposal,
 } from "@reework/core/testing";
 import type { AgentDefinition } from "@reework/core";
+import { engineOf } from "@reework/core/internal";
 
 const ops = definePlugin("ops", () => ({
   tools: [
@@ -19,7 +20,7 @@ const ops = definePlugin("ops", () => ({
       name: "status",
       description: "Service status",
       parameters: Type.Object({}),
-      execute: async () => ({ output: [{ type: "text", text: "degraded" }] }),
+      execute: async () => "degraded",
     }),
     gatedAction({
       name: "restart",
@@ -71,7 +72,7 @@ describe("the testing kit", () => {
     expect(res.status).toBe(200);
 
     await dispose();
-    expect(existsSync(`${agent.engine.path}.lock`)).toBe(false);
+    expect(existsSync(`${engineOf(agent).path}.lock`)).toBe(false);
   });
 
   it("uses a scripted model by default", async () => {

@@ -1,7 +1,7 @@
 // The conversation view: what a surface shows, folded from the watch stream (the
 // snapshot first, then event batches). Pure — every surface renders from it instead
 // of re-deriving the protocol.
-import type { AgentEvent, Proposal, TranscriptItem } from "@reework/types";
+import type { AgentEvent, Case, Proposal, TranscriptItem } from "@reework/types";
 import type { WatchFrame } from "./index.ts";
 
 export type ViewMessage = Extract<TranscriptItem, { type: "message" }> & {
@@ -23,6 +23,8 @@ export interface ConversationView {
   readonly running: boolean;
   /** Proposals waiting for a decision. */
   readonly proposals: readonly Proposal[];
+  /** The conversation's case, once the snapshot carries it. */
+  readonly case?: Case;
 }
 
 /** The view before anything has arrived. */
@@ -40,6 +42,7 @@ export function applyFrame(view: ConversationView, frame: WatchFrame): Conversat
       ),
       running: frame.running,
       proposals: [...frame.proposals],
+      ...(frame.case ? { case: frame.case } : {}),
     };
   }
   return frame.events.reduce(applyEvent, view);
@@ -119,6 +122,8 @@ function applyEvent(view: ConversationView, event: AgentEvent): ConversationView
         : { ...view, proposals: [...view.proposals, event.proposal] };
     case "proposal_closed":
       return { ...view, proposals: view.proposals.filter((p) => p.id !== event.proposalId) };
+    case "case_updated":
+      return { ...view, case: event.case };
     default:
       return view;
   }

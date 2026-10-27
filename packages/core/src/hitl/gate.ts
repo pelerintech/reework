@@ -7,11 +7,14 @@ import type {
   ToolRegistration,
 } from "@earendil-works/pi-durable";
 import type { JsonValue } from "@earendil-works/chord";
-import type { GateDecision, Proposal } from "@reework/types";
+import type { GateDecision, ModelCallUsage, Proposal } from "@reework/types";
 import type { Engine } from "../engine.ts";
 import { CONTEXT } from "../engine.ts";
 import { markProposalSettled, publishProposal } from "../protocol/proposals.ts";
 import type { StorageSeam } from "../tooling/storage.ts";
+import { createPluginContextMembers, modelUsageOf } from "../tooling/facade.ts";
+import type { NamedModelCall, PluginBindings, ToolContext } from "../tooling/facade.ts";
+import { createPluginStore } from "../tooling/plugin-store.ts";
 
 export type { GateDecision };
 
@@ -41,17 +44,23 @@ export interface ActionOutcome {
   decision: GateDecision;
 }
 
+/** The reework context a gated action's `run` receives after the human decides. */
 export interface GatedActionRunContext {
   conversationId: string;
-  taskId: string;
-  /** The engine's durable storage seam. */
-  storage: StorageSeam;
+  /** Aborted when the agent stops. */
+  signal: AbortSignal;
+  models: ToolContext["models"];
+  files: ToolContext["files"];
+  store: ToolContext["store"];
+  case: ToolContext["case"];
 }
 
 export interface GatedToolResult {
   branch: string;
   decision: GateDecision;
   output: unknown;
+  /** Spend of named-model calls the action's `run` made. */
+  usage?: readonly ModelCallUsage[];
 }
 
 type GatedRun = (
@@ -84,10 +93,12 @@ export interface HitlState {
   readonly listeners: Set<(proposal: Proposal) => void>;
   /** In-process listeners for proposals settled by a decision. */
   readonly settledListeners: Set<(settled: SettledProposal) => void>;
-  /** The developer `run` of each gated action, by tool name. */
-  readonly runs: Map<string, GatedRun>;
+  /** The developer `run` of each gated action, by tool name, with its plugin. */
+  readonly runs: Map<string, { readonly run: GatedRun; readonly plugin: string }>;
   /** The owning engine's storage seam, set when the engine opens. */
   storage?: StorageSeam;
+  /** The owning agent's plugin capabilities (models, case, files). */
+  bindings?: PluginBindings;
 }
 
 /** A proposal settled by a human decision. */
@@ -124,9 +135,9 @@ export function markGated<T extends ToolRegistration>(tool: T, run: GatedRun): T
 /** Register every gated action's `run` found among the registry's tools. */
 export function collectGatedRuns(registry: RegistryReader): void {
   const state = hitlState(registry);
-  for (const { tool } of registry.snapshot().tools()) {
+  for (const { extension, tool } of registry.snapshot().tools()) {
     const run = (tool as { [GATED]?: GatedRun })[GATED];
-    if (run) state.runs.set(tool.name, run);
+    if (run) state.runs.set(tool.name, { run, plugin: extension.name });
   }
 }
 
@@ -286,20 +297,34 @@ function createHitlTasks(state: HitlState) {
           throw new Error(`gate did not complete: ${outcome.status}`);
         }
         const decision = outcome.result.decision;
-        const run = state.runs.get(task.input.runKey);
-        if (!run) {
+        const registered = state.runs.get(task.input.runKey);
+        if (!registered) {
           throw new Error(`gated action not registered: ${task.input.runKey}`);
         }
-        if (!state.storage) throw new Error("gate state has no engine");
+        const modelCalls: NamedModelCall[] = [];
         const ctx: GatedActionRunContext = {
           conversationId: String(runtime.conversationId),
-          taskId: String(task.id),
-          storage: state.storage,
+          signal: runtime.signal,
+          ...createPluginContextMembers(
+            createPluginStore(
+              { commit: (fn) => state.storage!.commit(fn) },
+              task.input.runKey,
+              runtime.conversationId,
+            ),
+            String(runtime.conversationId),
+            state.bindings,
+            registered.plugin,
+            (call) => modelCalls.push(call),
+          ),
         };
         const branch = decision.selectedOption ?? (decision.instruction ? "instruction" : "abort");
-        let result: { output: unknown } | { error: string };
+        let result: { output: unknown; usage?: readonly ModelCallUsage[] } | { error: string };
         try {
-          result = { output: await run(ctx, decision, task.input.args ?? null) };
+          const output = await registered.run(ctx, decision, task.input.args ?? null);
+          result = {
+            output,
+            ...(modelCalls.length ? { usage: modelUsageOf(modelCalls) } : {}),
+          };
         } catch (error) {
           result = { error: error instanceof Error ? error.message : String(error) };
         }
@@ -325,7 +350,12 @@ function createHitlTasks(state: HitlState) {
                   status: "terminal",
                   outcome: {
                     status: "completed",
-                    result: { branch, decision, output: result.output },
+                    result: {
+                      branch,
+                      decision,
+                      output: result.output,
+                      ...(result.usage ? { usage: result.usage } : {}),
+                    },
                   },
                 },
           context,
@@ -361,7 +391,9 @@ function createHitlTasks(state: HitlState) {
 function describeOutcome(
   name: string,
   decision: GateDecision,
-  result: { output: unknown } | { error: string },
+  result:
+    | { output: unknown; usage?: readonly ModelCallUsage[] }
+    | { error: string; usage?: readonly ModelCallUsage[] },
 ): string {
   const choice = [
     decision.selectedOption ? `option "${decision.selectedOption}"` : undefined,
@@ -373,7 +405,8 @@ function describeOutcome(
     "error" in result
       ? `failed: ${result.error}`
       : `result: ${JSON.stringify(result.output ?? null)}`;
-  return `[gated action ${name}] The human decided (${choice || "no choice"}). ${outcome}`;
+  const usage = result.usage?.length ? ` usage: ${JSON.stringify(result.usage)}` : "";
+  return `[gated action ${name}] The human decided (${choice || "no choice"}). ${outcome}${usage}`;
 }
 
 /** Task tokens used to create HITL tasks; the registry runs its own per-state copies. */
@@ -389,8 +422,9 @@ export const GatedToolTask = tokens.GatedToolTask;
 export const BackgroundTask = tokens.BackgroundTask;
 
 /** Install the HITL tasks into a registry so a Harness can run them. */
-export function installHITL(registry: Registry): HitlState {
+export function installHITL(registry: Registry, bindings?: PluginBindings): HitlState {
   const state = hitlState(registry);
+  state.bindings = bindings;
   if (!registry.snapshot().extension("rework.hitl")) {
     const tasks = createHitlTasks(state);
     registry.install(

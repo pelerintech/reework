@@ -3,17 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Proposal } from "@reework/types";
-import {
-  Engine,
-  AgentHost,
-  createServer,
-  installHITL,
-  openGatedAction,
-  waitForOutcome,
-} from "@reework/core";
+import { AgentHost, createServer } from "@reework/core";
 import { ENGINE_TEST_MODELS } from "./durable/model-setup.js";
 import { createRegistry } from "@earendil-works/pi-durable";
 import type { ActionOutcome } from "@reework/core";
+import { Engine, installHITL, openGatedAction, waitForOutcome } from "@reework/core/internal";
 
 const open: Engine[] = [];
 

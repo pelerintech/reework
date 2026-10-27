@@ -22,36 +22,39 @@ export type {
   SubmitResult,
 } from "./host.ts";
 
-export { Engine, CONTEXT } from "./engine.ts";
-export type { EngineOptions } from "./engine.ts";
-
 export {
   CodingTools,
+  codingTools,
   createBashTool,
   createCodingTools,
   createEditTool,
   createReadTool,
   createWriteTool,
-  StorageSeam,
-  createComponentRegistry,
-  installComponents,
+  createPluginContextMembers,
   definePlugin,
   defineTool,
+  gatedRunOf,
   isReeworkPlugin,
-  once,
-  onceInCommit,
-  toExtension,
+  isReeworkTool,
+  markGatedTool,
   section,
   Type,
 } from "./tooling/index.ts";
 export type {
-  StorageSeamType,
-  Component,
-  ComponentRegistry,
-  DomainComponent,
   BuiltPlugin,
   PluginSetupContext,
+  PluginHooks,
+  PluginHookContext,
+  PluginStore,
+  PluginStoreScope,
+  PluginStoreItem,
+  PluginModels,
+  CaseFiles,
+  CaseContext,
   ReeworkPlugin,
+  ReeworkTool,
+  ToolContext,
+  ToolResult,
   Static,
   TSchema,
   WorkspaceProvider,
@@ -63,25 +66,11 @@ export { createServer } from "./server/index.ts";
 export { MODEL_PROVIDER_ID, startAgent } from "./runtime/bootstrap.ts";
 export type { RunningAgent, StartAgentOptions } from "./runtime/bootstrap.ts";
 
-export {
-  GateDecisionDoc,
-  GateTask,
-  GatedActionTask,
-  BackgroundTask,
-  installHITL,
-  openGatedAction,
-  openBackgroundTask,
-  settleGate,
-  waitForOutcome,
-} from "./hitl/gate.ts";
-
 export { gatedAction } from "./hitl/gated-action-tool.ts";
 
 export { listOpenProposals, onProposalOpen, onProposalSettled } from "./protocol/proposals.ts";
 export type { OpenProposal } from "./protocol/proposals.ts";
 
-export { createEventMapper, mapDurableEvent } from "./protocol/event-mapper.ts";
-export type { EventMapperState } from "./protocol/event-mapper.ts";
 export type {
   GatedActionDefinition,
   GatedActionGate,
@@ -94,6 +83,4 @@ export type {
   GateOutcome,
   ActionOutcome,
   ProposalOption,
-  HitlState,
-  SettledProposal,
 } from "./hitl/gate.ts";

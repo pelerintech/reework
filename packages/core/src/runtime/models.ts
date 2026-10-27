@@ -21,17 +21,35 @@ const STREAMS = {
  * is read from `apiKeyEnv`, which must be set — checked here, before the
  * engine opens.
  */
-export function customModels(model: AgentModel): MutableModels {
+export function customModels(
+  model: AgentModel,
+  named: Record<string, AgentModel> = {},
+): MutableModels {
+  const models = createModels();
+  models.setProvider(agentModelProvider(MODEL_PROVIDER_ID, model));
+  for (const [name, def] of Object.entries(named)) {
+    if (name === "main") {
+      throw new Error(`model name "main" is reserved; it names the conversation model`);
+    }
+    models.setProvider(agentModelProvider(`reework.model.${name}`, def));
+  }
+  return models;
+}
+
+/** One provider for a model (the agent's own, or a named model). */
+function agentModelProvider(
+  providerId: string,
+  model: AgentModel,
+): ReturnType<typeof createProvider> {
   const { baseUrl, apiKeyEnv } = model.provider;
   const api = model.provider.api ?? "openai-completions";
   if (!process.env[apiKeyEnv]) {
     throw new Error(`model API key variable ${apiKeyEnv} is not set`);
   }
   const { contextWindow, maxTokens } = modelLimits(model);
-
-  const provider = createProvider({
-    id: MODEL_PROVIDER_ID,
-    name: "Custom endpoint",
+  return createProvider({
+    id: providerId,
+    name: providerId,
     baseUrl,
     auth: {
       apiKey: {
@@ -47,9 +65,9 @@ export function customModels(model: AgentModel): MutableModels {
         id: model.modelId,
         name: model.modelId,
         api,
-        provider: MODEL_PROVIDER_ID,
+        provider: providerId,
         baseUrl,
-        input: ["text"],
+        input: (model.input ?? ["text"]) as ["text"],
         reasoning: false,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow,
@@ -58,10 +76,6 @@ export function customModels(model: AgentModel): MutableModels {
     ],
     api: { [api]: limitRequests(STREAMS[api](), model.maxConcurrentRequests) },
   });
-
-  const models = createModels();
-  models.setProvider(provider);
-  return models;
 }
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;

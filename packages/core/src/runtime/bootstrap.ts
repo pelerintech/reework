@@ -8,8 +8,10 @@ import { CONTEXT, Engine } from "../engine.ts";
 import { installHITL } from "../hitl/gate.ts";
 import { AgentHost } from "../host.ts";
 import { createServer } from "../server/index.ts";
-import { toExtension } from "../tooling/facade.ts";
-import type { BuiltPlugin } from "../tooling/facade.ts";
+import { buildToolHooks, toDurableTool, toExtension } from "../tooling/facade.ts";
+import type { BuiltPlugin, PluginBindings, PluginHooks, ReeworkTool } from "../tooling/facade.ts";
+import { caseExtension } from "../tooling/case-tool.ts";
+import { createPluginStore } from "../tooling/plugin-store.ts";
 
 import { budgetExtension } from "./budget.ts";
 import { lockStorage } from "./lock.ts";
@@ -42,7 +44,6 @@ const DEFAULT_SETTINGS = {
 
 export interface RunningAgent {
   readonly agent: AgentDefinition;
-  readonly engine: Engine;
   readonly host: AgentHost;
   readonly app: ReturnType<typeof createServer>["app"];
   /** Serve the app (REST + WebSocket) on `port`; `0` picks a free port. */
@@ -67,18 +68,44 @@ export async function startAgent(
   const tokenEnv = options.auth?.tokenEnv ?? "REEWORK_API_TOKEN";
   const token = options.auth?.token ?? process.env[tokenEnv];
   if (!token) throw new Error(`API token variable ${tokenEnv} is not set`);
-  const models = options.models ?? customModels(agent.model);
+  const models = options.models ?? customModels(agent.model, agent.models);
   const built = [...agent.plugins, ...agent.channels].map(buildPlugin);
+  validateNamedModels(agent, built);
+  if (options.models) {
+    for (const name of Object.keys(agent.models ?? {})) {
+      if (options.models.getModels(`reework.model.${name}`).length === 0) {
+        throw new Error(`model catalog is missing named model "${name}"`);
+      }
+    }
+  }
+  // One capabilities object per agent: its model catalog and each plugin's lent
+  // names, plus the host-backed case/file access filled in once the host exists.
+  const bindings: PluginBindings = {
+    catalog: models,
+    lent: new Map(built.map((p) => [p.name, p.models])),
+  };
 
   const registry = createRegistry();
-  installHITL(registry);
+  installHITL(registry, bindings);
   registry.install(
     defineExtension({
       name: "reework.mission",
       sections: [section("mission", () => agent.mission.role, { tag: false })],
     }),
   );
-  for (const plugin of built) registry.install(toExtension(plugin.name, plugin.built));
+  const caseModelTool = agent.cases?.modelTool;
+  if (caseModelTool !== false) {
+    registry.install(caseExtension(caseModelTool?.fields, bindings));
+  }
+  for (const plugin of built) registry.install(toExtension(plugin.name, plugin.built, bindings));
+  const toolHooks = buildToolHooks(
+    built
+      .map((p) => ({ name: p.name, hooks: p.built.hooks }))
+      .filter((p): p is { name: string; hooks: PluginHooks } => p.hooks !== undefined),
+    bindings,
+  );
+  if (toolHooks)
+    registry.install(defineExtension({ name: "reework.pluginHooks", hooks: [toolHooks] }));
   // The engine and host exist only once boot opens them (before any run resumes).
   const opened: Opened = {};
   const budget = budgetExtension(
@@ -88,7 +115,9 @@ export async function startAgent(
   );
   if (budget) registry.install(budget);
 
-  const modelTools = agent.mission.tools ? selectTools(built, agent.mission.tools) : undefined;
+  const modelTools = agent.mission.tools
+    ? selectTools(built, agent.mission.tools, bindings)
+    : undefined;
   const providers = built.filter((plugin) => plugin.built.workspace);
   if (providers.length > 1) {
     const names = providers.map((p) => `"${p.name}"`).join(" and ");
@@ -96,7 +125,18 @@ export async function startAgent(
   }
   const unlock = await lockStorage(options.storagePath, options.lock);
   try {
-    return await boot(agent, options, models, built, registry, modelTools, token, unlock, opened);
+    return await boot(
+      agent,
+      options,
+      models,
+      built,
+      bindings,
+      registry,
+      modelTools,
+      token,
+      unlock,
+      opened,
+    );
   } catch (error) {
     unlock();
     throw error;
@@ -108,6 +148,7 @@ async function boot(
   options: StartAgentOptions,
   models: Models,
   built: readonly Built[],
+  bindings: PluginBindings,
   registry: ReturnType<typeof createRegistry>,
   modelTools: ToolRegistration[] | undefined,
   token: string,
@@ -130,12 +171,27 @@ async function boot(
     ...(modelTools ? { modelTools } : {}),
   };
   const workspace = built.find((plugin) => plugin.built.workspace)?.built.workspace;
-  const host = new AgentHost(engine, agentChange, workspace);
+  const host = new AgentHost(engine, agentChange, workspace, {
+    maxBytes: agent.files?.maxBytes,
+  });
   opened.engine = engine;
   opened.host = host;
+  bindings.case = {
+    get: (id) => host.getCase(id),
+    update: (id, patch) => host.updateCase(id, patch),
+  };
+  bindings.files = {
+    list: (id) => host.listFiles(id),
+    read: (id, fid) => host.readFile(id, fid),
+    add: (id, input) => host.addFile(id, input),
+  };
   for (const plugin of built) {
     try {
-      await plugin.built.setup?.({ host, storage: engine.storage, config: plugin.config });
+      await plugin.built.setup?.({
+        host,
+        store: createPluginStore({ commit: (fn) => engine.commit(fn) }, plugin.name),
+        config: plugin.config,
+      });
     } catch (error) {
       await engine.close();
       const message = error instanceof Error ? error.message : String(error);
@@ -154,7 +210,7 @@ async function boot(
       (server as { closeAllConnections?: () => void }).closeAllConnections?.();
     });
 
-  return {
+  const running: RunningAgent & { engine: Engine } = {
     agent,
     engine,
     host,
@@ -189,6 +245,7 @@ async function boot(
       }
     },
   };
+  return running;
 }
 
 const DEFAULT_STOP_TIMEOUT_MS = 8_000;
@@ -219,31 +276,65 @@ interface Built {
   readonly name: string;
   readonly config: unknown;
   readonly built: BuiltPlugin;
+  readonly models: readonly string[];
 }
 
 function buildPlugin(declared: DeclaredModule): Built {
   const name = declared.plugin.name;
   try {
-    return { name, config: declared.config, built: declared.plugin.build(declared.config) };
+    return {
+      name,
+      config: declared.config,
+      built: declared.plugin.build(declared.config),
+      models: declared.plugin.models ?? [],
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`plugin "${name}" failed: ${message}`, { cause: error });
   }
 }
 
+/** Each plugin's required names must be declared; `main` is reserved; a passed-in
+ *  catalog must cover the declared names. */
+function validateNamedModels(agent: AgentDefinition, built: readonly Built[]): void {
+  const declared = new Set(Object.keys(agent.models ?? {}));
+  if (declared.has("main")) {
+    throw new Error(`model name "main" is reserved; it names the conversation model`);
+  }
+  for (const plugin of built) {
+    for (const name of plugin.models) {
+      if (name === "main") {
+        throw new Error(
+          `plugin "${plugin.name}" needs model "main", which is reserved for the conversation model`,
+        );
+      }
+      if (!declared.has(name)) {
+        throw new Error(
+          `plugin "${plugin.name}" needs model "${name}", which the agent does not declare`,
+        );
+      }
+    }
+  }
+}
+
 export { createRegistry };
 
 /** The installed tools named in `mission.tools`; an unknown name stops startup. */
-function selectTools(built: readonly Built[], names: readonly string[]): ToolRegistration[] {
-  const byName = new Map<string, ToolRegistration>();
+function selectTools(
+  built: readonly Built[],
+  names: readonly string[],
+  bindings: PluginBindings,
+): ToolRegistration[] {
+  const byName = new Map<string, { tool: ReeworkTool; plugin: string }>();
   for (const plugin of built) {
-    for (const tool of plugin.built.tools ?? []) byName.set(tool.name, tool);
+    for (const tool of plugin.built.tools ?? [])
+      byName.set(tool.name, { tool, plugin: plugin.name });
   }
   return names.map((name) => {
-    const tool = byName.get(name);
-    if (!tool) {
+    const entry = byName.get(name);
+    if (!entry) {
       throw new Error(`mission.tools names "${name}", which no plugin provides`);
     }
-    return tool;
+    return toDurableTool(entry.tool, entry.plugin, bindings);
   });
 }

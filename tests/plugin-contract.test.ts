@@ -9,7 +9,7 @@ const echo = defineTool({
   description: "Echo the text back.",
   parameters: Type.Object({ text: Type.String() }, { additionalProperties: false }),
   async execute(args) {
-    return { output: [{ type: "text", text: `echo:${args.text}` }] };
+    return `echo:${args.text}`;
   },
 });
 
@@ -42,7 +42,7 @@ describe("plugin contract", () => {
           description: "Greet.",
           parameters: Type.Object({}, { additionalProperties: false }),
           async execute() {
-            return { output: [{ type: "text", text: `${config.greeting}, world` }] };
+            return `${config.greeting}, world`;
           },
         }),
       ],
@@ -72,24 +72,13 @@ describe("plugin contract", () => {
     ).rejects.toThrow(/plugin "strict" failed: token is required/);
   });
 
-  it("runs setup for plugins and channels after the engine opens, with host and storage", async () => {
-    const created: string[] = [];
-    const notes: unknown[] = [];
+  it("runs setup for plugins and channels after the engine opens, with host, store and config", async () => {
+    const seen: { id: string; tag: string; store: boolean }[] = [];
     const recorder = (label: string) =>
-      definePlugin(label, (_config: { tag: string }) => ({
+      definePlugin(label, (config: { tag: string }) => ({
         async setup(ctx) {
           const conversation = await ctx.host.createConversation();
-          created.push(conversation.id);
-          const Note = ctx.storage.defineDoc<{ by: string }>({
-            kind: `test.note.${label}`,
-            version: 1,
-            scope: "session",
-            initial: () => ({ by: "" }),
-          });
-          await ctx.storage.commit(async (tx) => {
-            (await tx.doc(Note)).by = ctx.config.tag;
-          });
-          notes.push(await ctx.storage.readSession(Note));
+          seen.push({ id: conversation.id, tag: config.tag, store: !!ctx.store.agent });
         },
       }));
 
@@ -100,7 +89,9 @@ describe("plugin contract", () => {
       }),
     );
 
-    expect(created).toHaveLength(2);
-    expect(notes).toEqual([{ by: "plugin" }, { by: "channel" }]);
+    expect(seen.map((s) => s.tag)).toEqual(["plugin", "channel"]);
+    expect(seen).toHaveLength(2);
+    expect(new Set(seen.map((s) => s.id)).size).toBe(2);
+    expect(seen.every((s) => s.store)).toBe(true);
   });
 });

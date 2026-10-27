@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createComponentRegistry, installComponents } from "@reework/core";
-import type { Component } from "@reework/core";
+
+import { createComponentRegistry, installComponents } from "@reework/core/internal";
+
+import type { Component } from "@reework/core/internal";
 
 // A Channel-style domain contract extends the common Component base with its own surface.
 interface ChannelComponent extends Component {

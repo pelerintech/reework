@@ -39,6 +39,11 @@
       "reework-source": "./src/testing.ts",
       "types": "./dist/testing.d.ts",
       "import": "./dist/testing.js"
+    },
+    "./internal": {
+      "reework-source": "./src/internal.ts",
+      "types": "./dist/internal.d.ts",
+      "import": "./dist/internal.js"
     }
   },
   "publishConfig": {
@@ -50,6 +55,10 @@
       "./testing": {
         "types": "./dist/testing.d.ts",
         "import": "./dist/testing.js"
+      },
+      "./internal": {
+        "types": "./dist/internal.d.ts",
+        "import": "./dist/internal.js"
       }
     },
     "access": "public",

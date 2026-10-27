@@ -17,6 +17,10 @@ function diffStyle(line: string): LineStyle {
 
 /** Lines of an attachment, styled by kind: diffs by line kind, other kinds as-is. */
 export function formatAttachment(attachment: ProposalAttachment): StyledLine[] {
+  if (attachment.kind === "file") {
+    const info = `${attachment.name ?? attachment.fileId} — ${attachment.mimeType ?? "application/octet-stream"}, ${attachment.size ?? 0} bytes`;
+    return [{ text: info, style: "plain" }];
+  }
   const body = attachment.content.split("\n").map((text): StyledLine => ({
     text,
     style: attachment.kind === "diff" ? diffStyle(text) : "plain",

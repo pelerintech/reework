@@ -5,11 +5,11 @@ import { createNodeWebSocket } from "@hono/node-ws";
 import { watchEvents } from "@earendil-works/pi-durable";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { ROUTES } from "@reework/types";
-import type { AgentEvent, GateDecision, RouteId } from "@reework/types";
+import type { AgentEvent, CasePatch, GateDecision, RouteId } from "@reework/types";
 import { createEventMapper } from "../protocol/event-mapper.ts";
 import { onProposalOpen, onProposalSettled } from "../protocol/proposals.ts";
 import { CONTEXT } from "../engine.ts";
-import { ConversationNotFound, ProposalNotFound } from "../host.ts";
+import { ConversationNotFound, FileNotFound, FileTooLarge, ProposalNotFound } from "../host.ts";
 import type { AgentHost } from "../host.ts";
 
 export interface ServerOptions {
@@ -57,6 +57,12 @@ export function createServer(host: AgentHost, options: ServerOptions) {
     if (error instanceof ProposalNotFound) {
       return c.json({ error: "proposal_not_found", proposalId: error.proposalId }, 404);
     }
+    if (error instanceof FileNotFound) {
+      return c.json({ error: "file_not_found", fileId: error.fileId }, 404);
+    }
+    if (error instanceof FileTooLarge) {
+      return c.json({ error: "file_too_large", size: error.size, maxBytes: error.maxBytes }, 413);
+    }
     throw error;
   });
 
@@ -71,28 +77,113 @@ export function createServer(host: AgentHost, options: ServerOptions) {
       return c.json(conversation, conversation.created ? 201 : 200);
     },
 
-    "conversations.list": async (c) => c.json({ conversations: await host.listConversations() }),
+    "conversations.list": async (c) => {
+      const statusParam = c.req.query("status");
+      const status = statusParam ? statusParam.split(",").filter(Boolean) : undefined;
+      const tagParams = c.req.queries("tag") ?? [];
+      const tag = tagParams.length
+        ? tagParams.flatMap((t) => t.split(",")).filter(Boolean)
+        : undefined;
+      const needsParam = c.req.query("needsHuman");
+      const needsHuman = needsParam === "true" ? true : needsParam === "false" ? false : undefined;
+      const stage = c.req.query("stage") || undefined;
+      const sortParam = c.req.query("sort");
+      const sort =
+        sortParam === "priority" ||
+        sortParam === "dueAt" ||
+        sortParam === "createdAt" ||
+        sortParam === "updatedAt"
+          ? sortParam
+          : undefined;
+      return c.json({
+        conversations: await host.listConversations(),
+        cases: await host.listCases({ status, tag, needsHuman, stage, sort }),
+      });
+    },
 
     "conversations.get": async (c) => c.json(await host.readConversation(c.req.param("id") ?? "")),
 
+    "conversations.getCase": async (c) => c.json(await host.getCase(c.req.param("id") ?? "")),
+
+    "conversations.updateCase": async (c) => {
+      const id = c.req.param("id") ?? "";
+      const body = await c.req.json().catch(() => ({}));
+      try {
+        return c.json(await host.updateCase(id, body as CasePatch));
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (error.message.startsWith("invalid case patch:") ||
+            error.message.startsWith("cannot close a case"))
+        ) {
+          return c.json({ error: error.message }, 400);
+        }
+        throw error;
+      }
+    },
+
     "conversations.submit": async (c) => {
       const id = c.req.param("id") ?? "";
-      const body = await c.req.json<{ content?: unknown; requestId?: unknown; mode?: unknown }>();
+      const body = await c.req.json<{
+        content?: unknown;
+        requestId?: unknown;
+        mode?: unknown;
+        files?: unknown;
+      }>();
       const content = typeof body.content === "string" ? body.content : "";
       const requestId = typeof body.requestId === "string" ? body.requestId : undefined;
       const mode = body.mode === "steer" ? "steer" : "followUp";
+      const files = Array.isArray(body.files)
+        ? body.files.filter((f): f is string => typeof f === "string")
+        : undefined;
       const wait = c.req.query("wait") === "true";
-      const { duplicate, ...result } = await host.submitInput(id, content, {
-        wait,
-        requestId,
-        mode,
-      });
-      return c.json({ conversationId: id, ...result }, wait || duplicate ? 200 : 202);
+      try {
+        const { duplicate, ...result } = await host.submitInput(id, content, {
+          wait,
+          requestId,
+          mode,
+          files,
+        });
+        return c.json({ conversationId: id, ...result }, wait || duplicate ? 200 : 202);
+      } catch (error) {
+        if (error instanceof FileNotFound) {
+          return c.json({ error: "file_not_found", fileId: error.fileId }, 400);
+        }
+        throw error;
+      }
     },
 
     "conversations.abort": async (c) => {
       await host.abort(c.req.param("id") ?? "");
       return c.json({ ok: true });
+    },
+
+    "conversations.files": async (c) => {
+      const id = c.req.param("id") ?? "";
+      if (!(await host.hasConversation(id))) throw new ConversationNotFound(id);
+      return c.json({ id, files: await host.listFiles(id) });
+    },
+
+    "conversations.uploadFile": async (c) => {
+      const id = c.req.param("id") ?? "";
+      const name = c.req.query("name");
+      if (!name) return c.json({ error: "file name is required" }, 400);
+      const bytes = new Uint8Array(await c.req.arrayBuffer());
+      const mimeType = c.req.header("content-type") ?? undefined;
+      const record = await host.addFile(id, { name, mimeType, bytes, source: "upload" });
+      return c.json(record, 201);
+    },
+
+    "conversations.downloadFile": async (c) => {
+      const id = c.req.param("id") ?? "";
+      const { record, bytes } = await host.readFile(id, c.req.param("fid") ?? "");
+      return new Response(bytes, {
+        headers: {
+          "Content-Type": record.mimeType,
+          "Content-Disposition": `attachment; filename="${record.name}"`,
+          "X-Content-Type-Options": "nosniff",
+        },
+      });
     },
 
     "conversations.proposals": async (c) => {
@@ -145,6 +236,15 @@ export function createServer(host: AgentHost, options: ServerOptions) {
                 proposalId,
                 selectedOption: decision.selectedOption,
                 instruction: decision.instruction,
+                timestamp: Date.now(),
+              });
+            }),
+            host.onCaseUpdated((c) => {
+              if (c.id !== raw) return;
+              send({
+                kind: "case_updated",
+                conversationId: raw,
+                case: c,
                 timestamp: Date.now(),
               });
             }),

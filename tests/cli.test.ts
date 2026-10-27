@@ -77,7 +77,7 @@ describe("reework start under a stubborn tool", () => {
 import { writeFileSync } from "node:fs";
 const tools = definePlugin("stubborn", () => ({
   tools: [defineTool({ name: "stubborn", description: "Ignores cancellation", parameters: Type.Object({}),
-    execute: async () => { writeFileSync(${JSON.stringify(marker)}, "1"); await new Promise(() => {}); return { output: [] }; } })],
+    execute: async () => { writeFileSync(${JSON.stringify(marker)}, "1"); await new Promise(() => {}); return "stubborn"; } })],
 }));
 export default {
   name: "cli-agent",

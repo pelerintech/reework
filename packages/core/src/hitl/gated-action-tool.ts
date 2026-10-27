@@ -1,12 +1,11 @@
 import { Type, uuidv7 } from "@earendil-works/pi-ai";
 import type { Static, TSchema } from "@earendil-works/pi-ai";
-import type { ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-durable";
 import type { JsonValue } from "@earendil-works/chord";
 import type { GateDecision, Proposal, ProposalAttachment } from "@reework/types";
-import { defineTool } from "../tooling/facade.ts";
+import { defineTool, markGatedTool, toolInternal } from "../tooling/facade.ts";
+import type { ToolContext, ToolResult, ReeworkTool } from "../tooling/facade.ts";
 import { onceInCommit } from "../tooling/once.ts";
-import { GatedToolTask, markGated } from "./gate.ts";
-import type { GatedActionRunContext } from "./gate.ts";
+import { GatedToolTask } from "./gate.ts";
 import { ProposalsDoc } from "../protocol/proposals.ts";
 import type { OpenProposal } from "../protocol/proposals.ts";
 
@@ -22,12 +21,24 @@ export interface GatedActionGate {
   attachments?: ProposalAttachment[];
 }
 
-export type { GatedActionRunContext };
-
 /** What a gate builder knows about the call it is building a proposal for. */
 export interface GatedActionGateContext {
   /** The conversation the gate opens in (e.g. to read that conversation's workspace). */
   readonly conversationId: string;
+  readonly models: ToolContext["models"];
+  readonly files: ToolContext["files"];
+  readonly store: ToolContext["store"];
+  readonly case: ToolContext["case"];
+}
+
+/** The reework context a gated action's `run` receives after the human decides. */
+export interface GatedActionRunContext {
+  readonly conversationId: string;
+  readonly signal: AbortSignal;
+  readonly models: ToolContext["models"];
+  readonly files: ToolContext["files"];
+  readonly store: ToolContext["store"];
+  readonly case: ToolContext["case"];
 }
 
 export interface GatedActionDefinition<TParameters extends TSchema = TSchema> {
@@ -60,8 +71,9 @@ export interface GatedActionDefinition<TParameters extends TSchema = TSchema> {
  */
 export function gatedAction<TParameters extends TSchema>(
   def: GatedActionDefinition<TParameters>,
-): ToolRegistration {
-  const parameters = def.parameters ?? Type.Object({}, { additionalProperties: false });
+): ReeworkTool<TParameters> {
+  const parameters: TParameters =
+    def.parameters ?? (Type.Object({}, { additionalProperties: false }) as unknown as TParameters);
   const gateFor = async (
     args: Static<TParameters>,
     ctx: GatedActionGateContext,
@@ -74,25 +86,42 @@ export function gatedAction<TParameters extends TSchema>(
     // Replay-safe: an interrupted call reruns after restart and finds its receipt
     // instead of reporting a failure the model would answer by opening a second gate.
     replay: "safe",
-    execute: async (
-      args,
-      api: ToolExecutionApi,
-      context,
-    ): Promise<{ output: { type: "text"; text: string }[] }> => {
+    execute: async (args, ctx: ToolContext): Promise<ToolResult> => {
       const gate = await gateFor(args as Static<TParameters>, {
-        conversationId: String(api.conversationId),
+        conversationId: ctx.conversationId,
+        models: ctx.models,
+        files: ctx.files,
+        store: ctx.store,
+        case: ctx.case,
       });
+      // A file attachment must belong to this conversation; a foreign file fails the gate
+      // before any proposal opens. Valid attachments carry their record's name/type/size.
+      const attachments = gate.attachments
+        ? await Promise.all(
+            gate.attachments.map(async (attachment) => {
+              if (attachment.kind !== "file") return attachment;
+              const { record } = await ctx.files.read(attachment.fileId);
+              return {
+                ...attachment,
+                name: record.name,
+                mimeType: record.mimeType,
+                size: record.size,
+              };
+            }),
+          )
+        : undefined;
       const proposal: Proposal = {
         id: uuidv7(),
-        conversationId: String(api.conversationId),
+        conversationId: ctx.conversationId,
         title: gate.title,
         ...(gate.description === undefined ? {} : { description: gate.description }),
-        ...(gate.attachments === undefined ? {} : { attachments: gate.attachments }),
+        ...(attachments === undefined ? {} : { attachments }),
         options: gate.options ?? [],
         acceptFreeForm: gate.acceptFreeForm ?? false,
         createdAt: Date.now(),
       };
 
+      const { api, context } = toolInternal(ctx);
       await onceInCommit(api, context, async (tx) => {
         const doc = (await tx.doc(ProposalsDoc)) as { proposals: OpenProposal[] };
         doc.proposals.push({ ...proposal, status: "open" });
@@ -119,16 +148,11 @@ export function gatedAction<TParameters extends TSchema>(
       });
 
       return {
-        output: [
-          {
-            type: "text",
-            text: `Proposal "${proposal.title}" was sent to a human for a decision. The action has NOT been carried out yet — do not report it as done. When the human decides, the decision and the result will arrive as a new message.`,
-          },
-        ],
+        output: `Proposal "${proposal.title}" was sent to a human for a decision. The action has NOT been carried out yet — do not report it as done. When the human decides, the decision and the result will arrive as a new message.`,
       };
     },
   });
-  return markGated(tool, (ctx, decision, args) =>
+  return markGatedTool(tool, (ctx: GatedActionRunContext, decision: GateDecision, args: unknown) =>
     def.run(ctx, decision, args as Static<TParameters>),
   );
 }

@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { ENGINE_TEST_MODELS } from "./model-setup.js";
-import { Engine } from "@reework/core";
+
+import { Engine } from "@reework/core/internal";
 
 const open: Engine[] = [];
 

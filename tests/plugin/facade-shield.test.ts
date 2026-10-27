@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createRegistry } from "@earendil-works/pi-durable";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
-import { CONTEXT, Engine, toExtension } from "@reework/core";
+
+import { CONTEXT, Engine, toExtension } from "@reework/core/internal";
+
 import { ENGINE_TEST_MODELS } from "../durable/model-setup.js";
 import { GreetingPlugin } from "./sample-plugin.js";
 

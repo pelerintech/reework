@@ -1,22 +1,51 @@
 // The TUI's state layer: pure protocol logic under the Ink view, so it can be
 // tested without a terminal.
-import type { ConversationListing, ReeworkClient } from "@reework/client";
-import type { Proposal } from "@reework/types";
+import type { ReeworkClient } from "@reework/client";
+import type { Case, Proposal } from "@reework/types";
 import { decideGateAnswer } from "./answer.ts";
 
 export interface StartState {
-  /** Open proposals across every conversation: what is waiting on the operator. */
+  /** Every case, in inbox order: needing a human first, then open, then waiting, then closed. */
+  readonly cases: readonly Case[];
+  /** Open proposals across every conversation. */
   readonly inbox: readonly Proposal[];
-  readonly conversations: readonly ConversationListing[];
+  /** Whether closed cases are shown (`:closed`). */
+  readonly closed: boolean;
 }
 
-/** What the TUI shows first: the inbox and every conversation. */
-export async function loadStartState(client: ReeworkClient): Promise<StartState> {
-  const [inbox, conversations] = await Promise.all([
-    client.listProposals(),
-    client.listConversations(),
-  ]);
-  return { inbox: [...inbox].sort((a, b) => a.createdAt - b.createdAt), conversations };
+const PRIORITY_RANK: Record<string, number> = { urgent: 0, high: 1, normal: 2, low: 3 };
+
+/** Inbox order: needsHuman first (any status), then open by priority/due, then waiting; closed last. */
+export function orderCases(cases: readonly Case[], showClosed: boolean): Case[] {
+  const rank = (c: Case) =>
+    c.needsHuman ? 0 : c.status === "open" ? 1 : c.status === "waiting" ? 2 : 3;
+  const due = (c: Case) => c.dueAt ?? Number.POSITIVE_INFINITY;
+  return cases
+    .filter((c) => showClosed || c.status !== "closed")
+    .slice()
+    .sort((a, b) => {
+      const ra = rank(a);
+      const rb = rank(b);
+      if (ra !== rb) return ra - rb;
+      if ((PRIORITY_RANK[a.priority] ?? 9) !== (PRIORITY_RANK[b.priority] ?? 9)) {
+        return (PRIORITY_RANK[a.priority] ?? 9) - (PRIORITY_RANK[b.priority] ?? 9);
+      }
+      if (due(a) !== due(b)) return due(a) - due(b);
+      return b.updatedAt - a.updatedAt;
+    });
+}
+
+/** What the TUI shows first: every case in inbox order, and the open proposals. */
+export async function loadStartState(
+  client: ReeworkClient,
+  options: { closed?: boolean } = {},
+): Promise<StartState> {
+  const [cases, inbox] = await Promise.all([client.listCases(), client.listProposals()]);
+  return {
+    cases: orderCases(cases, options.closed ?? false),
+    inbox: [...inbox].sort((a, b) => a.createdAt - b.createdAt),
+    closed: options.closed ?? false,
+  };
 }
 
 export type ProposalAnswer =

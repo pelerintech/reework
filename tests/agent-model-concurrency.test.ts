@@ -89,9 +89,10 @@ describe("endpoint concurrency", () => {
 
   it("does not count the wait for a slot against the stream timeout", async () => {
     const llm = await startFakeLlm();
-    // Each request answers well within the timeout; the third waits ~300 ms for its slot.
-    llm.script(...[1, 2, 3].map((n) => ({ text: `answer ${n}`, delayMs: 150 })));
-    const agent = await agentOn(llm, { maxConcurrentRequests: 1 }, { timeoutMs: 250 });
+    // Each request answers well within the timeout; the third waits ~600 ms for its slot,
+    // which (were it counted) would exceed the 500 ms stream timeout.
+    llm.script(...[1, 2, 3].map((n) => ({ text: `answer ${n}`, delayMs: 300 })));
+    const agent = await agentOn(llm, { maxConcurrentRequests: 1 }, { timeoutMs: 500 });
     const answers = await askAll(agent, 3);
     expect(answers.every((a) => a.message !== undefined)).toBe(true);
     expect(llm.load.peak).toBe(1);

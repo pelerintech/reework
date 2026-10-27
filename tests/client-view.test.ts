@@ -21,7 +21,7 @@ function setupDefinition(gate: Promise<void>): AgentDefinition {
         name: "check",
         description: "Quick check",
         parameters: Type.Object({}),
-        execute: async () => ({ output: [{ type: "text" as const, text: "ok" }] }),
+        execute: async () => "ok",
       }),
       defineTool({
         name: "scan",
@@ -29,7 +29,7 @@ function setupDefinition(gate: Promise<void>): AgentDefinition {
         parameters: Type.Object({ depth: Type.Number() }),
         execute: async () => {
           await gate;
-          return { output: [{ type: "text" as const, text: "clean" }] };
+          return "clean";
         },
       }),
       gatedAction({

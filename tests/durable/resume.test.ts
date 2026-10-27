@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
-import { CONTEXT, Engine } from "@reework/core";
+
+import { CONTEXT, Engine } from "@reework/core/internal";
+
 import { ENGINE_TEST_MODELS } from "./model-setup.js";
 
 const open: Engine[] = [];

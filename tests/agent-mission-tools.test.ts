@@ -19,7 +19,7 @@ const tool = (name: string) =>
     description: `Tool ${name}.`,
     parameters: Type.Object({}, { additionalProperties: false }),
     async execute() {
-      return { output: [{ type: "text", text: name }] };
+      return name;
     },
   });
 
@@ -46,7 +46,10 @@ describe("mission.tools", () => {
   });
 
   it("offers every installed tool when omitted", async () => {
-    expect((await toolsOffered({ role: "r" })).sort()).toEqual(["a", "b"]);
+    const offered = (await toolsOffered({ role: "r" })).sort();
+    expect(offered).toContain("a");
+    expect(offered).toContain("b");
+    expect(offered).toContain("update_case"); // the core case tool is offered by default
   });
 
   it("stops startup naming a tool no plugin provides", async () => {

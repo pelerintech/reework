@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { CONTEXT } from "@reework/core";
+
+import { CONTEXT, engineOf } from "@reework/core/internal";
+
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import {
   authedApp,
@@ -30,7 +32,7 @@ describe("conversations", () => {
     const agent = await startTestAgent(testDefinition());
     const { status, body } = await create(authedApp(agent));
     expect(status).toBe(201);
-    const root = await agent.engine.harness.root(CONTEXT);
+    const root = await engineOf(agent).harness.root(CONTEXT);
     expect(body.id).not.toBe(String(root.id));
   });
 
@@ -69,7 +71,7 @@ describe("conversations", () => {
 
   it("answers 404 for ids that were never created and for the root conversation", async () => {
     const agent = await startTestAgent(testDefinition());
-    const root = await agent.engine.harness.root(CONTEXT);
+    const root = await engineOf(agent).harness.root(CONTEXT);
     for (const id of ["999999", String(root.id)]) {
       expect((await authedApp(agent).request(`/conversations/${id}`)).status).toBe(404);
       const post = await authedApp(agent).request(`/conversations/${id}/messages`, {
@@ -135,18 +137,19 @@ describe("conversations", () => {
   it("lists every created conversation with its key and creation time, but not root", async () => {
     const agent = await startTestAgent(testDefinition());
     const plain = (await create(authedApp(agent))).body;
-    const keyed = (await create(authedApp(agent), { key: "incident-7" })).body;
-    const root = await agent.engine.harness.root(CONTEXT);
+    const keyed = (await create(authedApp(agent), { key: "keyed-7" })).body;
+    const root = await engineOf(agent).harness.root(CONTEXT);
 
     const res = await authedApp(agent).request("/conversations");
     expect(res.status).toBe(200);
-    const { conversations } = (await res.json()) as {
+    const { conversations: cases } = (await res.json()) as {
       conversations: { id: string; key?: string; createdAt: number }[];
     };
-    expect(conversations.map((c) => c.id)).toEqual([plain.id, keyed.id]);
-    expect(conversations[1].key).toBe("incident-7");
-    expect(conversations.every((c) => typeof c.createdAt === "number")).toBe(true);
-    expect(conversations.map((c) => c.id)).not.toContain(String(root.id));
+    // Newest first.
+    expect(cases.map((c) => c.id)).toEqual([plain.id, keyed.id]);
+    expect(cases[1].key).toBe("keyed-7");
+    expect(cases.every((c) => typeof c.createdAt === "number")).toBe(true);
+    expect(cases.map((c) => c.id)).not.toContain(String(root.id));
   });
 
   it("does not submit twice for a repeated requestId, including after a restart", async () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { startTestAgent, testDefinition, untrack } from "./support/agent.ts";
+import { engineOf } from "@reework/core/internal";
 
 describe("startAgent boots an agent from a definition", () => {
   it("serves health from its app", async () => {
@@ -14,6 +15,6 @@ describe("startAgent boots an agent from a definition", () => {
     untrack(running);
     await expect(running.stop()).resolves.toBeUndefined();
     // After stop, the engine is closed (a subsequent commit rejects).
-    await expect(running.engine.commit(() => ({}))).rejects.toBeTruthy();
+    await expect(engineOf(running).commit(() => ({}))).rejects.toBeTruthy();
   });
 });

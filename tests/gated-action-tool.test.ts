@@ -4,18 +4,18 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createRegistry } from "@earendil-works/pi-durable";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { gatedAction, listOpenProposals } from "@reework/core";
+import { ENGINE_TEST_MODELS } from "./durable/model-setup.js";
 import {
   CONTEXT,
   Engine,
   toExtension,
-  gatedAction,
+  toDurableTool,
   installHITL,
-  listOpenProposals,
   openBackgroundTask,
   settleGate,
   waitForOutcome,
-} from "@reework/core";
-import { ENGINE_TEST_MODELS } from "./durable/model-setup.js";
+} from "@reework/core/internal";
 
 const open: Engine[] = [];
 
@@ -79,8 +79,8 @@ describe("a gated-action tool suspends only the gated action", () => {
     open.push(engine);
     const root = await engine.root({
       model: { provider: "faux", modelId: "faux-1" },
-      tools: [applyRollback],
-      modelTools: [applyRollback],
+      tools: [toDurableTool(applyRollback)],
+      modelTools: [toDurableTool(applyRollback)],
     });
     engine.resume();
     const submission = await root.submit({ type: "input", content: "do it" }, CONTEXT);
@@ -141,8 +141,8 @@ describe("a gated-action tool suspends only the gated action", () => {
     open.push(engine);
     const root = await engine.root({
       model: { provider: "faux", modelId: "faux-1" },
-      tools: [applyRollback],
-      modelTools: [applyRollback],
+      tools: [toDurableTool(applyRollback)],
+      modelTools: [toDurableTool(applyRollback)],
     });
     engine.resume();
     await root.submit({ type: "input", content: "do it" }, CONTEXT);

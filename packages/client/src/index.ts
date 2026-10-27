@@ -4,7 +4,10 @@ import WebSocket from "ws";
 import { ROUTES } from "@reework/types";
 import type {
   AgentEvent,
+  Case,
+  CasePatch,
   ConversationCreated,
+  FileRecord,
   GateDecision,
   Message,
   Proposal,
@@ -40,6 +43,8 @@ export interface SubmitOptions {
   readonly requestId?: string;
   /** `steer` takes the input into an active run; `followUp` (default) queues it. */
   readonly mode?: "followUp" | "steer";
+  /** File ids of this conversation to name in the input. */
+  readonly files?: readonly string[];
 }
 
 /** A frame of `watch`: the snapshot first, then batches of live events. */
@@ -117,8 +122,81 @@ export function createClient(options: ClientOptions) {
         .conversations;
     },
 
+    /** Every conversation's case, newest first; `status`/`tag`/`needsHuman`/`stage`/`sort` filter. */
+    async listCases(
+      filter: {
+        status?: string[];
+        tag?: string[];
+        needsHuman?: boolean;
+        stage?: string;
+        sort?: "priority" | "dueAt" | "createdAt" | "updatedAt";
+      } = {},
+    ): Promise<Case[]> {
+      const query: Record<string, string> = {};
+      if (filter.status?.length) query.status = filter.status.join(",");
+      if (filter.tag?.length) query.tag = filter.tag.join(",");
+      if (filter.needsHuman !== undefined) query.needsHuman = String(filter.needsHuman);
+      if (filter.stage) query.stage = filter.stage;
+      if (filter.sort) query.sort = filter.sort;
+      const res = await call<{ cases: Case[] }>("conversations.list", { query });
+      return res.body.cases;
+    },
+
+    async getCase(id: string): Promise<Case> {
+      return (await call<Case>("conversations.getCase", { params: { id } })).body;
+    },
+
+    async updateCase(id: string, patch: CasePatch): Promise<Case> {
+      return (await call<Case>("conversations.updateCase", { params: { id }, body: patch })).body;
+    },
+
     async readConversation(id: string): Promise<ConversationEntries> {
       return (await call<ConversationEntries>("conversations.get", { params: { id } })).body;
+    },
+
+    /** A conversation's files, oldest first. */
+    async listFiles(id: string): Promise<FileRecord[]> {
+      return (await call<{ files: FileRecord[] }>("conversations.files", { params: { id } })).body
+        .files;
+    },
+
+    /** Upload bytes to a conversation; returns the stored record. */
+    async uploadFile(
+      id: string,
+      input: { name: string; mimeType?: string; bytes: Uint8Array },
+    ): Promise<FileRecord> {
+      const res = await fetch(
+        `${baseUrl}${pathOf("conversations.uploadFile", { id })}?name=${encodeURIComponent(input.name)}`,
+        {
+          method: "POST",
+          headers: { ...auth, ...(input.mimeType ? { "content-type": input.mimeType } : {}) },
+          body: input.bytes,
+        },
+      );
+      if (!res.ok) {
+        throw new ProtocolError("conversations.uploadFile", res.status, await res.text());
+      }
+      return (await res.json()) as FileRecord;
+    },
+
+    /** Download a file's bytes; name and type come from the response headers. */
+    async downloadFile(
+      id: string,
+      fid: string,
+    ): Promise<{ bytes: Uint8Array; name?: string; mimeType?: string }> {
+      const res = await fetch(`${baseUrl}${pathOf("conversations.downloadFile", { id, fid })}`, {
+        headers: auth,
+      });
+      if (!res.ok) {
+        throw new ProtocolError("conversations.downloadFile", res.status, await res.text());
+      }
+      const name = /filename="([^"]*)"/.exec(res.headers.get("content-disposition") ?? "")?.[1];
+      const mimeType = res.headers.get("content-type") ?? undefined;
+      return {
+        bytes: new Uint8Array(await res.arrayBuffer()),
+        ...(name ? { name } : {}),
+        ...(mimeType ? { mimeType } : {}),
+      };
     },
 
     async submit(

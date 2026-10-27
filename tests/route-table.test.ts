@@ -48,14 +48,20 @@ describe("the route table", () => {
     const [pa] = await agent.host.listProposals({ conversationId: a.id });
     const [pb] = await agent.host.listProposals({ conversationId: b.id });
     const decision = { selectedOption: null, instruction: "go ahead" };
+    const file = await agent.host.addFile(a.id, { name: "x.txt", bytes: new Uint8Array([1]) });
 
     const fixtures: Record<RouteId, Fixture> = {
       health: {},
       "conversations.create": { body: { key: "k" } },
       "conversations.list": {},
       "conversations.get": { params: { id: a.id } },
+      "conversations.getCase": { params: { id: a.id } },
+      "conversations.updateCase": { params: { id: a.id }, body: { stage: "triage" } },
       "conversations.submit": { params: { id: a.id }, body: { content: "hello" } },
       "conversations.abort": { params: { id: b.id } },
+      "conversations.files": { params: { id: a.id } },
+      "conversations.uploadFile": { params: { id: a.id } },
+      "conversations.downloadFile": { params: { id: a.id, fid: file.id } },
       "conversations.proposals": { params: { id: a.id } },
       "conversations.decide": { params: { id: a.id, pid: pa.id }, body: decision },
       "conversations.watch": "websocket",

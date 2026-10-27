@@ -10,7 +10,7 @@ import {
   openBackgroundTask,
   openGatedAction,
   waitForOutcome,
-} from "@reework/core";
+} from "@reework/core/internal";
 
 const open: Engine[] = [];
 

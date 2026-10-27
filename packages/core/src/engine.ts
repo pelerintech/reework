@@ -50,12 +50,21 @@ export class Engine {
   readonly harness: Harness;
   /** In-memory gate state owned by this engine's registry. */
   readonly hitl: HitlState;
+  /** The registry this engine reads its extensions and tools from. */
+  readonly registry: RegistryReader<ToolRegistration>;
   private readonly models?: Models;
 
-  private constructor(harness: Harness, path: string, hitl: HitlState, models?: Models) {
+  private constructor(
+    harness: Harness,
+    path: string,
+    hitl: HitlState,
+    registry: RegistryReader<ToolRegistration>,
+    models?: Models,
+  ) {
     this.harness = harness;
     this.path = path;
     this.hitl = hitl;
+    this.registry = registry;
     this.models = models;
   }
 
@@ -78,7 +87,7 @@ export class Engine {
       },
       CONTEXT,
     );
-    const engine = new Engine(harness, options.storagePath, hitlState(registry), models);
+    const engine = new Engine(harness, options.storagePath, hitlState(registry), registry, models);
     engine.hitl.storage = engine.storage;
     return engine;
   }

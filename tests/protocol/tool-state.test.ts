@@ -14,7 +14,7 @@ function toolsPlugin(gate: Promise<void>) {
         name: "lookup",
         description: "Look something up",
         parameters: Type.Object({ q: Type.String() }),
-        execute: async () => ({ output: [{ type: "text" as const, text: "found" }] }),
+        execute: async () => "found",
       }),
       defineTool({
         name: "broken",
@@ -30,7 +30,7 @@ function toolsPlugin(gate: Promise<void>) {
         parameters: Type.Object({}),
         execute: async () => {
           await gate;
-          return { output: [{ type: "text" as const, text: "finished" }] };
+          return "finished";
         },
       }),
     ],

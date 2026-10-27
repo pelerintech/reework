@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { defineDoc } from "@earendil-works/pi-durable";
-import { CONTEXT, Engine } from "@reework/core";
+
+import { CONTEXT, Engine } from "@reework/core/internal";
 
 const open: Engine[] = [];
 

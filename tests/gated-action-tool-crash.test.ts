@@ -4,15 +4,15 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createRegistry } from "@earendil-works/pi-durable";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { gatedAction, listOpenProposals } from "@reework/core";
 import {
   CONTEXT,
   Engine,
-  toExtension,
-  gatedAction,
   installHITL,
-  listOpenProposals,
   settleGate,
-} from "@reework/core";
+  toDurableTool,
+  toExtension,
+} from "@reework/core/internal";
 import { ENGINE_TEST_MODELS } from "./durable/model-setup.js";
 
 const open: Engine[] = [];
@@ -100,8 +100,8 @@ describe("a gated action survives crash mid-gate", () => {
     });
     const rootA = await engineA.root({
       model: { provider: "faux", modelId: "faux-1" },
-      tools: [applyA],
-      modelTools: [applyA],
+      tools: [toDurableTool(applyA)],
+      modelTools: [toDurableTool(applyA)],
     });
     engineA.resume();
     const submissionA = await rootA.submit({ type: "input", content: "do it" }, CONTEXT);

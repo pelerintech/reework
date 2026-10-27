@@ -1,8 +1,10 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import { applyFrame, createClient, emptyView } from "@reework/client";
 import type { ConversationView } from "@reework/client";
-import type { Proposal } from "@reework/types";
+import type { Case, Proposal } from "@reework/types";
 import { loadStartState, sendToAgent } from "./state.ts";
 import type { StartState } from "./state.ts";
 import type { LineStyle } from "./format.ts";
@@ -72,7 +74,7 @@ const closedCard: CardState = { index: 0, option: 0, open: -1, offset: 0 };
 export function AgentTui({ baseUrl, token, rows, pollMs = 2000, noticeMs = 6000 }: AgentTuiProps) {
   const client = useMemo(() => createClient({ baseUrl, token }), [baseUrl, token]);
   const height = rows ?? process.stdout.rows ?? 30;
-  const [start, setStart] = useState<StartState>({ inbox: [], conversations: [] });
+  const [start, setStart] = useState<StartState>({ inbox: [], cases: [], closed: false });
   const [attached, setAttached] = useState<string | undefined>();
   const [view, setView] = useState<ConversationView | undefined>();
   const [line, setLine] = useState<LineState>(emptyLine);
@@ -96,13 +98,14 @@ export function AgentTui({ baseUrl, token, rows, pollMs = 2000, noticeMs = 6000 
     );
   }, [client]);
 
+  const closed = start.closed;
   const refresh = useCallback(async () => {
     try {
-      setStart(await loadStartState(client));
+      setStart(await loadStartState(client, { closed }));
     } catch {
       setNotice("cannot reach the agent — retrying");
     }
-  }, [client]);
+  }, [client, closed]);
 
   useEffect(() => {
     void refresh();
@@ -144,7 +147,7 @@ export function AgentTui({ baseUrl, token, rows, pollMs = 2000, noticeMs = 6000 
     };
   }, [client, attached]);
 
-  const conversation = start.conversations.find((c) => c.id === attached);
+  const conversation = start.cases.find((c) => c.id === attached);
   const gates: readonly Proposal[] = attached
     ? (view?.proposals ?? start.inbox.filter((p) => p.conversationId === attached))
     : start.inbox;
@@ -154,13 +157,8 @@ export function AgentTui({ baseUrl, token, rows, pollMs = 2000, noticeMs = 6000 
     if (focus === "proposal" && gates.length === 0) setFocus("input");
   }, [focus, gates.length]);
 
-  /** Inbox entries in display order: proposals, then conversations. */
-  const entries = attached
-    ? []
-    : [
-        ...start.inbox.map((p) => ({ kind: "proposal" as const, proposal: p })),
-        ...start.conversations.map((c) => ({ kind: "conversation" as const, id: c.id })),
-      ];
+  /** Inbox entries: every case in inbox order. */
+  const entries = attached ? [] : start.cases.map((c) => ({ kind: "case" as const, case: c }));
   const chosen = Math.min(selected, Math.max(0, entries.length - 1));
 
   const open = (id: string, proposalId?: string) => {
@@ -177,12 +175,81 @@ export function AgentTui({ baseUrl, token, rows, pollMs = 2000, noticeMs = 6000 
   const run = async (text: string) => {
     if (text === "/help") return setHelp((shown) => !shown);
     if (text === ":i") return setAttached(undefined);
+    if (text === ":closed") return setStart((s) => ({ ...s, closed: !s.closed }));
     const pick = /^:(\d+)$/.exec(text);
     if (pick) {
-      const target = start.conversations[Number(pick[1]) - 1];
-      return target ? open(target.id) : setNotice(`no conversation ${pick[1]}`);
+      const target = start.cases[Number(pick[1]) - 1];
+      return target ? open(target.id) : setNotice(`no case ${pick[1]}`);
     }
-    if (!attached) return setNotice("open a conversation first (↑↓ Enter, or :N)");
+    if (!attached) return setNotice("open a case first (↑↓ Enter, or :N)");
+    if (text === ":files") {
+      try {
+        const files = await client.listFiles(attached);
+        return setNotice(
+          files.length === 0
+            ? "no files in this case"
+            : files
+                .map((f, i) => `${i + 1}. ${f.name} (${f.mimeType}, ${f.size} bytes)`)
+                .join(" · "),
+        );
+      } catch (error) {
+        return setNotice(`failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    const save = /^:save (\d+) (.+)$/.exec(text);
+    if (save) {
+      try {
+        const files = await client.listFiles(attached);
+        const file = files[Number(save[1]) - 1];
+        if (!file) return setNotice(`no file ${save[1]}`);
+        const { bytes } = await client.downloadFile(attached, file.id);
+        const dir = save[2]!;
+        mkdirSync(dir, { recursive: true });
+        const path = join(dir, file.name);
+        writeFileSync(path, bytes);
+        return setNotice(`saved ${path}`);
+      } catch (error) {
+        return setNotice(`failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    const op = /^:(close|wait|reopen)$/.exec(text);
+    if (op) {
+      const status = op[1] === "close" ? "closed" : op[1] === "wait" ? "waiting" : "open";
+      try {
+        await client.updateCase(attached, { status });
+        setNotice(`case ${status}`);
+        void refresh();
+      } catch (error) {
+        setNotice(`failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      return;
+    }
+    const prio = /^:priority (low|normal|high|urgent)$/.exec(text);
+    if (prio) {
+      try {
+        await client.updateCase(attached, { priority: prio[1] as "low" });
+        setNotice(`priority ${prio[1]}`);
+        void refresh();
+      } catch (error) {
+        setNotice(`failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      return;
+    }
+    if (text === ":dismiss") {
+      const target = focusedGate ?? gates[0];
+      if (!target) return setNotice("no open proposal to dismiss");
+      try {
+        await client.decide(
+          { proposalId: target.id, selectedOption: null, instruction: null },
+          { conversationId: target.conversationId },
+        );
+        setNotice("proposal dismissed");
+        void refresh();
+      } catch (error) {
+        setNotice(`failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      return;
+    }
     setHistory((h) => ({ lines: [...h.lines, text], position: h.lines.length + 1 }));
     setScroll(0);
     await sendToAgent(client, attached, text);
@@ -292,9 +359,7 @@ export function AgentTui({ baseUrl, token, rows, pollMs = 2000, noticeMs = 6000 
         if (key.return) {
           const entry = entries[chosen];
           if (!entry) return;
-          return entry.kind === "proposal"
-            ? open(entry.proposal.conversationId, entry.proposal.id)
-            : open(entry.id);
+          return open(entry.case.id);
         }
       }
       if (attached) {
@@ -369,6 +434,11 @@ export function AgentTui({ baseUrl, token, rows, pollMs = 2000, noticeMs = 6000 
       ) : null}
       {attached ? (
         <Box flexDirection="column">
+          {conversation ? (
+            <Text bold color="magenta">
+              {caseLine(conversation)}
+            </Text>
+          ) : null}
           {visible.map((transcriptLine, index) => (
             <Text key={index} color={TRANSCRIPT_COLORS[transcriptLine.style]}>
               {transcriptLine.text}
@@ -377,12 +447,12 @@ export function AgentTui({ baseUrl, token, rows, pollMs = 2000, noticeMs = 6000 
         </Box>
       ) : (
         <Box flexDirection="column">
-          <Text bold>Conversations</Text>
-          {start.conversations.map((c, index) => {
-            const highlighted = chosen === start.inbox.length + index;
+          <Text bold>Cases{start.closed ? " (including closed)" : ""}</Text>
+          {start.cases.map((c, index) => {
+            const highlighted = chosen === index;
             return (
               <Text key={c.id} color={highlighted ? "yellow" : undefined}>
-                {highlighted ? "›" : " "} <Text color="cyan">:{index + 1}</Text> {c.key ?? c.id}
+                {highlighted ? "›" : " "} <Text color="cyan">:{index + 1}</Text> {caseLine(c)}
               </Text>
             );
           })}
@@ -403,6 +473,17 @@ export function AgentTui({ baseUrl, token, rows, pollMs = 2000, noticeMs = 6000 
       <Text dimColor>{footerHint(focus, Boolean(attached), gates.length > 0)}</Text>
     </Box>
   );
+}
+
+function caseLine(c: Case): string {
+  const name = c.title ?? c.key ?? c.id;
+  const bits = [name];
+  if (c.stage) bits.push(c.stage);
+  bits.push(c.priority);
+  if (c.dueAt !== undefined) bits.push(new Date(c.dueAt).toISOString().slice(0, 10));
+  if (c.openProposals > 0)
+    bits.push(`${c.openProposals} proposal${c.openProposals > 1 ? "s" : ""}`);
+  return bits.join(" · ");
 }
 
 function footerHint(focus: Focus, attached: boolean, proposals: boolean): string {

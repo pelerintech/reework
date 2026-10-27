@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createComponentRegistry, installComponents } from "@reework/core";
-import type { Component } from "@reework/core";
+
+import { createComponentRegistry, installComponents } from "@reework/core/internal";
+
+import type { Component } from "@reework/core/internal";
 
 describe("core module registers as a Component", () => {
   it("registers and discovers a core module via the Component base", async () => {

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { createReadTool, definePlugin } from "@reework/core";
+import { codingTools, definePlugin } from "@reework/core";
 import {
   fauxModels,
   startTestAgent,
@@ -17,7 +17,7 @@ function workspaces() {
   const root = mkdtempSync(join(tmpdir(), "reework-ws-"));
   const calls: { conversationId: string; key?: string }[] = [];
   const plugin = definePlugin("workspace", () => ({
-    tools: [createReadTool()],
+    tools: codingTools(),
     workspace: {
       async create(conversation) {
         calls.push(conversation);
@@ -107,7 +107,7 @@ describe("per-conversation workspace", () => {
   });
 
   it("without a provider, coding tools report a missing environment and the run carries on", async () => {
-    const tools = definePlugin("tools", () => ({ tools: [createReadTool()] }));
+    const tools = definePlugin("tools", () => ({ tools: codingTools() }));
     const faux = fauxModels();
     faux.respond(readNote());
     const agent = await startTestAgent(

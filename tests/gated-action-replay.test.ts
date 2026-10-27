@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { FauxResponseStep } from "@earendil-works/pi-ai/providers/faux";
-import { definePlugin, gatedAction, listOpenProposals } from "@reework/core";
+import { definePlugin, defineTool, gatedAction, listOpenProposals } from "@reework/core";
 import type { RunningAgent } from "@reework/core";
+import { engineOf } from "@reework/core/internal";
 import {
   fauxModels,
   startTestAgent,
@@ -31,21 +32,23 @@ describe("a gated-action call interrupted after it opened its gate", () => {
     // Agent 1: the tool commits its proposal, then the process "dies" before the call returns.
     const crashing = definePlugin("gated", () => {
       const tool = act();
-      return {
-        tools: [
-          {
-            ...tool,
-            async execute(args, api, context) {
-              await tool.execute(args, api, context);
-              crashed = true;
-              void first.stop();
-              return new Promise((_resolve, reject) => {
-                context.abortSignal?.addEventListener("abort", () => reject(new Error("crashed")));
-              });
-            },
-          } as typeof tool,
-        ],
-      };
+      const wrapper = defineTool({
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+        replay: tool.replay,
+        async execute(args, ctx) {
+          await tool.execute(args, ctx);
+          crashed = true;
+          void first.stop();
+          return new Promise((_resolve, reject) => {
+            ctx.signal.addEventListener("abort", () => reject(new Error("crashed")), {
+              once: true,
+            });
+          });
+        },
+      });
+      return { tools: [{ ...wrapper }] };
     });
     const faux1 = fauxModels();
     faux1.respond([retryingModel]);
@@ -59,7 +62,7 @@ describe("a gated-action call interrupted after it opened its gate", () => {
     await eventually(() => crashed);
     await eventually(async () => {
       try {
-        await first.engine.commit(() => ({}));
+        await engineOf(first).commit(() => ({}));
         return false;
       } catch {
         return true;
@@ -78,6 +81,6 @@ describe("a gated-action call interrupted after it opened its gate", () => {
     await eventually(async () =>
       JSON.stringify(await second.host.readConversation(id)).includes("waiting for approval"),
     );
-    expect(await listOpenProposals(second.engine)).toHaveLength(1);
+    expect(await listOpenProposals(engineOf(second))).toHaveLength(1);
   }, 20_000);
 });

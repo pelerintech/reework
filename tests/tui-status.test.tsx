@@ -14,7 +14,7 @@ function definition(gate: Promise<void>): AgentDefinition {
         parameters: Type.Object({}),
         execute: async () => {
           await gate;
-          return { output: [{ type: "text" as const, text: "green" }] };
+          return "green";
         },
       }),
       defineTool({

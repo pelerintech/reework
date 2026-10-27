@@ -1,9 +1,21 @@
+import { randomUUID } from "node:crypto";
 import { configure } from "@earendil-works/pi-durable";
 import type { AgentChange, ConversationId, EntryRecord } from "@earendil-works/pi-durable";
-import type { Message, Proposal, TranscriptItem } from "@reework/types";
+import type {
+  Case,
+  CasePatch,
+  CasePriority,
+  FileRecord,
+  Message,
+  Proposal,
+  TranscriptItem,
+} from "@reework/types";
 import type { Engine } from "./engine.ts";
 import { CONTEXT } from "./engine.ts";
 import { ConversationsDoc } from "./protocol/conversations.ts";
+import { FilesDoc } from "./protocol/files.ts";
+import { FileStore } from "./files/store.ts";
+import { applyCasePatch, toCase, validateCasePatch } from "./protocol/cases.ts";
 import { listOpenProposals } from "./protocol/proposals.ts";
 import { settleGate } from "./hitl/gate.ts";
 import type { GateDecision } from "@reework/types";
@@ -18,9 +30,20 @@ export interface ConversationInfo {
   readonly created: boolean;
 }
 
+/** Filters for the case listing. */
+export interface ListCasesFilter {
+  readonly status?: readonly string[];
+  readonly needsHuman?: boolean;
+  readonly tag?: readonly string[];
+  readonly stage?: string;
+  readonly sort?: "priority" | "dueAt" | "createdAt" | "updatedAt";
+}
+
 export interface CreateConversationOptions {
   /** Idempotency key: the same key always returns the same conversation. */
   readonly key?: string;
+  /** Initial case fields; defaults apply where omitted. */
+  readonly case?: { readonly title?: string; readonly priority?: CasePriority };
 }
 
 export interface SubmitOptions {
@@ -28,6 +51,8 @@ export interface SubmitOptions {
   readonly wait?: boolean;
   /** Deduplication key: a repeat returns the original submission and admits nothing. */
   readonly requestId?: string;
+  /** File ids of this conversation to name in the input. */
+  readonly files?: readonly string[];
   /**
    * While a run is active: `followUp` (default) queues the input for after it;
    * `steer` takes it into the current run at its next step.
@@ -56,15 +81,26 @@ export class AgentHost {
   readonly engine: Engine;
   private readonly agent: AgentChange;
   private readonly workspace: WorkspaceProvider | undefined;
+  private readonly fileStore: FileStore;
+  private readonly filesMaxBytes: number;
+  /** In-process listeners for case writes, for surfaces watching the conversation. */
+  private readonly caseListeners = new Set<(c: Case) => void>();
 
-  constructor(engine: Engine, agent: AgentChange, workspace?: WorkspaceProvider) {
+  constructor(
+    engine: Engine,
+    agent: AgentChange,
+    workspace?: WorkspaceProvider,
+    files: { maxBytes?: number } = {},
+  ) {
     this.engine = engine;
     this.agent = agent;
     this.workspace = workspace;
+    this.fileStore = new FileStore(engine.path);
+    this.filesMaxBytes = files.maxBytes ?? 10 * 1024 * 1024;
   }
 
   async createConversation(options: CreateConversationOptions = {}): Promise<ConversationInfo> {
-    const info = await this.recordConversation(options.key);
+    const info = await this.recordConversation(options.key, options.case);
     if (this.workspace) await this.ensureWorkspace(info, this.workspace);
     return info;
   }
@@ -89,7 +125,10 @@ export class AgentHost {
     });
   }
 
-  private async recordConversation(key: string | undefined): Promise<ConversationInfo> {
+  private async recordConversation(
+    key: string | undefined,
+    initialCase?: CreateConversationOptions["case"],
+  ): Promise<ConversationInfo> {
     return this.engine.commit(async (tx) => {
       const doc = (await tx.doc(ConversationsDoc)) as { conversations: ConversationRecord[] };
       const existing = key === undefined ? undefined : doc.conversations.find((c) => c.key === key);
@@ -97,11 +136,159 @@ export class AgentHost {
       const record = await tx.createConversation({ ownership: { kind: "ownerless" } });
       await configure(tx, record.id, this.agent);
       const id = String(record.id);
-      doc.conversations.push(
-        key === undefined ? { id, createdAt: Date.now() } : { id, key, createdAt: Date.now() },
-      );
+      const now = Date.now();
+      doc.conversations.push({
+        id,
+        ...(key === undefined ? {} : { key }),
+        createdAt: now,
+        status: "open",
+        priority: initialCase?.priority ?? "normal",
+        tags: [],
+        ...(initialCase?.title === undefined ? {} : { title: initialCase.title }),
+        caseUpdatedAt: now,
+      });
       return key === undefined ? { id, created: true } : { id, key, created: true };
     });
+  }
+
+  /** Subscribe (in-process) to case writes. Returns an unsubscribe fn. */
+  onCaseUpdated(listener: (c: Case) => void): () => void {
+    this.caseListeners.add(listener);
+    return () => this.caseListeners.delete(listener);
+  }
+
+  private notifyCaseUpdated(c: Case): void {
+    for (const listener of this.caseListeners) listener(c);
+  }
+
+  /** The conversation's case, with derived fields from open proposals. */
+  async getCase(id: string): Promise<Case> {
+    const record = await this.conversationRecord(id);
+    const openProposals = (await this.listProposals({ conversationId: id })).length;
+    return toCase(record, openProposals);
+  }
+
+  /** Every conversation's case, newest first, optionally filtered.
+   *  `status`/`needsHuman`/`tag`/`stage` filter; `sort` orders (`priority`, `dueAt`, `createdAt`,
+   *  `updatedAt`, default newest). */
+  async listCases(filter: ListCasesFilter = {}): Promise<Case[]> {
+    const doc = await this.engine.harness.snapshot(ConversationsDoc, CONTEXT);
+    const open = await listOpenProposals(this.engine);
+    const byConversation = new Map<string, number>();
+    for (const p of open) {
+      byConversation.set(p.conversationId, (byConversation.get(p.conversationId) ?? 0) + 1);
+    }
+    let cases = (doc?.conversations ?? []).map((c) => toCase(c, byConversation.get(c.id) ?? 0));
+    if (filter.status && filter.status.length) {
+      const statuses = new Set(filter.status);
+      cases = cases.filter((c) => statuses.has(c.status));
+    }
+    if (filter.needsHuman !== undefined) {
+      cases = cases.filter((c) => c.needsHuman === filter.needsHuman);
+    }
+    if (filter.tag && filter.tag.length) {
+      cases = cases.filter((c) => filter.tag!.every((t) => c.tags.includes(t)));
+    }
+    if (filter.stage) cases = cases.filter((c) => c.stage === filter.stage);
+    const PRIORITY_ORDER = { urgent: 0, high: 1, normal: 2, low: 3 } as const;
+    return cases.slice().sort((a, b) => {
+      if (filter.sort === "priority") {
+        return PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority] || b.updatedAt - a.updatedAt;
+      }
+      if (filter.sort === "dueAt") {
+        const aDue = a.dueAt ?? Number.POSITIVE_INFINITY;
+        const bDue = b.dueAt ?? Number.POSITIVE_INFINITY;
+        return aDue - bDue || b.updatedAt - a.updatedAt;
+      }
+      if (filter.sort === "createdAt") {
+        return b.createdAt - a.createdAt || Number(b.id) - Number(a.id);
+      }
+      return b.updatedAt - a.updatedAt || Number(b.id) - Number(a.id);
+    });
+  }
+
+  /** Update a conversation's case. An invalid patch is refused naming the field. */
+  async updateCase(id: string, patch: CasePatch): Promise<Case> {
+    const result = validateCasePatch(patch);
+    if (!result.ok) {
+      const [first] = result.errors;
+      throw new Error(`invalid case patch: field "${first!.field}" ${first!.reason}`);
+    }
+    if (patch.status === "closed") {
+      const open = await this.listProposals({ conversationId: id });
+      if (open.length > 0) {
+        throw new Error(
+          `cannot close a case with ${open.length} open proposal(s) (${open.map((p) => p.id).join(", ")})`,
+        );
+      }
+    }
+    await this.engine.commit(async (tx) => {
+      const doc = (await tx.doc(ConversationsDoc)) as { conversations: ConversationRecord[] };
+      const rec = doc.conversations.find((c) => c.id === id);
+      if (!rec) throw new ConversationNotFound(id);
+      applyCasePatch(rec, patch);
+    });
+    const record = await this.conversationRecord(id);
+    const openProposals = (await this.listProposals({ conversationId: id })).length;
+    const updated = toCase(record, openProposals);
+    this.notifyCaseUpdated(updated);
+    return updated;
+  }
+
+  private async conversationRecord(id: string): Promise<ConversationRecord> {
+    const doc = await this.engine.harness.snapshot(ConversationsDoc, CONTEXT);
+    const rec = (doc?.conversations ?? []).find((c) => c.id === id);
+    if (!rec) throw new ConversationNotFound(id);
+    return rec;
+  }
+
+  /** Store a file for a conversation; refuses files over `files.maxBytes`. */
+  async addFile(
+    conversationId: string,
+    input: { name: string; mimeType?: string; bytes: Uint8Array; source?: "upload" | "plugin" },
+  ): Promise<FileRecord> {
+    await this.conversationRecord(conversationId);
+    const name = sanitizeFileName(input.name);
+    if (!name) throw new Error("file name is required");
+    if (input.bytes.length > this.filesMaxBytes) {
+      throw new FileTooLarge(input.bytes.length, this.filesMaxBytes);
+    }
+    const mimeType = input.mimeType || "application/octet-stream";
+    const sha256 = this.fileStore.write(input.bytes);
+    const record: FileRecord = {
+      id: randomUUID(),
+      conversationId,
+      name,
+      mimeType,
+      size: input.bytes.length,
+      sha256,
+      createdAt: Date.now(),
+      source: input.source ?? "upload",
+    };
+    await this.engine.commit(async (tx) => {
+      const doc = (await tx.doc(FilesDoc)) as { files: FileRecord[] };
+      doc.files.push(record);
+    });
+    return record;
+  }
+
+  /** Every file of a conversation, oldest first. */
+  async listFiles(conversationId: string): Promise<FileRecord[]> {
+    const doc = await this.engine.harness.snapshot(FilesDoc, CONTEXT);
+    return (doc?.files ?? []).filter((f) => f.conversationId === conversationId);
+  }
+
+  /** A file's record and bytes; refuses a file of another conversation. */
+  async readFile(
+    conversationId: string,
+    fileId: string,
+  ): Promise<{ record: FileRecord; bytes: Uint8Array }> {
+    const doc = await this.engine.harness.snapshot(FilesDoc, CONTEXT);
+    const record = (doc?.files ?? []).find(
+      (f) => f.id === fileId && f.conversationId === conversationId,
+    );
+    if (!record) throw new FileNotFound(fileId);
+    return { record, bytes: this.fileStore.read(record.sha256) };
   }
 
   async submitInput(
@@ -109,7 +296,33 @@ export class AgentHost {
     content: string,
     options: SubmitOptions = {},
   ): Promise<SubmitResult> {
+    if (options.files?.length) {
+      const lines: string[] = [];
+      for (const fid of options.files) {
+        // Throws FileNotFound when the file is not in this conversation.
+        const { record } = await this.readFile(id, fid);
+        lines.push(
+          `Attached: ${record.name} (${record.mimeType}, ${record.size} bytes, file ${record.id})`,
+        );
+      }
+      content = `${content}\n\n${lines.join("\n")}`;
+    }
     const conversation = await this.conversation(id);
+    // Submitting input reopens a closed case (and clears `closedAt`) and always
+    // moves `updatedAt`; a waiting case stays waiting. (The gate's resume is
+    // separate and never reopens.)
+    await this.engine.commit(async (tx) => {
+      const doc = (await tx.doc(ConversationsDoc)) as { conversations: ConversationRecord[] };
+      const rec = doc.conversations.find((c) => c.id === id);
+      if (rec) {
+        if (rec.status === "closed") {
+          rec.status = "open";
+          delete rec.closedAt;
+        }
+        rec.caseUpdatedAt = Math.max(Date.now(), (rec.caseUpdatedAt ?? rec.createdAt) + 1);
+      }
+    });
+    this.notifyCaseUpdated(await this.getCase(id));
     const { requestId } = options;
     if (requestId !== undefined) {
       const earlier = await this.engine.commit((tx) =>
@@ -165,12 +378,13 @@ export class AgentHost {
     const { entries } = await this.readConversation(id);
     const messages = entries.map(toMessage).filter((m): m is Message => m !== undefined);
     const proposals = await this.listProposals({ conversationId: id });
-    const inspection = await this.engine.harness.inspect(CONTEXT);
-    const running = inspection.submissions.some(
+    const inspect = await this.engine.harness.inspect(CONTEXT);
+    const running = inspect.submissions.some(
       (s) => String(s.conversationId) === id && s.status === "placed",
     );
     const transcript = toTranscript(entries, running);
-    return { conversationId: id, messages, proposals, running, transcript };
+    const caseInfo = await this.getCase(id);
+    return { conversationId: id, messages, proposals, running, transcript, case: caseInfo };
   }
 
   /** Stop the conversation's current run. Background work such as open gates is untouched. */
@@ -219,6 +433,8 @@ export interface ConversationSnapshot {
   readonly running: boolean;
   /** Messages and tool calls so far, oldest first; running calls included. */
   readonly transcript: readonly TranscriptItem[];
+  /** The conversation's case at snapshot time. */
+  readonly case: Case;
 }
 
 export class ConversationNotFound extends Error {
@@ -237,6 +453,32 @@ export class ProposalNotFound extends Error {
     super(`open proposal not found: ${proposalId}`);
     this.proposalId = proposalId;
   }
+}
+
+export class FileNotFound extends Error {
+  readonly fileId: string;
+
+  constructor(fileId: string) {
+    super(`file not found: ${fileId}`);
+    this.fileId = fileId;
+  }
+}
+
+export class FileTooLarge extends Error {
+  readonly size: number;
+  readonly maxBytes: number;
+
+  constructor(size: number, maxBytes: number) {
+    super(`file too large: ${size} bytes (limit ${maxBytes})`);
+    this.size = size;
+    this.maxBytes = maxBytes;
+  }
+}
+
+/** Keep only the final path segment of a name; strip separators. */
+function sanitizeFileName(name: string): string {
+  const parts = name.split(/[\\/]/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1]! : "";
 }
 
 /** The user or assistant message of an entry in the shared `Message` vocabulary. */

@@ -24,25 +24,28 @@ const definition: AgentDefinition = {
 };
 
 describe("TUI navigation", () => {
-  it("opens a listed conversation with the arrows and returns with Esc", async () => {
+  it("opens the top case with Enter and returns to the inbox with Esc", async () => {
     const tui = await startTui(definition);
     await tui.agent.host.createConversation({ key: "alpha" });
     await tui.agent.host.createConversation({ key: "beta" });
     await tui.waitForFrame("beta");
-    await tui.type(KEYS.down, KEYS.enter);
+    await tui.type(KEYS.enter);
     await tui.waitForFrame("conversation beta");
     await tui.type(KEYS.escape);
     await tui.waitForFrame("reework — inbox");
   });
 
-  it("opens an inbox proposal's conversation with the proposal focused", async () => {
+  it("opens a case from the inbox and focuses its open proposal with Tab", async () => {
     const tui = await startTui(definition);
     tui.model.respond([toolCall("approve"), text("asked")]);
     const { id } = await tui.agent.host.createConversation({ key: "refunds" });
     await tui.agent.host.submitInput(id, "refund order 7", { wait: true });
     await tui.waitForFrame("Approve the refund?");
     await tui.type(KEYS.enter);
-    const frame = await tui.waitForFrame("conversation refunds");
+    await tui.waitForFrame("conversation refunds");
+    await tui.waitForFrame("Approve the refund?");
+    await tui.type(KEYS.tab);
+    const frame = await tui.waitForFrame("answer mode");
     expect(frame).toMatch(/answer mode/);
   });
 
@@ -87,7 +90,7 @@ describe("TUI navigation", () => {
   it("clears a notice after a while", async () => {
     const tui = await startTui(definition, { noticeMs: 300 });
     await tui.send(":9");
-    await tui.waitForFrame("no conversation 9");
-    await tui.waitForFrame((f) => !f.includes("no conversation 9"), 2000);
+    await tui.waitForFrame("no case 9");
+    await tui.waitForFrame((f) => !f.includes("no case 9"), 2000);
   });
 });

@@ -43,7 +43,7 @@ export async function agentWithTwoGates() {
 }
 
 describe("the TUI's start state", () => {
-  it("is the inbox of open proposals across conversations, and every conversation", async () => {
+  it("is the case list, surfacing which cases have open proposals", async () => {
     const { client, a, b, quiet } = await agentWithTwoGates();
 
     const state = await loadStartState(client);
@@ -52,8 +52,11 @@ describe("the TUI's start state", () => {
       ["Restart worker?", a.id],
       ["Roll out fix?", b.id],
     ]);
-    expect(state.conversations.map((c) => c.key)).toEqual(["alert-a", "alert-b", "quiet"]);
-    expect(state.conversations.map((c) => c.id)).toContain(quiet.id);
+    const byId = new Map(state.cases.map((c) => [c.id, c]));
+    expect(byId.get(a.id)?.needsHuman).toBe(true);
+    expect(byId.get(b.id)?.needsHuman).toBe(true);
+    expect(byId.get(quiet.id)?.needsHuman).toBe(false);
+    expect(byId.get(quiet.id)?.key).toBe("quiet");
   });
 
   it("answers each inbox proposal in its own conversation, by option or by instruction", async () => {

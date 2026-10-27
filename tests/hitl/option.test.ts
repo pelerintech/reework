@@ -3,7 +3,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createRegistry } from "@earendil-works/pi-durable";
-import { Engine, installHITL, openGatedAction, settleGate, waitForOutcome } from "@reework/core";
+
+import {
+  Engine,
+  installHITL,
+  openGatedAction,
+  settleGate,
+  waitForOutcome,
+} from "@reework/core/internal";
+
 import type { ActionOutcome } from "@reework/core";
 
 const open: Engine[] = [];

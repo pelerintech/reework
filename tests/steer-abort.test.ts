@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Type } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { definePlugin, defineTool, gatedAction, listOpenProposals } from "@reework/core";
+import { engineOf } from "@reework/core/internal";
 import { authHeaders, fauxModels, startTestAgent, testDefinition } from "./support/agent.ts";
 import { eventually } from "./support/wait.ts";
 
@@ -14,14 +15,15 @@ function slowTool() {
     name: "slow",
     description: "Takes a while.",
     parameters: Type.Object({}, { additionalProperties: false }),
-    async execute(_args, _api, context) {
+    async execute(_args, ctx) {
       started = true;
-      const signal = context.abortSignal;
       await new Promise<void>((resolve, reject) => {
-        signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        ctx.signal.addEventListener("abort", () => reject(new Error("aborted")), {
+          once: true,
+        });
         void held.then(resolve);
       });
-      return { output: [{ type: "text", text: "slow done" }] };
+      return "slow done";
     },
   });
   return { tool, release, started: () => started };
@@ -97,7 +99,7 @@ describe("operator control of a running conversation", () => {
 
     const read = JSON.stringify(await agent.host.readConversation(id));
     expect(read).not.toContain("never");
-    const open = await listOpenProposals(agent.engine);
+    const open = await listOpenProposals(engineOf(agent));
     expect(open.map((p) => p.title)).toEqual(["Act?"]);
   });
 });

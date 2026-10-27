@@ -17,6 +17,13 @@ export type MessageContentBlock = MessageTextBlock;
 /** Message content: a plain string or a list of content blocks. */
 export type MessageContent = string | MessageContentBlock[];
 
+/** Spend of one named-model call made by a tool or a gated action. */
+export interface ModelCallUsage {
+  readonly model: string;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+}
+
 /** A single conversation message in the shared reework vocabulary. */
 export interface Message {
   role: MessageRole;
@@ -29,6 +36,63 @@ export function isMessage(value: unknown): value is Message {
   if (typeof value !== "object" || value === null) return false;
   const m = value as Record<string, unknown>;
   return typeof m.role === "string" && (typeof m.content === "string" || Array.isArray(m.content));
+}
+
+// ---------------------------------------------------------------------------
+// Model message (what hooks see; reework's own, so no pi-ai type leaks)
+// ---------------------------------------------------------------------------
+
+/** A text block inside a model message. */
+export interface ModelTextBlock {
+  type: "text";
+  text: string;
+}
+
+/** An image block inside a model message. */
+export interface ModelImageBlock {
+  type: "image";
+  data: string;
+  mimeType: string;
+}
+
+/** A tool call the assistant issued. */
+export interface ModelToolCallBlock {
+  type: "toolCall";
+  id: string;
+  name: string;
+  args: unknown;
+}
+
+/** A block rework does not model; it passes through unchanged so a rewrite never drops it. */
+export interface ModelOtherBlock {
+  type: "other";
+  /** The raw pi-ai block, kept as-is for round-tripping. */
+  raw: unknown;
+}
+
+export type ModelMessageBlock =
+  | ModelTextBlock
+  | ModelImageBlock
+  | ModelToolCallBlock
+  | ModelOtherBlock;
+
+/**
+ * A message as a hook sees it. `user`/`assistant` are text (assistant may also
+ * carry tool-call blocks); `toolResult` carries `toolCallId`, `text` and
+ * `isError`. Content that rework does not model rides through as opaque
+ * `{ type: "other" }` blocks.
+ */
+export interface ModelMessage {
+  role: "user" | "assistant" | "toolResult" | "system";
+  content: string | readonly ModelMessageBlock[];
+  /** Present on a `toolResult` message: the call it answers. */
+  toolCallId?: string;
+  /** Present on a `toolResult` message: the tool that produced it. */
+  toolName?: string;
+  /** Present on a `toolResult` message: when the result was created. */
+  timestamp?: number;
+  /** Present on a `toolResult` message: whether the tool failed. */
+  isError?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -47,6 +111,7 @@ export type AgentEventKind =
   | "compaction_end"
   | "proposal_opened"
   | "proposal_closed"
+  | "case_updated"
   | "snapshot";
 
 export interface AgentEventBase {
@@ -146,6 +211,12 @@ export interface ProposalClosedEvent extends AgentEventBase {
   instruction: string | null;
 }
 
+/** The conversation's case changed. */
+export interface CaseUpdatedEvent extends AgentEventBase {
+  kind: "case_updated";
+  case: Case;
+}
+
 export interface SnapshotEvent extends AgentEventBase {
   kind: "snapshot";
   events: AgentEvent[];
@@ -157,6 +228,8 @@ export interface SnapshotEvent extends AgentEventBase {
   running?: boolean;
   /** Messages and tool calls so far, oldest first; running calls included. */
   transcript?: TranscriptItem[];
+  /** The conversation's case at snapshot time. */
+  case?: Case;
 }
 
 export type AgentEvent =
@@ -171,6 +244,7 @@ export type AgentEvent =
   | CompactionEndEvent
   | ProposalOpenedEvent
   | ProposalClosedEvent
+  | CaseUpdatedEvent
   | SnapshotEvent;
 
 export interface AgentEventStream {
@@ -194,11 +268,17 @@ export interface ProposalOption {
  * Material shown with a proposal so the human can decide without leaving the
  * surface. Surfaces that cannot render a kind show it as `text`.
  */
-export type ProposalAttachment = {
-  kind: "markdown" | "diff" | "text";
-  title?: string;
-  content: string;
-};
+export type ProposalAttachment =
+  | { kind: "markdown" | "diff" | "text"; title?: string; content: string }
+  | {
+      kind: "file";
+      title?: string;
+      fileId: string;
+      /** Denormalized at open time so surfaces can show it without a fetch. */
+      name?: string;
+      mimeType?: string;
+      size?: number;
+    };
 
 export interface Proposal {
   id: string;
@@ -304,6 +384,18 @@ export const ROUTES = {
     auth: "token",
     summary: "A conversation's entries",
   },
+  "conversations.getCase": {
+    method: "GET",
+    path: "/conversations/:id/case",
+    auth: "token",
+    summary: "A conversation's case",
+  },
+  "conversations.updateCase": {
+    method: "POST",
+    path: "/conversations/:id/case",
+    auth: "token",
+    summary: "Update a conversation's case; 400 naming the invalid field",
+  },
   "conversations.submit": {
     method: "POST",
     path: "/conversations/:id/messages",
@@ -346,6 +438,24 @@ export const ROUTES = {
     path: "/proposals/:pid/decisions",
     auth: "token",
     summary: "Decide any open proposal by id",
+  },
+  "conversations.files": {
+    method: "GET",
+    path: "/conversations/:id/files",
+    auth: "token",
+    summary: "A conversation's files",
+  },
+  "conversations.uploadFile": {
+    method: "POST",
+    path: "/conversations/:id/files",
+    auth: "token",
+    summary: "Upload a file; `?name=` names it, Content-Type is its type",
+  },
+  "conversations.downloadFile": {
+    method: "GET",
+    path: "/conversations/:id/files/:fid",
+    auth: "token",
+    summary: "Download a file's bytes as an attachment",
   },
 } as const satisfies Record<string, RouteSpec>;
 
@@ -413,3 +523,55 @@ export function isAgentEvent(value: unknown): value is AgentEvent {
     typeof e.timestamp === "number"
   );
 }
+
+// ---------------------------------------------------------------------------
+// Cases (conversation = case)
+// ---------------------------------------------------------------------------
+
+/** Core-owned lifecycle of a case. `waiting` is set by a writer only. */
+export type CaseStatus = "open" | "waiting" | "closed";
+
+export type CasePriority = "low" | "normal" | "high" | "urgent";
+
+/** A conversation's case: what a human sees and works on. */
+export interface Case {
+  id: string;
+  key?: string;
+  createdAt: number;
+  /** Moves on every case write and on every input submitted to the case. */
+  updatedAt: number;
+  title?: string;
+  summary?: string;
+  status: CaseStatus;
+  /** Agent-defined label; surfaces show but never interpret it. */
+  stage?: string;
+  priority: CasePriority;
+  tags: string[];
+  dueAt?: number;
+  closedAt?: number;
+  /** Derived from open proposals; never stored. */
+  needsHuman: boolean;
+  /** Derived from open proposals; never stored. */
+  openProposals: number;
+}
+
+/** Fields a writer (host, plugin, model tool, HTTP) may change. */
+export type CasePatch = Partial<
+  Pick<Case, "title" | "summary" | "status" | "stage" | "priority" | "tags" | "dueAt">
+>;
+
+// ---------------------------------------------------------------------------
+// Files
+// ---------------------------------------------------------------------------
+
+/** A file stored beside the agent's storage, content-addressed by sha256. */
+export type FileRecord = {
+  id: string;
+  conversationId: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  sha256: string;
+  createdAt: number;
+  source: "upload" | "plugin";
+};

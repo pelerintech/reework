@@ -11,7 +11,7 @@ const plugin = definePlugin("ops", () => ({
       name: "lookup",
       description: "Look it up",
       parameters: Type.Object({}),
-      execute: async () => ({ output: [{ type: "text" as const, text: "found" }] }),
+      execute: async () => "found",
     }),
   ],
 }));

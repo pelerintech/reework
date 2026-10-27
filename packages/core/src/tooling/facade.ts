@@ -1,32 +1,62 @@
-import { defineExtension, defineTool, section } from "@earendil-works/pi-durable";
+import {
+  CompactionTask,
+  defineExtension,
+  defineTool as durableDefineTool,
+  GenerationTask,
+  hook,
+  section as durableSection,
+  ToolTask,
+} from "@earendil-works/pi-durable";
 import type {
-  AnyTask,
   Extension,
+  HookApi,
+  HookRegistration,
+  PromptInput,
   PromptSection,
+  ToolExecutionApi,
+  ToolExecutionResult,
   ToolRegistration,
 } from "@earendil-works/pi-durable";
+import type { AssistantMessage, Message, Usage } from "@earendil-works/pi-ai";
+import type { Models } from "@earendil-works/pi-ai/models";
+import type { Context, JsonValue } from "@earendil-works/chord";
+import type {
+  Case,
+  CasePatch,
+  FileRecord,
+  GateDecision,
+  ModelCallUsage,
+  ModelMessage,
+} from "@reework/types";
+import { Type } from "@earendil-works/pi-ai";
+import type { Static, TSchema } from "@earendil-works/pi-ai";
 import type { AgentHost } from "../host.ts";
-import type { StorageSeam } from "./storage.ts";
+import { markGated } from "../hitl/gate.ts";
+import type { GatedActionRunContext } from "../hitl/gate.ts";
+import { once } from "./once.ts";
+import { createPluginStore } from "./plugin-store.ts";
+import type { StoreBackend } from "./plugin-store.ts";
 
 /**
  * The plugin facade. This is the single point that touches pi-durable's
  * extension API. Plugins import only `@reework/core`, so a pi-durable API change
  * is contained here and the plugins keep working without modification.
+ *
+ * The v06 contract is reework's own: tools, sections, hooks, storage and models
+ * are reework shapes (an opaque `ReeworkTool`, a reework `ToolContext`), and the
+ * pi-durable plumbing (registrations, `StorageSeam`, internals) is confined here.
  */
 
-/** Re-export the tool/section builders so plugins need not import pi-durable. */
-export { defineTool, section };
-
 /** The schema builder for tool parameters, so plugins need not import pi-ai. */
-export { Type } from "@earendil-works/pi-ai";
-export type { Static, TSchema } from "@earendil-works/pi-ai";
+export { Type };
+export type { Static, TSchema };
 
 /**
  * pi-durable's coding tools (read, write, edit, bash), unchanged. They act in the
  * conversation's workspace `cwd`; relative paths resolve there, but nothing
  * confines absolute or `../` paths — wrap them if you need a hard boundary.
  */
-export {
+import {
   CodingTools,
   createBashTool,
   createCodingTools,
@@ -34,6 +64,52 @@ export {
   createReadTool,
   createWriteTool,
 } from "@earendil-works/pi-durable/tools";
+
+export {
+  CodingTools,
+  createBashTool,
+  createCodingTools,
+  createEditTool,
+  createReadTool,
+  createWriteTool,
+};
+
+/**
+ * pi-durable's coding tools (read, write, edit, bash) as reework tools. They
+ * act in the conversation's workspace `cwd`; relative paths resolve there, but
+ * nothing confines absolute or `../` paths — wrap them if you need a hard
+ * boundary.
+ */
+export function codingTools(): ReeworkTool[] {
+  return [createReadTool(), createWriteTool(), createEditTool(), createBashTool()].map(
+    wrapCodingTool,
+  );
+}
+
+function wrapCodingTool(tool: ToolRegistration): ReeworkTool {
+  return {
+    __reworkTool: true,
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.parameters,
+    ...(tool.replay === undefined ? {} : { replay: tool.replay }),
+    async execute(args, ctx) {
+      const { api, context } = toolInternal(ctx);
+      const result = await tool.execute(args, api, context);
+      return durableOutputText(result);
+    },
+  };
+}
+
+/** The model-facing text of a pi-durable tool execution result. */
+function durableOutputText(result: ToolExecutionResult): string {
+  const content = result.output;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((block) => (block.type === "text" ? block.text : "")).join("");
+  }
+  return result.isError ? "error" : "";
+}
 
 /** The conversation a workspace is prepared for. */
 export interface WorkspaceTarget {
@@ -46,37 +122,269 @@ export interface WorkspaceProvider {
   create(conversation: WorkspaceTarget): Promise<{ cwd: string }>;
 }
 
+// ---------------------------------------------------------------------------
+// Models (§3): a plugin calls a named model by name.
+// ---------------------------------------------------------------------------
+
+export interface ModelInputTextBlock {
+  readonly type: "text";
+  readonly text: string;
+}
+
+export interface ModelInputImageBlock {
+  readonly type: "image";
+  readonly data: string;
+  readonly mimeType: string;
+}
+
+export type ModelInputMessageBlock = ModelInputTextBlock | ModelInputImageBlock;
+
+/** A message passed to a named model's `complete` (a text/image slice of the wire). */
+export interface ModelInputMessage {
+  readonly role: "user" | "assistant";
+  readonly content: string | readonly ModelInputMessageBlock[];
+}
+
+export interface ModelCompleteInput {
+  readonly system?: string;
+  readonly messages: string | readonly ModelInputMessage[];
+  readonly maxTokens?: number;
+  readonly signal?: AbortSignal;
+}
+
+export interface ModelCompleteResult {
+  readonly text: string;
+  readonly usage?: { readonly inputTokens?: number; readonly outputTokens?: number };
+}
+
+/** The named models a plugin declared, keyed by name. */
+export interface PluginModels {
+  complete(name: string, input: ModelCompleteInput): Promise<ModelCompleteResult>;
+}
+
+// ---------------------------------------------------------------------------
+// Files (§5): scoped to the calling conversation.
+// ---------------------------------------------------------------------------
+
+export interface CaseFiles {
+  list(): Promise<FileRecord[]>;
+  read(id: string): Promise<{ record: FileRecord; bytes: Uint8Array }>;
+  add(input: { name: string; mimeType: string; bytes: Uint8Array }): Promise<FileRecord>;
+}
+
+// ---------------------------------------------------------------------------
+// Case (§4): the conversation as the human sees it.
+// ---------------------------------------------------------------------------
+
+export interface CaseContext {
+  get(): Promise<Case>;
+  update(patch: CasePatch): Promise<Case>;
+}
+
+// ---------------------------------------------------------------------------
+// Plugin storage (§1 / task 6): the plugin's own store, agent-wide and per case.
+// ---------------------------------------------------------------------------
+
+export interface PluginStoreItem {
+  readonly key: string;
+  readonly value: JsonValue;
+}
+
+export interface PluginStoreScope {
+  get<T extends JsonValue>(key: string): Promise<T | undefined>;
+  set(key: string, value: JsonValue): Promise<void>;
+  update(key: string, change: (value: JsonValue | undefined) => JsonValue): Promise<void>;
+  delete(key: string): Promise<void>;
+  list(prefix: string): Promise<PluginStoreItem[]>;
+}
+
+export interface PluginStore {
+  readonly agent: PluginStoreScope;
+  readonly case: PluginStoreScope;
+}
+
+// ---------------------------------------------------------------------------
+// The reework tool contract.
+// ---------------------------------------------------------------------------
+
+/** What a tool's `execute` returns: text for the model, and whether it failed. */
+export interface ToolResult {
+  readonly output: string;
+  readonly isError?: boolean;
+  readonly details?: JsonValue;
+}
+
+/** The reework context a tool receives. */
+export interface ToolContext {
+  /** The case (conversation) the tool runs in, as a string id. */
+  readonly conversationId: string;
+  /** Aborted when the run is stopped or the agent shuts down. */
+  readonly signal: AbortSignal;
+  /** Append running output; it becomes the result's output when it is omitted. */
+  output(chunk: string): void;
+  /** The named models this plugin declared. */
+  readonly models: PluginModels;
+  /** Files scoped to this conversation. */
+  readonly files: CaseFiles;
+  /** This plugin's storage, agent-wide and per case. */
+  readonly store: PluginStore;
+  /** The conversation's case. */
+  readonly case: CaseContext;
+  /** Run `fn` at most once per tool call and key; a replay returns the value. */
+  once<T extends JsonValue>(key: string, fn: () => Promise<T>): Promise<T>;
+}
+
+/**
+ * A tool defined by reework's contract. Made only by `defineTool`, `gatedAction`
+ * and `codingTools()`; a plugin can no longer hand in a raw pi-durable
+ * registration. Startup rejects any other value (for JavaScript plugins).
+ */
+export interface ReeworkTool<TParameters extends TSchema = TSchema> {
+  readonly __reworkTool: true;
+  readonly name: string;
+  readonly description: string;
+  readonly parameters: TParameters;
+  readonly replay?: "safe" | "unsafe";
+  execute(args: Static<TParameters>, ctx: ToolContext): Promise<string | ToolResult>;
+}
+
+export interface DefineToolInput<TParameters extends TSchema = TSchema> {
+  readonly name: string;
+  readonly description: string;
+  /** Tool argument schema, built with `Type` (re-exported). */
+  readonly parameters: TParameters;
+  /** Whether an interrupted call may rerun on recovery. Default `unsafe`. */
+  readonly replay?: "safe" | "unsafe";
+  execute(args: Static<TParameters>, ctx: ToolContext): Promise<string | ToolResult>;
+}
+
+/** Define a reework tool. */
+/** Guard: is this a reework tool (made by `defineTool`, `gatedAction` or `codingTools()`)? */
+export function isReeworkTool(value: unknown): value is ReeworkTool {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { __reworkTool?: unknown }).__reworkTool === true
+  );
+}
+
+export function defineTool<TParameters extends TSchema>(
+  def: DefineToolInput<TParameters>,
+): ReeworkTool<TParameters> {
+  return {
+    __reworkTool: true,
+    name: def.name,
+    description: def.description,
+    parameters: def.parameters,
+    ...(def.replay === undefined ? {} : { replay: def.replay }),
+    execute: (args, ctx) => def.execute(args, ctx),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Sections.
+// ---------------------------------------------------------------------------
+
+export interface SectionRenderContext {
+  readonly conversationId: string;
+}
+
+/** Define a system-prompt section rendered for each conversation. */
+export function section(
+  key: string,
+  render: (ctx: SectionRenderContext) => string | Promise<string>,
+  opts?: { readonly tag?: boolean },
+): PromptSection {
+  return durableSection(
+    key,
+    (input: PromptInput) => render({ conversationId: String(input.conversationId) }),
+    opts,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Plugin hooks (§2).
+// ---------------------------------------------------------------------------
+
+/** The context a hook receives. */
+export interface PluginHookContext {
+  readonly conversationId: string;
+  /** The named models this plugin declared. */
+  readonly models: PluginModels;
+  /** This plugin's storage, agent-wide and per case. */
+  readonly store: PluginStore;
+  /** Files scoped to this conversation. */
+  readonly files: CaseFiles;
+  /** The conversation's case. */
+  readonly case: CaseContext;
+  /** A value computed once per task attempt and reused on retry. */
+  memo<T extends JsonValue>(name: string, compute: () => Promise<T>): Promise<T>;
+}
+
+/** The hooks a plugin may provide, run in plugin declaration order. */
+export interface PluginHooks {
+  beforeModelRequest?(
+    input: { messages: ModelMessage[] },
+    ctx: PluginHookContext,
+  ): Promise<{ messages: ModelMessage[] } | void>;
+  afterModelResponse?(
+    input: { message: ModelMessage; usage?: unknown },
+    ctx: PluginHookContext,
+  ): Promise<void>;
+  beforeTool?(
+    input: { name: string; args: Record<string, unknown>; callId: string },
+    ctx: PluginHookContext,
+  ): Promise<{ block: string } | { args: Record<string, unknown> } | void>;
+  afterTool?(
+    call: { name: string; args: Record<string, unknown>; callId: string },
+    result: ToolResult,
+    ctx: PluginHookContext,
+  ): Promise<ToolResult | void>;
+  onAnswer?(input: { text: string }, ctx: PluginHookContext): Promise<{ continue: string } | void>;
+  beforeCompaction?(
+    input: { reason: string; messages: ModelMessage[] },
+    ctx: PluginHookContext,
+  ): Promise<{ summary: string } | { decline: true } | void>;
+}
+
+// ---------------------------------------------------------------------------
+// Plugin / built plugin / extension.
+// ---------------------------------------------------------------------------
+
 /** What a plugin's `setup` receives once the engine is open. */
 export interface PluginSetupContext<TConfig> {
   readonly host: AgentHost;
-  readonly storage: StorageSeam;
+  readonly store: PluginStore;
   readonly config: TConfig;
 }
 
 /** What a plugin factory returns for one config. */
 export interface BuiltPlugin<TConfig = unknown> {
-  readonly tools?: readonly ToolRegistration[];
+  readonly tools?: readonly ReeworkTool[];
   readonly sections?: readonly PromptSection[];
-  readonly tasks?: readonly AnyTask[];
+  readonly hooks?: PluginHooks;
   /** Runtime wiring after the engine opens (watchers, channel transports). */
   setup?(ctx: PluginSetupContext<TConfig>): void | Promise<void>;
   /** At most one plugin per agent may provide each conversation's workspace. */
   readonly workspace?: WorkspaceProvider;
 }
 
-/** A plugin: a factory from its config to the tools, sections and tasks it adds. */
+/** A plugin: a factory from its config to the tools, sections and hooks it adds. */
 export interface ReeworkPlugin<TConfig = unknown> {
   readonly kind: "reework.plugin";
   /** Unique plugin name; also the name of its pi-durable extension. */
   readonly name: string;
   build(config: TConfig): BuiltPlugin<TConfig>;
+  /** Named models this plugin may call; each must be declared by the agent. */
+  readonly models?: readonly string[];
 }
 
 export function definePlugin<TConfig = unknown>(
   name: string,
   factory: (config: TConfig) => BuiltPlugin<TConfig>,
+  options: { readonly models?: readonly string[] } = {},
 ): ReeworkPlugin<TConfig> {
-  return { kind: "reework.plugin", name, build: factory };
+  return { kind: "reework.plugin", name, build: factory, models: options.models ?? [] };
 }
 
 export function isReeworkPlugin(value: unknown): value is ReeworkPlugin {
@@ -87,12 +395,664 @@ export function isReeworkPlugin(value: unknown): value is ReeworkPlugin {
   );
 }
 
+/** A gated action's `run`, attached to its tool so the resumed task can dispatch it. */
+const GATED_RUN = Symbol.for("reework.gatedRun");
+
+/** Marks a rework tool as a gated action carrying its `run`. */
+export function markGatedTool<T extends ReeworkTool>(tool: T, run: unknown): T {
+  return Object.assign(tool, { [GATED_RUN]: run });
+}
+
+/** The gated `run` a tool carries, if any. */
+export function gatedRunOf(tool: unknown): unknown {
+  return (tool as { [GATED_RUN]?: unknown })[GATED_RUN];
+}
+
+/**
+ * Convert a reework tool to the pi-durable registration the registry installs.
+ * The reework `ToolContext` is built from the pi-durable execution api; its
+ * `models`, `files`, `store` and `case` members are filled by the host when the
+ * tool runs (later tasks wire them in).
+ */
+export function toDurableTool(
+  tool: ReeworkTool,
+  pluginName = "plugin",
+  bindings?: PluginBindings,
+): ToolRegistration {
+  const durable = durableDefineTool({
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.parameters,
+    replay: tool.replay ?? "unsafe",
+    async execute(args, api: ToolExecutionApi, context: Context): Promise<ToolExecutionResult> {
+      const { ctx, modelCalls } = buildToolContext(api, context, pluginName, bindings);
+      const result = await tool.execute(args, ctx);
+      return toDurableResult(result, modelCalls);
+    },
+  });
+  const run = gatedRunOf(tool);
+  if (run) {
+    return markGated(
+      durable,
+      run as (
+        ctx: GatedActionRunContext,
+        decision: GateDecision,
+        args: JsonValue,
+      ) => Promise<unknown>,
+    );
+  }
+  return durable;
+}
+
+/** The raw pi-durable execution handle a framework tool (a gated action) needs. */
+export interface ToolInternal {
+  readonly api: ToolExecutionApi;
+  readonly context: Context;
+}
+const TOOL_INTERNAL = Symbol.for("reework.toolInternal");
+
+/** The raw execution handle stashed on a tool context, for framework tools only. */
+export function toolInternal(ctx: ToolContext): ToolInternal {
+  return (ctx as unknown as { [TOOL_INTERNAL]: ToolInternal })[TOOL_INTERNAL];
+}
+
+/** Build the rework tool context a tool call receives. */
+/** One named-model call made during a tool or gated-action execution. */
+export interface NamedModelCall {
+  readonly model: string;
+  readonly usage: Usage;
+}
+
+/** The per-call spend a surface sees, derived from `NamedModelCall`s. */
+export function modelUsageOf(calls: readonly NamedModelCall[]): ModelCallUsage[] {
+  return calls.map((call) => ({
+    model: call.model,
+    inputTokens: call.usage.input,
+    outputTokens: call.usage.output,
+  }));
+}
+
+function buildToolContext(
+  api: ToolExecutionApi,
+  context: Context,
+  pluginName: string,
+  bindings?: PluginBindings,
+): { ctx: ToolContext; modelCalls: NamedModelCall[] } {
+  let fallback: AbortSignal | undefined;
+  const signal = context.abortSignal ?? (fallback ??= new AbortController().signal);
+  const backend: StoreBackend = { commit: (fn) => api.commit(fn, context) };
+  const modelCalls: NamedModelCall[] = [];
+  const made: ToolContext = {
+    conversationId: String(api.conversationId),
+    signal,
+    output: (chunk) => api.output(chunk),
+    store: createPluginStore(backend, pluginName, api.conversationId),
+    models: makePluginModels(pluginName, bindings, (call) => modelCalls.push(call)),
+    files: makeFileContext(String(api.conversationId), bindings),
+    case: makeCaseContext(String(api.conversationId), bindings),
+    once: (key, fn) => once(api, key, context, fn),
+  };
+  (made as unknown as { [TOOL_INTERNAL]: ToolInternal })[TOOL_INTERNAL] = { api, context };
+  return { ctx: made, modelCalls };
+}
+
+/** Convert a reework tool result to the pi-durable execution result. */
+function toDurableResult(
+  result: string | ToolResult,
+  modelCalls: readonly NamedModelCall[] = [],
+): ToolExecutionResult {
+  const base: ToolExecutionResult =
+    typeof result === "string"
+      ? { output: [{ type: "text", text: result }] }
+      : {
+          output: [{ type: "text", text: result.output }],
+          ...(result.isError === true ? { isError: true } : {}),
+          ...(result.details === undefined ? {} : { details: result.details }),
+        };
+  if (modelCalls.length === 0) return base;
+  return {
+    ...base,
+    details: attachModelUsage(base.details, modelUsageOf(modelCalls)),
+    usage: sumUsage(modelCalls),
+  };
+}
+
+/** Add the framework's spend record beside a tool's own details. */
+function attachModelUsage(
+  details: JsonValue | undefined,
+  modelUsage: readonly ModelCallUsage[],
+): JsonValue {
+  const framework = { modelUsage: modelUsage as unknown as JsonValue };
+  if (details === undefined) return { reework: framework };
+  if (typeof details === "object" && details !== null && !Array.isArray(details)) {
+    const existing = details as { [key: string]: JsonValue };
+    const current = existing["reework"];
+    const reework =
+      typeof current === "object" && current !== null && !Array.isArray(current)
+        ? { ...(current as { [key: string]: JsonValue }), ...framework }
+        : framework;
+    return { ...existing, reework };
+  }
+  return { value: details, reework: framework };
+}
+
+/** Sum the spend of a tool call's named-model calls into one usage record. */
+function sumUsage(calls: readonly NamedModelCall[]): Usage {
+  const total: Usage = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 0,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  };
+  for (const { usage } of calls) {
+    total.input += usage.input;
+    total.output += usage.output;
+    total.cacheRead += usage.cacheRead;
+    total.cacheWrite += usage.cacheWrite;
+    total.totalTokens += usage.totalTokens;
+    if (usage.cacheWrite1h !== undefined) {
+      total.cacheWrite1h = (total.cacheWrite1h ?? 0) + usage.cacheWrite1h;
+    }
+    if (usage.reasoning !== undefined) {
+      total.reasoning = (total.reasoning ?? 0) + usage.reasoning;
+    }
+    total.cost.input += usage.cost.input;
+    total.cost.output += usage.cost.output;
+    total.cost.cacheRead += usage.cost.cacheRead;
+    total.cost.cacheWrite += usage.cost.cacheWrite;
+    total.cost.total += usage.cost.total;
+  }
+  return total;
+}
+
+// ---------------------------------------------------------------------------
+// Context members, filled in by later tasks (models, files, store, case).
+// ---------------------------------------------------------------------------
+
+/** The plugin-facing context members, with a real store when one is supplied. */
+export function createPluginContextMembers(
+  store?: PluginStore,
+  conversationId?: string,
+  bindings?: PluginBindings,
+  pluginName = "?",
+  collect?: (call: NamedModelCall) => void,
+): Pick<ToolContext, "models" | "files" | "store" | "case"> {
+  return {
+    models: makePluginModels(pluginName, bindings, collect),
+    files: conversationId ? makeFileContext(conversationId, bindings) : stubFiles(),
+    store: store ?? uninitializedStore(),
+    case: conversationId ? makeCaseContext(conversationId, bindings) : stubCase(),
+  };
+}
+
+function uninitializedStore(): PluginStore {
+  return {
+    agent: {
+      get: undefinedGet,
+      set: undefinedGet,
+      update: undefinedGet,
+      delete: undefinedGet,
+      list: undefinedGet,
+    },
+    case: {
+      get: undefinedGet,
+      set: undefinedGet,
+      update: undefinedGet,
+      delete: undefinedGet,
+      list: undefinedGet,
+    },
+  } as PluginStore;
+}
+const undefinedGet = (): never => {
+  throw new Error("plugin storage is not wired in this build");
+};
+
+// Named models and host-backed case/file access: each agent binds its own
+// capabilities object in bootstrap and passes it where contexts are built, so
+// two agents in one process never share them.
+export interface PluginCaseAccess {
+  get(conversationId: string): Promise<Case>;
+  update(conversationId: string, patch: CasePatch): Promise<Case>;
+}
+
+export interface PluginFilesAccess {
+  list(conversationId: string): Promise<FileRecord[]>;
+  read(conversationId: string, id: string): Promise<{ record: FileRecord; bytes: Uint8Array }>;
+  add(
+    conversationId: string,
+    input: { name: string; mimeType: string; bytes: Uint8Array; source: "plugin" },
+  ): Promise<FileRecord>;
+}
+
+/** The capabilities one agent lends its plugins: its model catalog, each
+ *  plugin's lent names, and its host-backed case and file access. */
+export interface PluginBindings {
+  catalog?: Models;
+  readonly lent: ReadonlyMap<string, readonly string[]>;
+  case?: PluginCaseAccess;
+  files?: PluginFilesAccess;
+}
+
+function makePluginModels(
+  pluginName: string,
+  bindings?: PluginBindings,
+  collect?: (call: NamedModelCall) => void,
+): PluginModels {
+  const lent = bindings?.lent.get(pluginName) ?? [];
+  return {
+    complete: async (name, input) => {
+      const catalog = bindings?.catalog;
+      if (!catalog) {
+        throw new Error(`plugin ${pluginName}: named models are not wired in this build`);
+      }
+      if (name === "main") {
+        throw new Error(`plugin ${pluginName}: "main" names the conversation model`);
+      }
+      if (!lent.includes(name)) {
+        throw new Error(`plugin "${pluginName}" did not request model "${name}"`);
+      }
+      const provider = `reework.model.${name}`;
+      const model = catalog.getModels(provider)[0];
+      if (!model) {
+        throw new Error(`plugin ${pluginName}: model "${name}" is not available`);
+      }
+      if (hasImage(input.messages) && !(model.input as readonly string[]).includes("image")) {
+        throw new Error(`model "${name}" does not accept image input`);
+      }
+      const result = await catalog.complete(
+        model,
+        { systemPrompt: input.system, messages: toAiMessages(input.messages) },
+        { signal: input.signal },
+      );
+      if (result.usage) collect?.({ model: name, usage: result.usage });
+      return { text: assistantText(result), usage: mapUsage(result.usage) };
+    },
+  };
+}
+
+function hasImage(messages: string | readonly ModelInputMessage[]): boolean {
+  if (typeof messages === "string") return false;
+  return messages.some(
+    (m) =>
+      typeof m.content !== "string" &&
+      Array.isArray(m.content) &&
+      m.content.some((b) => b.type === "image"),
+  );
+}
+
+function toAiMessages(messages: string | readonly ModelInputMessage[]): Message[] {
+  if (typeof messages === "string") {
+    return [{ role: "user", content: messages }] as Message[];
+  }
+  return messages.map((m) => ({ role: m.role, content: m.content })) as Message[];
+}
+
+function mapUsage(usage: { input: number; output: number }): {
+  inputTokens?: number;
+  outputTokens?: number;
+} {
+  return { inputTokens: usage.input, outputTokens: usage.output };
+}
+
+function assistantText(message: AssistantMessage): string {
+  return message.content.map((b) => (b.type === "text" ? b.text : "")).join("");
+}
+
+// Placeholder implementations for the context members later tasks wire in.
+function stubFiles(): CaseFiles {
+  return {
+    list: () => {
+      throw new Error("plugin files are not wired in this build");
+    },
+    read: () => {
+      throw new Error("plugin files are not wired in this build");
+    },
+    add: () => {
+      throw new Error("plugin files are not wired in this build");
+    },
+  };
+}
+function stubCase(): CaseContext {
+  return {
+    get: () => {
+      throw new Error("plugin case access is not wired in this build");
+    },
+    update: () => {
+      throw new Error("plugin case access is not wired in this build");
+    },
+  };
+}
+
+/** Read a conversation's case without a tool context (for the case section). */
+export function readCase(conversationId: string, bindings?: PluginBindings): Promise<Case> {
+  if (!bindings?.case) {
+    return Promise.reject(new Error("plugin case access is not wired in this build"));
+  }
+  return bindings.case.get(conversationId);
+}
+
+/** Build the rework file context for one conversation. Added files are `plugin` files. */
+function makeFileContext(conversationId: string, bindings?: PluginBindings): CaseFiles {
+  const required = () => {
+    if (!bindings?.files) throw new Error("plugin files are not wired in this build");
+    return bindings.files;
+  };
+  return {
+    list: () => required().list(conversationId),
+    read: (id) => required().read(conversationId, id),
+    add: (input) => required().add(conversationId, { ...input, source: "plugin" }),
+  };
+}
+
+/** Build the rework case context for one conversation. */
+function makeCaseContext(conversationId: string, bindings?: PluginBindings): CaseContext {
+  const required = () => {
+    if (!bindings?.case) throw new Error("plugin case access is not wired in this build");
+    return bindings.case;
+  };
+  return {
+    get: () => required().get(conversationId),
+    update: (patch) => required().update(conversationId, patch),
+  };
+}
 /** Turn a built plugin into the pi-durable extension the registry installs. */
-export function toExtension(name: string, built: BuiltPlugin): Extension {
+export function toExtension(
+  name: string,
+  built: BuiltPlugin,
+  bindings?: PluginBindings,
+): Extension {
+  const tools = (built.tools ?? []).map((tool) => {
+    if (!isReeworkTool(tool)) {
+      const toolName = (tool as { name?: string } | null)?.name ?? "?";
+      throw new Error(
+        `plugin "${name}" has an invalid tool "${toolName}": only defineTool, gatedAction or codingTools() values are accepted`,
+      );
+    }
+    return toDurableTool(tool, name, bindings);
+  });
   return defineExtension({
     name,
-    tools: built.tools ?? [],
+    tools,
     sections: built.sections ?? [],
-    tasks: built.tasks ?? [],
+    ...(built.hooks ? { hooks: buildHooks(name, built.hooks, bindings) } : {}),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Hook conversion: rework hook shape ⇄ pi-durable.
+// ---------------------------------------------------------------------------
+
+function buildHooks(
+  name: string,
+  hooks: PluginHooks,
+  bindings?: PluginBindings,
+): HookRegistration[] {
+  const registration: HookRegistration[] = [];
+  const hookCtx = (api: HookApi, context: Context): PluginHookContext =>
+    makeHookContext(name, api, context, bindings);
+
+  if (hooks.beforeModelRequest || hooks.afterModelResponse || hooks.onAnswer) {
+    registration.push(
+      hook(GenerationTask, {
+        beforeRequest({ messages }, api, context) {
+          const run = async () => {
+            if (!hooks.beforeModelRequest) return undefined;
+            const next = await hooks.beforeModelRequest(
+              { messages: messages.map(reworkMessageFrom) },
+              hookCtx(api, context),
+            );
+            if (!next?.messages) return undefined;
+            return { messages: next.messages.map(reworkMessageTo) };
+          };
+          return run().catch((err) => {
+            logHookError(name, "beforeModelRequest", err);
+            return undefined;
+          });
+        },
+        afterResponse(message, api, context) {
+          if (!hooks.afterModelResponse) return undefined;
+          return Promise.resolve(
+            hooks.afterModelResponse(
+              {
+                message: reworkMessageFrom(message as unknown as Message),
+                usage: usageOf(message),
+              },
+              hookCtx(api, context),
+            ),
+          ).catch((err) => {
+            logHookError(name, "afterModelResponse", err);
+          });
+        },
+        onYield(answer, api, context) {
+          if (!hooks.onAnswer) return undefined;
+          const run = async () => {
+            const next = await hooks.onAnswer!(
+              { text: messageText(answer) },
+              hookCtx(api, context),
+            );
+            if (!next?.continue) return undefined;
+            return { continue: next.continue };
+          };
+          return run().catch((err) => {
+            logHookError(name, "onAnswer", err);
+            return undefined;
+          });
+        },
+      }),
+    );
+  }
+
+  if (hooks.beforeCompaction) {
+    registration.push(
+      hook(CompactionTask, {
+        beforeCompact({ messages, reason }, api, context) {
+          const run = async () => {
+            const next = await hooks.beforeCompaction!(
+              { reason, messages: messages.map(reworkMessageFrom) },
+              hookCtx(api, context),
+            );
+            if (!next) return undefined;
+            if ("summary" in next) return { summary: next.summary };
+            return { decline: true as const };
+          };
+          return run().catch((err) => {
+            logHookError(name, "beforeCompaction", err);
+            return undefined;
+          });
+        },
+      }),
+    );
+  }
+
+  return registration;
+}
+
+/** Build the rework hook context for one plugin. */
+function makeHookContext(
+  name: string,
+  api: HookApi,
+  context: Context,
+  bindings?: PluginBindings,
+): PluginHookContext {
+  return {
+    conversationId: String(api.conversationId),
+    ...createPluginContextMembers(undefined, undefined, bindings),
+    models: makePluginModels(name, bindings),
+    files: makeFileContext(String(api.conversationId), bindings),
+    case: makeCaseContext(String(api.conversationId), bindings),
+    memo: async <T extends JsonValue>(key: string, compute: () => Promise<T>): Promise<T> => {
+      const existing = await api.memo(key, context);
+      if (existing !== undefined) return existing as T;
+      return api.memo(key, await compute(), context) as Promise<T>;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The tool-hook coordinator: one ToolTask hook that runs every plugin's
+// beforeTool in declaration order (a `block` stops the rest) and reports a
+// blocked call to the plugins declared after it via their afterTool, so an
+// audit plugin sees every call either way (pi-durable does not run afterTool
+// for a blocked call).
+// ---------------------------------------------------------------------------
+
+/** Build the single ToolTask hook registration that coordinates all plugins. */
+export function buildToolHooks(
+  plugins: readonly { readonly name: string; readonly hooks: PluginHooks }[],
+  bindings?: PluginBindings,
+): HookRegistration | undefined {
+  const any = plugins.filter(
+    (p) => typeof p.hooks.beforeTool === "function" || typeof p.hooks.afterTool === "function",
+  );
+  if (any.length === 0) return undefined;
+  return hook(ToolTask, {
+    async beforeTool(call, api, context) {
+      let args = call.arguments as Record<string, unknown>;
+      for (let i = 0; i < plugins.length; i++) {
+        const p = plugins[i];
+        if (!p.hooks.beforeTool) continue;
+        const res = await p.hooks.beforeTool(
+          { name: call.name, args, callId: call.id },
+          makeHookContext(p.name, api, context, bindings),
+        );
+        if (res && "block" in res) {
+          // Report the blocked call to the plugins declared after this one.
+          const blocked: ToolResult = { output: res.block, isError: true };
+          for (let j = i + 1; j < plugins.length; j++) {
+            const q = plugins[j];
+            if (q.hooks.afterTool) {
+              await q.hooks.afterTool(
+                { name: call.name, args, callId: call.id },
+                blocked,
+                makeHookContext(q.name, api, context, bindings),
+              );
+            }
+          }
+          return { block: res.block };
+        }
+        if (res && "args" in res) args = res.args;
+      }
+      return { arguments: args as never };
+    },
+    async afterTool(call, result, api, context) {
+      let current = durableResultToRework(result);
+      for (let i = 0; i < plugins.length; i++) {
+        const p = plugins[i];
+        if (!p.hooks.afterTool) continue;
+        const next = await p.hooks.afterTool(
+          { name: call.name, args: call.arguments as Record<string, unknown>, callId: call.id },
+          current,
+          makeHookContext(p.name, api, context, bindings),
+        );
+        if (next) current = next;
+      }
+      return toDurableResult(current);
+    },
+  });
+}
+
+function reworkMessageFrom(message: Message): ModelMessage {
+  const role = message.role;
+  const content = message.content;
+  if (role === "toolResult") {
+    const m: ModelMessage = {
+      role: "toolResult",
+      content: blocksToText(content as readonly { type: string; text?: string }[]),
+    };
+    if (message.toolCallId) m.toolCallId = message.toolCallId;
+    if (message.toolName) m.toolName = message.toolName;
+    if (message.timestamp !== undefined) m.timestamp = message.timestamp;
+    if (message.isError === true) m.isError = true;
+    return m;
+  }
+  if (typeof content === "string") {
+    return { role, content };
+  }
+  if (Array.isArray(content)) {
+    const blocks: ModelMessage["content"] = content.map((block) => {
+      if (block.type === "text") return { type: "text", text: block.text } as const;
+      if (block.type === "image") {
+        return { type: "image", data: block.data, mimeType: block.mimeType } as const;
+      }
+      if (block.type === "toolCall") {
+        return {
+          type: "toolCall",
+          id: block.id,
+          name: block.name,
+          args: block.arguments,
+        } as const;
+      }
+      return { type: "other", raw: block } as const;
+    });
+    return { role, content: blocks };
+  }
+  return { role, content: "" };
+}
+
+function reworkMessageTo(message: ModelMessage): Message {
+  if (message.role === "toolResult") {
+    return {
+      role: "toolResult",
+      toolCallId: message.toolCallId ?? "",
+      toolName: message.toolName ?? "",
+      content: [{ type: "text", text: textOf(message.content) }],
+      isError: message.isError === true,
+      timestamp: message.timestamp ?? 0,
+    } as unknown as Message;
+  }
+  if (typeof message.content === "string") {
+    return { role: message.role, content: message.content } as Message;
+  }
+  const blocks = message.content.map((block) => {
+    if (block.type === "text") return { type: "text", text: block.text };
+    if (block.type === "image")
+      return { type: "image", data: block.data, mimeType: block.mimeType };
+    if (block.type === "toolCall") {
+      return { type: "toolCall", id: block.id, name: block.name, arguments: block.args };
+    }
+    return block.raw;
+  });
+  return { role: message.role, content: blocks } as Message;
+}
+
+function blocksToText(content: readonly { type: string; text?: string }[]): string {
+  return content.map((b) => (b.type === "text" ? (b.text ?? "") : "")).join("");
+}
+
+function textOf(content: string | readonly { type: string; text?: string }[]): string {
+  if (typeof content === "string") return content;
+  return blocksToText(content);
+}
+
+function messageText(message: AssistantMessage): string {
+  const content = message.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((b) => (b.type === "text" ? b.text : "")).join("");
+  }
+  return "";
+}
+
+function usageOf(message: AssistantMessage): unknown {
+  return (message as { usage?: unknown }).usage;
+}
+
+function logHookError(plugin: string, hook: string, err: unknown): void {
+  console.error(`[reework] plugin "${plugin}" ${hook} hook threw:`, err);
+}
+
+function durableResultToRework(result: ToolExecutionResult): ToolResult {
+  const output =
+    typeof result.output === "string"
+      ? result.output
+      : Array.isArray(result.output)
+        ? result.output.map((b) => (b.type === "text" ? b.text : "")).join("")
+        : "";
+  return {
+    output,
+    ...(result.isError === true ? { isError: true } : {}),
+    ...(result.details === undefined ? {} : { details: result.details }),
+  } as ToolResult;
 }
