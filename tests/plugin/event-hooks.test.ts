@@ -246,3 +246,87 @@ describe("event hooks around stopping", () => {
     expect(log).toEqual(["input-done", "stopped"]);
   }, 20_000);
 });
+
+describe("event hooks: onProposalOpened", () => {
+  it("fires on open before the decision, with the full proposal, isolating failures", async () => {
+    const log: string[] = [];
+    const received: Proposal[] = [];
+    const failing = definePlugin("a", () => ({
+      hooks: {
+        async onProposalOpened() {
+          throw new Error("nope");
+        },
+      },
+    }));
+    const recording = definePlugin("b", () => ({
+      hooks: {
+        async onProposalOpened({ proposal }, ctx) {
+          received.push(proposal);
+          log.push(`opened:${proposal.id}:${ctx.conversationId}`);
+        },
+        async onDecision({ proposal }) {
+          log.push(`decided:${proposal.id}`);
+        },
+      },
+    }));
+    const ops = definePlugin("ops", () => ({
+      tools: [
+        gatedAction({
+          name: "deploy",
+          gate: {
+            title: "Deploy?",
+            options: [
+              { id: "a", label: "A" },
+              { id: "b", label: "B" },
+            ],
+          },
+          run: async () => "deployed",
+        }),
+      ],
+    }));
+    const test = await startTestAgent({
+      name: "opened-agent",
+      model: { provider: { baseUrl: "http://127.0.0.1:1/v1", apiKeyEnv: "K" }, modelId: "m1" },
+      plugins: [
+        { plugin: failing, config: {} },
+        { plugin: recording, config: {} },
+        { plugin: ops, config: {} },
+      ],
+      channels: [],
+      mission: { role: "You deploy when asked." },
+    });
+    test.model.respond([toolCall("deploy"), text("asked"), text("done")]);
+    const errors: unknown[][] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args) => errors.push(args));
+    const { id } = await test.agent.host.createConversation();
+    await test.agent.host.submitInput(id, "ship it");
+    const proposal = await waitForProposal(test.agent.host, id);
+    const delivered = await eventually(() => received[0]);
+
+    expect(delivered).toMatchObject({
+      id: proposal.id,
+      title: "Deploy?",
+      options: [
+        { id: "a", label: "A" },
+        { id: "b", label: "B" },
+      ],
+    });
+    expect(delivered.conversationId).toBe(id);
+    const open = await test.agent.host.listProposals({ conversationId: id });
+    expect(open.map((p) => p.id)).toContain(proposal.id);
+
+    await test.agent.host.submitDecision({
+      proposalId: proposal.id,
+      selectedOption: "a",
+      instruction: null,
+    });
+    await eventually(() => log.length >= 2);
+    expect(log).toEqual([`opened:${proposal.id}:${id}`, `decided:${proposal.id}`]);
+    spy.mockRestore();
+
+    const logged = errors.map((args) => args.join(" ")).join("\n");
+    expect(logged).toContain('plugin "a"');
+    expect(logged).toContain("onProposalOpened");
+    await test.dispose();
+  });
+});

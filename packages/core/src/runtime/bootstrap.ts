@@ -31,7 +31,7 @@ import { caseExtension } from "../tooling/case-tool.ts";
 import { createPluginStore } from "../tooling/plugin-store.ts";
 import { createPluginContextMembers } from "../tooling/facade.ts";
 import { EventDispatcher } from "./events.ts";
-import { onProposalSettled } from "../protocol/proposals.ts";
+import { onProposalOpen, onProposalSettled } from "../protocol/proposals.ts";
 
 import { budgetExtension } from "./budget.ts";
 import { lockStorage } from "./lock.ts";
@@ -232,6 +232,9 @@ async function boot(
       }) as PluginEventContext,
     lifecycle.signal,
   );
+  onProposalOpen(engine, (proposal) => {
+    events.enqueue("onProposalOpened", proposal.conversationId, { proposal });
+  });
   onProposalSettled(engine, ({ proposal, decision }) => {
     if (!proposal) return;
     events.enqueue("onDecision", proposal.conversationId, { proposal, decision });

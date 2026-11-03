@@ -370,6 +370,8 @@ export interface PluginHooks {
     input: { conversationId: string; submissionId: string; content: string; from?: Author },
     ctx: PluginEventContext,
   ): Promise<void>;
+  /** A gate proposal opened, before any decision. */
+  onProposalOpened?(input: { proposal: Proposal }, ctx: PluginEventContext): Promise<void>;
   /** A gate proposal was settled by a decision. */
   onDecision?(
     input: { proposal: Proposal; decision: GateDecision },

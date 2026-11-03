@@ -4,7 +4,12 @@
 import type { PluginEventContext, PluginHooks } from "../tooling/facade.ts";
 
 /** The host-level moments plugins can hook. */
-export type EventHookName = "onInput" | "onDecision" | "onCaseClosed" | "onCaseReopened";
+export type EventHookName =
+  | "onInput"
+  | "onProposalOpened"
+  | "onDecision"
+  | "onCaseClosed"
+  | "onCaseReopened";
 
 /** One plugin's event hooks, with its name for logging. */
 export interface EventHookPlugin {
