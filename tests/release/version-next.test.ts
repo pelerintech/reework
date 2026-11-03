@@ -28,6 +28,9 @@ function fixture(): { root: string; manifests: string[]; manifest: string } {
 const versionOf = (path: string): string =>
   (JSON.parse(readFileSync(path, "utf8")) as { version: string }).version;
 
+/** The version without any prerelease part, which `version-next` keeps as its base. */
+const baseOf = (version: string): string => version.split("-")[0] ?? version;
+
 const internalDeps = (path: string): Record<string, string> => {
   const manifest = JSON.parse(readFileSync(path, "utf8")) as {
     dependencies?: Record<string, string>;
@@ -41,10 +44,11 @@ describe("scripts/version-next.mjs", () => {
     const { root, manifests, manifest } = fixture();
     const manifestBefore = readFileSync(manifest, "utf8");
     const realBefore = PACKAGES.map((name) => versionOf(`packages/${name}/package.json`));
+    const bases = realBefore.map(baseOf);
 
     await run("node", ["scripts/version-next.mjs", "7", "--root", root]);
 
-    for (const path of manifests) expect(versionOf(path)).toBe("0.1.0-next.7");
+    manifests.forEach((path, index) => expect(versionOf(path)).toBe(`${bases[index]}-next.7`));
     for (const path of manifests) {
       for (const spec of Object.values(internalDeps(path))) expect(spec).toBe("workspace:*");
     }
@@ -52,7 +56,7 @@ describe("scripts/version-next.mjs", () => {
     expect(PACKAGES.map((name) => versionOf(`packages/${name}/package.json`))).toEqual(realBefore);
 
     await run("node", ["scripts/version-next.mjs", "8", "--root", root]);
-    for (const path of manifests) expect(versionOf(path)).toBe("0.1.0-next.8");
+    manifests.forEach((path, index) => expect(versionOf(path)).toBe(`${bases[index]}-next.8`));
   }, 20_000);
 
   it("refuses an id that is not a plain identifier", async () => {
