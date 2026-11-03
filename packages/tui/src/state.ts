@@ -1,7 +1,7 @@
 // The TUI's state layer: pure protocol logic under the Ink view, so it can be
 // tested without a terminal.
 import type { ReeworkClient } from "@reework/client";
-import type { Case, Proposal } from "@reework/types";
+import type { Author, Case, Proposal } from "@reework/types";
 import { decideGateAnswer } from "./answer.ts";
 
 export interface StartState {
@@ -14,6 +14,12 @@ export interface StartState {
 }
 
 const PRIORITY_RANK: Record<string, number> = { urgent: 0, high: 1, normal: 2, low: 3 };
+
+/** Who the operator is: the TUI speaks as a human, named by `USER` when it is set. */
+export function operatorAuthor(): Author {
+  const name = process.env.USER;
+  return { kind: "human", ...(name ? { name } : {}) };
+}
 
 /** Inbox order: needsHuman first (any status), then open by priority/due, then waiting; closed last. */
 export function orderCases(cases: readonly Case[], showClosed: boolean): Case[] {
@@ -70,6 +76,7 @@ export async function answerProposal(
       proposalId: proposal.id,
       selectedOption: answer.kind === "option" ? answer.optionId : null,
       instruction: answer.kind === "instruction" ? answer.instruction : null,
+      decidedBy: operatorAuthor(),
     },
     { conversationId: proposal.conversationId },
   );
@@ -87,6 +94,6 @@ export async function sendToAgent(
   conversationId: string,
   text: string,
 ): Promise<{ submissionId: string }> {
-  const { submissionId } = await client.submit(conversationId, text);
+  const { submissionId } = await client.submit(conversationId, text, { from: operatorAuthor() });
   return { submissionId };
 }

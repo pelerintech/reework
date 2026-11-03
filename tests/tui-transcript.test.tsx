@@ -56,4 +56,18 @@ describe("the TUI transcript", () => {
     expect(frame.match(/agent:/g)).toHaveLength(1);
     expect(id).toBeTruthy();
   });
+
+  it("sends the operator's message as a human", async () => {
+    const tui = await startTui(definition);
+    const { id } = await tui.agent.host.createConversation({ key: "human" });
+    await tui.waitForFrame("human");
+    await tui.send(":1");
+    tui.model.respond([text("hello back")]);
+    await tui.send("hi there");
+    await tui.waitForFrame("hello back");
+
+    const read = await tui.agent.host.readConversation(id);
+    const entry = read.entries.find((e) => e.kind === "reework.input");
+    expect((entry?.data as { from?: { kind?: string } } | undefined)?.from?.kind).toBe("human");
+  });
 });

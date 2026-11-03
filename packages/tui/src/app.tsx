@@ -5,7 +5,7 @@ import { Box, Text, useInput } from "ink";
 import { applyFrame, createClient, emptyView } from "@reework/client";
 import type { ConversationView } from "@reework/client";
 import type { Case, Proposal } from "@reework/types";
-import { loadStartState, sendToAgent } from "./state.ts";
+import { loadStartState, operatorAuthor, sendToAgent } from "./state.ts";
 import type { StartState } from "./state.ts";
 import type { LineStyle } from "./format.ts";
 import { transcriptLines } from "./transcript.ts";
@@ -240,7 +240,12 @@ export function AgentTui({ baseUrl, token, rows, pollMs = 2000, noticeMs = 6000 
       if (!target) return setNotice("no open proposal to dismiss");
       try {
         await client.decide(
-          { proposalId: target.id, selectedOption: null, instruction: null },
+          {
+            proposalId: target.id,
+            selectedOption: null,
+            instruction: null,
+            decidedBy: operatorAuthor(),
+          },
           { conversationId: target.conversationId },
         );
         setNotice("proposal dismissed");
@@ -264,8 +269,18 @@ export function AgentTui({ baseUrl, token, rows, pollMs = 2000, noticeMs = 6000 
     if (!text && !option) return;
     await client.decide(
       text
-        ? { proposalId: proposal.id, selectedOption: null, instruction: text }
-        : { proposalId: proposal.id, selectedOption: option!.id, instruction: null },
+        ? {
+            proposalId: proposal.id,
+            selectedOption: null,
+            instruction: text,
+            decidedBy: operatorAuthor(),
+          }
+        : {
+            proposalId: proposal.id,
+            selectedOption: option!.id,
+            instruction: null,
+            decidedBy: operatorAuthor(),
+          },
       { conversationId: proposal.conversationId },
     );
     setFocus("input");
