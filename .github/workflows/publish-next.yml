@@ -27,7 +27,8 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          registry-url: https://registry.npmjs.org
+      # No registry-url: it writes an .npmrc with an empty ${NODE_AUTH_TOKEN}
+      # placeholder, which masks the OIDC trusted-publishing exchange.
       - run: pnpm install --frozen-lockfile
       # Trusted publishing (OIDC) needs npm CLI >= 11.5.1.
       - run: npm install -g npm@^11.15.0
