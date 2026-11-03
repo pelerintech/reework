@@ -378,16 +378,26 @@ export interface ReeworkPlugin<TConfig = unknown> {
   readonly kind: "reework.plugin";
   /** Unique plugin name; also the name of its pi-durable extension. */
   readonly name: string;
-  build(config: TConfig): BuiltPlugin<TConfig>;
+  /** Build the plugin for one config; a factory may await discovery first. */
+  build(config: TConfig): BuiltPlugin<TConfig> | Promise<BuiltPlugin<TConfig>>;
   /** Named models this plugin may call; each must be declared by the agent. */
   readonly models?: readonly string[];
 }
 
-export function definePlugin<TConfig = unknown>(
+export function definePlugin<
+  TConfig = unknown,
+  TReturn extends BuiltPlugin<TConfig> | Promise<BuiltPlugin<TConfig>> = BuiltPlugin<TConfig>,
+>(
   name: string,
-  factory: (config: TConfig) => BuiltPlugin<TConfig>,
+  factory: (config: TConfig) => TReturn,
   options: { readonly models?: readonly string[] } = {},
-): ReeworkPlugin<TConfig> {
+): {
+  readonly kind: "reework.plugin";
+  readonly name: string;
+  readonly models: readonly string[];
+  /** The factory's own return type: a built plugin, or a promise of one. */
+  build(config: TConfig): TReturn;
+} {
   return { kind: "reework.plugin", name, build: factory, models: options.models ?? [] };
 }
 

@@ -83,7 +83,9 @@ export async function startAgent(
     await stopPlugins(built);
   };
   try {
-    for (const declared of [...agent.plugins, ...agent.channels]) built.push(buildPlugin(declared));
+    for (const declared of [...agent.plugins, ...agent.channels]) {
+      built.push(await buildPlugin(declared));
+    }
     validateNamedModels(agent, built);
     if (options.models) {
       for (const name of Object.keys(agent.models ?? {})) {
@@ -322,19 +324,20 @@ interface Built {
   readonly models: readonly string[];
 }
 
-function buildPlugin(declared: DeclaredModule): Built {
+function buildPlugin(declared: DeclaredModule): Promise<Built> {
   const name = declared.plugin.name;
-  try {
-    return {
+  return Promise.resolve()
+    .then(() => declared.plugin.build(declared.config))
+    .then((built) => ({
       name,
       config: declared.config,
-      built: declared.plugin.build(declared.config),
+      built,
       models: declared.plugin.models ?? [],
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`plugin "${name}" failed: ${message}`, { cause: error });
-  }
+    }))
+    .catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`plugin "${name}" failed: ${message}`, { cause: error });
+    });
 }
 
 /** Each plugin's required names must be declared; `main` is reserved; a passed-in
