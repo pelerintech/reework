@@ -356,6 +356,8 @@ export interface PluginSetupContext<TConfig> {
   readonly host: AgentHost;
   readonly store: PluginStore;
   readonly config: TConfig;
+  /** Aborted when the agent begins to stop; a loop started here breaks out on it. */
+  readonly signal: AbortSignal;
 }
 
 /** What a plugin factory returns for one config. */

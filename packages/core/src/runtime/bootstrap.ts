@@ -124,6 +124,7 @@ export async function startAgent(
     throw new Error(`only one plugin may provide workspaces; both ${names} do`);
   }
   const unlock = await lockStorage(options.storagePath, options.lock);
+  const lifecycle = new AbortController();
   try {
     return await boot(
       agent,
@@ -136,6 +137,7 @@ export async function startAgent(
       token,
       unlock,
       opened,
+      lifecycle,
     );
   } catch (error) {
     unlock();
@@ -154,6 +156,7 @@ async function boot(
   token: string,
   unlock: () => void,
   opened: Opened,
+  lifecycle: AbortController,
 ): Promise<RunningAgent> {
   const settings: HarnessSettings = {
     stream: { ...DEFAULT_SETTINGS.stream, ...options.settings?.stream },
@@ -191,6 +194,7 @@ async function boot(
         host,
         store: createPluginStore({ commit: (fn) => engine.commit(fn) }, plugin.name),
         config: plugin.config,
+        signal: lifecycle.signal,
       });
     } catch (error) {
       await engine.close();
@@ -232,6 +236,7 @@ async function boot(
       });
       try {
         await Promise.all([...servers].map(closeServer));
+        lifecycle.abort();
         const still = await stillRunning(engine);
         const closed = await Promise.race([engine.close().then(() => "closed" as const), timedOut]);
         if (closed === "timeout") {
