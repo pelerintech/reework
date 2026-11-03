@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Pack-smoke: build and pack the four publishable packages, install the tarballs
 // into a clean consumer project with npm, type-check an agent module against
-// them, start it with `npx reework start`, and talk to it with @reework/client.
-// Proves the tarballs work the way a real project consumes them (v04 does).
+// them, start it with the installed `reework` CLI, and talk to it with
+// @reework/client. Proves the tarballs work the way a real project consumes them (v04 does).
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -198,9 +198,19 @@ run("npx", ["tsc", "-p", "."], consumer);
 run("node", ["--test", "agent.test.ts"], consumer);
 
 const env = { ...process.env, SMOKE_LLM_KEY: "k", REEWORK_API_TOKEN: "smoke-token" };
+// Run the installed CLI directly, not through `npx`: npx is a wrapper process, so a
+// SIGTERM reaches the wrapper (exit `null`) instead of the agent on Linux.
 const agent = spawn(
-  "npx",
-  ["reework", "start", "agent.ts", "--port", "0", "--storage", "smoke.sqlite"],
+  process.execPath,
+  [
+    join(consumer, "node_modules/@reework/core/dist/cli.js"),
+    "start",
+    "agent.ts",
+    "--port",
+    "0",
+    "--storage",
+    "smoke.sqlite",
+  ],
   {
     cwd: consumer,
     env,

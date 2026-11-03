@@ -10,6 +10,15 @@ import { describe, expect, it } from "vitest";
 const run = promisify(execFile);
 const PACKAGES = ["types", "client", "core", "tui"];
 
+/** Fixed base versions for the fixture: a plain base, a higher base, and a prerelease
+ *  base (to prove re-stamping replaces the prerelease part instead of appending). */
+const FIXTURE_VERSIONS: Record<string, string> = {
+  types: "0.1.0",
+  client: "1.2.3",
+  core: "0.1.0-next.6",
+  tui: "2.0.0",
+};
+
 /** A temp workspace shaped like the repo: each package manifest plus the release manifest. */
 function fixture(): { root: string; manifests: string[]; manifest: string } {
   const root = mkdtempSync(join(tmpdir(), "reework-next-"));
@@ -17,7 +26,14 @@ function fixture(): { root: string; manifests: string[]; manifest: string } {
     const dir = join(root, "packages", name);
     mkdirSync(dir, { recursive: true });
     const target = join(dir, "package.json");
-    writeFileSync(target, readFileSync(`packages/${name}/package.json`));
+    const real = JSON.parse(readFileSync(`packages/${name}/package.json`, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    writeFileSync(
+      target,
+      JSON.stringify({ ...real, version: FIXTURE_VERSIONS[name] }, null, 2) + "\n",
+    );
     return target;
   });
   const manifest = join(root, ".release-please-manifest.json");
@@ -28,6 +44,8 @@ function fixture(): { root: string; manifests: string[]; manifest: string } {
 const versionOf = (path: string): string =>
   (JSON.parse(readFileSync(path, "utf8")) as { version: string }).version;
 
+/** The version without any prerelease part, which `version-next` keeps as its base. */
+const baseOf = (version: string): string => version.split("-")[0] ?? version;
 const internalDeps = (path: string): Record<string, string> => {
   const manifest = JSON.parse(readFileSync(path, "utf8")) as {
     dependencies?: Record<string, string>;
@@ -41,10 +59,13 @@ describe("scripts/version-next.mjs", () => {
     const { root, manifests, manifest } = fixture();
     const manifestBefore = readFileSync(manifest, "utf8");
     const realBefore = PACKAGES.map((name) => versionOf(`packages/${name}/package.json`));
+    const bases = PACKAGES.map((name) => baseOf(FIXTURE_VERSIONS[name]!));
 
     await run("node", ["scripts/version-next.mjs", "7", "--root", root]);
 
-    for (const path of manifests) expect(versionOf(path)).toBe("0.1.0-next.7");
+    manifests.forEach((path, index) => expect(versionOf(path)).toBe(`${bases[index]}-next.7`));
+    // The prerelease base is replaced, not appended: 0.1.0-next.6 → 0.1.0-next.7.
+    expect(versionOf(manifests[2]!)).toBe("0.1.0-next.7");
     for (const path of manifests) {
       for (const spec of Object.values(internalDeps(path))) expect(spec).toBe("workspace:*");
     }
@@ -52,7 +73,7 @@ describe("scripts/version-next.mjs", () => {
     expect(PACKAGES.map((name) => versionOf(`packages/${name}/package.json`))).toEqual(realBefore);
 
     await run("node", ["scripts/version-next.mjs", "8", "--root", root]);
-    for (const path of manifests) expect(versionOf(path)).toBe("0.1.0-next.8");
+    manifests.forEach((path, index) => expect(versionOf(path)).toBe(`${bases[index]}-next.8`));
   }, 20_000);
 
   it("refuses an id that is not a plain identifier", async () => {

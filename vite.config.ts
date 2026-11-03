@@ -7,6 +7,8 @@ const conditions = ["reework-source", ...defaultServerConditions];
 export default defineConfig({
   resolve: { conditions },
   ssr: { resolve: { conditions } },
+  // release-please writes CHANGELOG.md files; generated output is not reformatted by hand.
+  fmt: { ignorePatterns: ["**/CHANGELOG.md"] },
   check: {
     fmt: true,
     lint: true,
