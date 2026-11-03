@@ -367,6 +367,8 @@ export interface BuiltPlugin<TConfig = unknown> {
   readonly hooks?: PluginHooks;
   /** Runtime wiring after the engine opens (watchers, channel transports). */
   setup?(ctx: PluginSetupContext<TConfig>): void | Promise<void>;
+  /** Release what the factory or `setup` opened; runs once, on stop, before the engine closes. */
+  stop?(): void | Promise<void>;
   /** At most one plugin per agent may provide each conversation's workspace. */
   readonly workspace?: WorkspaceProvider;
 }

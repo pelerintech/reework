@@ -237,6 +237,7 @@ async function boot(
       try {
         await Promise.all([...servers].map(closeServer));
         lifecycle.abort();
+        await stopPlugins(built);
         const still = await stillRunning(engine);
         const closed = await Promise.race([engine.close().then(() => "closed" as const), timedOut]);
         if (closed === "timeout") {
@@ -254,6 +255,17 @@ async function boot(
 }
 
 const DEFAULT_STOP_TIMEOUT_MS = 8_000;
+
+/** Run every built plugin's `stop` in reverse declaration order; a failure is logged and skipped. */
+async function stopPlugins(built: readonly Built[]): Promise<void> {
+  for (const plugin of [...built].reverse()) {
+    try {
+      await plugin.built.stop?.();
+    } catch (error) {
+      console.error(`[reework] plugin "${plugin.name}" stop failed:`, error);
+    }
+  }
+}
 
 /** The running tasks, for a stop that times out: `<task kind> (conversation <id>)`. */
 async function stillRunning(engine: Engine): Promise<string> {

@@ -1,9 +1,10 @@
 // Plugin lifecycle: a plugin starts background work in `setup` and the agent's
 // stop aborts its signal, so the work ends instead of outliving `agent.stop()`.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { definePlugin } from "@reework/core";
-import type { AgentDefinition } from "@reework/core";
+import type { AgentDefinition, PluginStore } from "@reework/core";
 import { startTestAgent, waitFor } from "@reework/core/testing";
+import { startTestAgent as startTracked, tmpStorage, untrack } from "../support/agent.ts";
 
 function definition(plugins: AgentDefinition["plugins"]): AgentDefinition {
   return {
@@ -37,5 +38,54 @@ describe("plugin lifecycle: setup signal", () => {
     const atStop = ticks;
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(ticks).toBe(atStop);
+  });
+});
+
+describe("plugin lifecycle: stop", () => {
+  it("stops plugins in reverse order before the engine closes, isolating failures", async () => {
+    const order: string[] = [];
+    let stoppedStore: PluginStore | undefined;
+    const stopPlugin = (name: string, fail = false) =>
+      definePlugin(name, () => ({
+        setup(ctx) {
+          if (name === "c") stoppedStore = ctx.store;
+        },
+        async stop() {
+          if (name === "c") await stoppedStore!.agent.set("stopped", true);
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          order.push(name);
+          if (fail) throw new Error("boom");
+        },
+      }));
+    const plugins = [
+      { plugin: stopPlugin("a"), config: {} },
+      { plugin: stopPlugin("b", true), config: {} },
+      { plugin: stopPlugin("c"), config: {} },
+    ];
+    const errors: unknown[][] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args) => errors.push(args));
+
+    const storagePath = tmpStorage();
+    const first = await startTracked(definition(plugins), { storagePath });
+    await first.stop();
+    untrack(first);
+
+    expect(order).toEqual(["c", "b", "a"]);
+    expect(errors.map((args) => args.join(" ")).join("\n")).toContain('plugin "b" stop failed');
+
+    let persisted: unknown;
+    const reader = definePlugin("c", () => ({
+      async setup(ctx) {
+        persisted = await ctx.store.agent.get("stopped");
+      },
+    }));
+    const second = await startTracked(definition([{ plugin: reader, config: {} }]), {
+      storagePath,
+    });
+    await second.stop();
+    untrack(second);
+    spy.mockRestore();
+
+    expect(persisted).toBe(true);
   });
 });
