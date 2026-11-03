@@ -88,4 +88,23 @@ describe("plugin lifecycle: stop", () => {
 
     expect(persisted).toBe(true);
   });
+
+  it("bounds a hanging plugin stop with the stop timeout and releases the lock", async () => {
+    const hang = definePlugin("slow", () => ({
+      stop() {
+        return new Promise<void>(() => {});
+      },
+    }));
+    const storagePath = tmpStorage();
+    const agent = await startTracked(definition([{ plugin: hang, config: {} }]), { storagePath });
+
+    const begun = Date.now();
+    await expect(agent.stop({ timeoutMs: 200 })).rejects.toThrow(/plugin "slow" still stopping/);
+    expect(Date.now() - begun).toBeLessThan(1_000);
+    untrack(agent);
+
+    const next = await startTracked(definition([]), { storagePath });
+    await next.stop();
+    untrack(next);
+  }, 10_000);
 });

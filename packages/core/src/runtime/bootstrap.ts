@@ -237,7 +237,17 @@ async function boot(
       try {
         await Promise.all([...servers].map(closeServer));
         lifecycle.abort();
-        await stopPlugins(built);
+        // Steps 3-5 (drain, plugin stops, engine close) share one deadline.
+        let stopping: string | undefined;
+        const stops = stopPlugins(built, (name) => (stopping = name));
+        const stopped = await Promise.race([stops.then(() => "stopped" as const), timedOut]);
+        if (stopped === "timeout") {
+          void engine.close().catch(() => {});
+          const name = stopping ?? [...built].reverse()[0]?.name ?? "unknown";
+          throw new Error(
+            `agent did not stop within ${timeoutMs} ms; plugin "${name}" still stopping`,
+          );
+        }
         const still = await stillRunning(engine);
         const closed = await Promise.race([engine.close().then(() => "closed" as const), timedOut]);
         if (closed === "timeout") {
@@ -257,8 +267,12 @@ async function boot(
 const DEFAULT_STOP_TIMEOUT_MS = 8_000;
 
 /** Run every built plugin's `stop` in reverse declaration order; a failure is logged and skipped. */
-async function stopPlugins(built: readonly Built[]): Promise<void> {
+async function stopPlugins(
+  built: readonly Built[],
+  onStart?: (name: string) => void,
+): Promise<void> {
   for (const plugin of [...built].reverse()) {
+    onStart?.(plugin.name);
     try {
       await plugin.built.stop?.();
     } catch (error) {
