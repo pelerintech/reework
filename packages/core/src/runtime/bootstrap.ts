@@ -69,63 +69,74 @@ export async function startAgent(
   const token = options.auth?.token ?? process.env[tokenEnv];
   if (!token) throw new Error(`API token variable ${tokenEnv} is not set`);
   const models = options.models ?? customModels(agent.model, agent.models);
-  const built = [...agent.plugins, ...agent.channels].map(buildPlugin);
-  validateNamedModels(agent, built);
-  if (options.models) {
-    for (const name of Object.keys(agent.models ?? {})) {
-      if (options.models.getModels(`reework.model.${name}`).length === 0) {
-        throw new Error(`model catalog is missing named model "${name}"`);
+  const lifecycle = new AbortController();
+  const built: Built[] = [];
+  const opened: Opened = {};
+  let unlock: (() => void) | undefined;
+  let stopped = false;
+  // Any failure after a plugin was built aborts its signal and stops it, so a
+  // factory's connection or a setup's loop does not leak.
+  const stopBuilt = async () => {
+    if (stopped) return;
+    stopped = true;
+    lifecycle.abort();
+    await stopPlugins(built);
+  };
+  try {
+    for (const declared of [...agent.plugins, ...agent.channels]) built.push(buildPlugin(declared));
+    validateNamedModels(agent, built);
+    if (options.models) {
+      for (const name of Object.keys(agent.models ?? {})) {
+        if (options.models.getModels(`reework.model.${name}`).length === 0) {
+          throw new Error(`model catalog is missing named model "${name}"`);
+        }
       }
     }
-  }
-  // One capabilities object per agent: its model catalog and each plugin's lent
-  // names, plus the host-backed case/file access filled in once the host exists.
-  const bindings: PluginBindings = {
-    catalog: models,
-    lent: new Map(built.map((p) => [p.name, p.models])),
-  };
+    // One capabilities object per agent: its model catalog and each plugin's lent
+    // names, plus the host-backed case/file access filled in once the host exists.
+    const bindings: PluginBindings = {
+      catalog: models,
+      lent: new Map(built.map((p) => [p.name, p.models])),
+    };
 
-  const registry = createRegistry();
-  installHITL(registry, bindings);
-  registry.install(
-    defineExtension({
-      name: "reework.mission",
-      sections: [section("mission", () => agent.mission.role, { tag: false })],
-    }),
-  );
-  const caseModelTool = agent.cases?.modelTool;
-  if (caseModelTool !== false) {
-    registry.install(caseExtension(caseModelTool?.fields, bindings));
-  }
-  for (const plugin of built) registry.install(toExtension(plugin.name, plugin.built, bindings));
-  const toolHooks = buildToolHooks(
-    built
-      .map((p) => ({ name: p.name, hooks: p.built.hooks }))
-      .filter((p): p is { name: string; hooks: PluginHooks } => p.hooks !== undefined),
-    bindings,
-  );
-  if (toolHooks)
-    registry.install(defineExtension({ name: "reework.pluginHooks", hooks: [toolHooks] }));
-  // The engine and host exist only once boot opens them (before any run resumes).
-  const opened: Opened = {};
-  const budget = budgetExtension(
-    agent.limits,
-    () => opened.engine!,
-    (id) => opened.host!.abort(id),
-  );
-  if (budget) registry.install(budget);
+    const registry = createRegistry();
+    installHITL(registry, bindings);
+    registry.install(
+      defineExtension({
+        name: "reework.mission",
+        sections: [section("mission", () => agent.mission.role, { tag: false })],
+      }),
+    );
+    const caseModelTool = agent.cases?.modelTool;
+    if (caseModelTool !== false) {
+      registry.install(caseExtension(caseModelTool?.fields, bindings));
+    }
+    for (const plugin of built) registry.install(toExtension(plugin.name, plugin.built, bindings));
+    const toolHooks = buildToolHooks(
+      built
+        .map((p) => ({ name: p.name, hooks: p.built.hooks }))
+        .filter((p): p is { name: string; hooks: PluginHooks } => p.hooks !== undefined),
+      bindings,
+    );
+    if (toolHooks)
+      registry.install(defineExtension({ name: "reework.pluginHooks", hooks: [toolHooks] }));
+    // The engine and host exist only once boot opens them (before any run resumes).
+    const budget = budgetExtension(
+      agent.limits,
+      () => opened.engine!,
+      (id) => opened.host!.abort(id),
+    );
+    if (budget) registry.install(budget);
 
-  const modelTools = agent.mission.tools
-    ? selectTools(built, agent.mission.tools, bindings)
-    : undefined;
-  const providers = built.filter((plugin) => plugin.built.workspace);
-  if (providers.length > 1) {
-    const names = providers.map((p) => `"${p.name}"`).join(" and ");
-    throw new Error(`only one plugin may provide workspaces; both ${names} do`);
-  }
-  const unlock = await lockStorage(options.storagePath, options.lock);
-  const lifecycle = new AbortController();
-  try {
+    const modelTools = agent.mission.tools
+      ? selectTools(built, agent.mission.tools, bindings)
+      : undefined;
+    const providers = built.filter((plugin) => plugin.built.workspace);
+    if (providers.length > 1) {
+      const names = providers.map((p) => `"${p.name}"`).join(" and ");
+      throw new Error(`only one plugin may provide workspaces; both ${names} do`);
+    }
+    unlock = await lockStorage(options.storagePath, options.lock);
     return await boot(
       agent,
       options,
@@ -140,7 +151,9 @@ export async function startAgent(
       lifecycle,
     );
   } catch (error) {
-    unlock();
+    unlock?.();
+    await stopBuilt();
+    if (opened.engine) await opened.engine.close().catch(() => {});
     throw error;
   }
 }
@@ -197,7 +210,6 @@ async function boot(
         signal: lifecycle.signal,
       });
     } catch (error) {
-      await engine.close();
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`plugin "${plugin.name}" setup failed: ${message}`, { cause: error });
     }
