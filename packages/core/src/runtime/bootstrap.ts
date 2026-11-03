@@ -296,6 +296,16 @@ async function boot(
         await Promise.all([...servers].map(closeServer));
         lifecycle.abort();
         // Steps 3-5 (drain, plugin stops, engine close) share one deadline.
+        const drained = await Promise.race([
+          events.drain().then(() => "drained" as const),
+          timedOut,
+        ]);
+        if (drained === "timeout") {
+          void engine.close().catch(() => {});
+          throw new Error(
+            `agent did not stop within ${timeoutMs} ms; still running: queued event hooks`,
+          );
+        }
         let stopping: string | undefined;
         const stops = stopPlugins(built, (name) => (stopping = name));
         const stopped = await Promise.race([stops.then(() => "stopped" as const), timedOut]);
