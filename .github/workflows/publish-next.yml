@@ -29,14 +29,22 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
+      # Trusted publishing (OIDC) needs npm CLI >= 11.5.1.
+      - run: npm install -g npm@^11.15.0
       - run: pnpm exec vp check
       - run: pnpm exec vp test
       - run: node scripts/version-next.mjs "${{ inputs.id || github.run_number }}"
       - run: pnpm build
       - run: pnpm check:packages
       - run: pnpm smoke:pack
-      # Publishes every package to `next`, in dependency order; `latest` is never touched.
-      - run: pnpm -r --filter "./packages/*" publish --tag next --access public --no-git-checks
+      # Publishes each package's packed tarball to `next` in dependency order. pnpm rewrites
+      # `workspace:*` at pack time; npm CLI authenticates with the workflow's OIDC identity
+      # (no token) and generates provenance automatically. `latest` is never touched.
+      - run: |
+          for pkg in types client core tui; do
+            version=$(node -p "require('./packages/$pkg/package.json').version")
+            pnpm --dir "packages/$pkg" pack --pack-destination "$RUNNER_TEMP/packs"
+            npm publish "$RUNNER_TEMP/packs/reework-$pkg-$version.tgz" --tag next --access public
+          done
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: "true"
