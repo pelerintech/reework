@@ -35,6 +35,37 @@ factory runs once at startup; a throw stops startup naming the plugin. `mission.
 which installed tools the model is offered. A plugin may also declare the named models it calls:
 `definePlugin("tickets", factory, { models: ["fast"] })`.
 
+## Async factories
+
+A factory may be **async**: startup awaits each factory in declaration order before the engine opens, so a
+plugin can connect to a service and discover its tools first. A rejection stops startup with
+`plugin "<name>" failed: <message>` and stops the plugins already built. Everything a factory returns is known
+before the registry is built, so every tool is registered when the engine opens; there is no dynamic tool
+registration after that. A hanging factory is not bounded by core (as a hanging `setup` is not).
+
+```ts
+import { Type, definePlugin, defineTool } from "@reework/core";
+
+async function discover(baseUrl: string): Promise<{ name: string; description: string }[]> {
+  const response = await fetch(`${baseUrl}/tools`);
+  return (await response.json()) as { name: string; description: string }[];
+}
+
+export const remote = definePlugin("remote", async (config: { baseUrl: string }) => {
+  const discovered = await discover(config.baseUrl);
+  return {
+    tools: discovered.map((tool) =>
+      defineTool({
+        name: tool.name,
+        description: tool.description,
+        parameters: Type.Object({}),
+        execute: async () => `called ${tool.name}`,
+      }),
+    ),
+  };
+});
+```
+
 ## Tool context
 
 A tool's `execute(args, ctx)` receives a reework `ToolContext`:
@@ -79,7 +110,7 @@ value computed once per task attempt and reused on retry).
 | `beforeTool`         | block the call (`{ block: reason }`) or rewrite its arguments (`{ args }`).            |
 | `afterTool`          | replace a result (`{ output, isError?, details? }`) — e.g. redact text the model sees. |
 | `beforeModelRequest` | rewrite the messages sent to the model (add or redact content).                        |
-| `afterModelResponse` | observe every assistant message and its usage.                                         |
+| `afterModelResponse` | observe every assistant message and its typed `ModelUsage` token counts.               |
 | `onAnswer`           | observe the answer to an input; return `{ continue }` to keep the run going.           |
 | `beforeCompaction`   | supply `{ summary }` or `{ decline: true }` to skip compaction.                        |
 
@@ -100,6 +131,40 @@ export const guard = definePlugin("guard", () => ({
         const c = await ctx.case.get();
         if (c.stage !== "approved") return { block: "repo deletion needs an approved case" };
       }
+    },
+  },
+}));
+```
+
+## Event hooks
+
+Four hooks cover moments outside a run: `onInput` (input was admitted), `onDecision` (a gate proposal was
+settled), `onCaseClosed` and `onCaseReopened` (a case crossed the closed boundary). They fire **after** the
+commit, from one FIFO queue per agent: one event at a time, plugins in declaration order, each hook awaited.
+The caller never waits — a submit or a decide returns as soon as its commit is done — and delivery is **at most
+once**, in-process: an event that happens while the process crashes is lost, and nothing is replayed on
+restart. A plugin that must not miss a closed case therefore **reconciles in `setup`**: list the cases and
+compare them with its own store. Events already queued or running when `agent.stop()` begins are awaited before
+plugins stop; new events are dropped without logging. Errors are logged with the plugin's name and the hook.
+
+Their context is a run hook's without `memo`: `conversationId`, `models`, `store`, `files`, `case`.
+
+```ts
+import { definePlugin } from "@reework/core";
+
+export const journal = definePlugin("journal", () => ({
+  hooks: {
+    async onInput({ content }, ctx) {
+      await ctx.store.case.set("last-input", content);
+    },
+    async onDecision({ proposal, decision }, ctx) {
+      await ctx.store.agent.set(`decision/${proposal.id}`, decision.selectedOption ?? "none");
+    },
+    async onCaseClosed({ case: closed }, ctx) {
+      await ctx.store.agent.set(`closed/${closed.id}`, true);
+    },
+    async onCaseReopened({ case: reopened, cause }, ctx) {
+      await ctx.store.agent.set(`reopened/${reopened.id}`, cause);
     },
   },
 }));
@@ -195,10 +260,62 @@ by core act there. Core does not confine paths: wrap tools if you need a hard bo
 
 ## Setup and the host
 
-`setup({ host, store, config })` runs once the engine is open — for watchers, schedules or channel
-transports. `host` is the in-process protocol (`createConversation`, `submitInput`, `getCase`,
+`setup({ host, store, config, signal })` runs once the engine is open — for watchers, schedules or
+channel transports. `host` is the in-process protocol (`createConversation`, `submitInput`, `getCase`,
 `listCases`, `updateCase`, `addFile`, `listFiles`, `readFile`, `listProposals`, `submitDecision`,
 `snapshot`, `abort`); `store` is the plugin's durable store.
+
+## Lifecycle
+
+A plugin may start background work in `setup` and release it on stop. The `signal` a `setup` receives aborts
+when the agent begins to stop, so a loop can break out cooperatively; `stop()` releases what the factory or
+`setup` opened (timers, sockets, subprocesses) and is awaited. A plugin may use either or both.
+
+On `agent.stop()` the servers close, the signal aborts, queued event hooks drain, and then each built plugin's
+`stop()` runs once in **reverse declaration order** — before the engine closes, so a stopping plugin can still
+commit. A failing `stop()` is logged as `plugin "<name>" stop failed:` and does not block the others; a stop
+that never settles is bounded by the stop timeout, and the error names the plugin still stopping. The same
+happens when startup fails after a plugin was built: the signal aborts and the built plugins stop before the
+original error is rethrown. `stop()` must tolerate a missing `setup` (a later plugin may have failed).
+
+```ts
+import { definePlugin } from "@reework/core";
+
+export const subscriber = definePlugin("subscriber", () => ({
+  setup({ host, signal }) {
+    const off = host.onCaseUpdated((updated) => {
+      // react to a case write
+    });
+    signal.addEventListener("abort", off, { once: true });
+  },
+}));
+```
+
+## Authors
+
+Every input can record who it is from: `submitInput(id, text, { from })`, the HTTP submit body and
+`client.submit` take `from: { kind: "human" | "system" | "agent", id?, name? }` (`id` is stable within the
+kind, `name` is displayed). The author is stored on the entry (kind `reework.input`) and appears on messages,
+snapshots, `readConversation` and the client view, while the model sees the content unchanged. Gate decisions
+carry the same shape as `decidedBy`, and the resumed message names the decider.
+
+Input without an author stays unattributed: **a missing author is never a human**, and a plugin that must
+trust the author treats absence as untrusted. An invalid author is refused (`400 invalid_author` over HTTP,
+`InvalidAuthor` in-process). Trust caveat: any holder of the API token can claim `kind: "human"`, so an author
+records what the caller declared, not proof, until scoped tokens exist.
+
+```ts
+import { definePlugin } from "@reework/core";
+
+export const trust = definePlugin("trust", () => ({
+  hooks: {
+    async onInput({ from }, ctx) {
+      const human = from?.kind === "human";
+      await ctx.store.case.set("trusted", human);
+    },
+  },
+}));
+```
 
 ## Custom routes
 
