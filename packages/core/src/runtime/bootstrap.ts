@@ -1,7 +1,12 @@
 import { serve } from "@hono/node-server";
 import type { ServerType } from "@hono/node-server";
 import { createRegistry, defineExtension, section } from "@earendil-works/pi-durable";
-import type { AgentChange, HarnessSettings, ToolRegistration } from "@earendil-works/pi-durable";
+import type {
+  AgentChange,
+  ConversationId,
+  HarnessSettings,
+  ToolRegistration,
+} from "@earendil-works/pi-durable";
 import type { Models } from "@earendil-works/pi-ai/models";
 import type { AgentDefinition, DeclaredModule } from "../agent-definition.ts";
 import { CONTEXT, Engine } from "../engine.ts";
@@ -9,9 +14,17 @@ import { installHITL } from "../hitl/gate.ts";
 import { AgentHost } from "../host.ts";
 import { createServer } from "../server/index.ts";
 import { buildToolHooks, toDurableTool, toExtension } from "../tooling/facade.ts";
-import type { BuiltPlugin, PluginBindings, PluginHooks, ReeworkTool } from "../tooling/facade.ts";
+import type {
+  BuiltPlugin,
+  PluginBindings,
+  PluginEventContext,
+  PluginHooks,
+  ReeworkTool,
+} from "../tooling/facade.ts";
 import { caseExtension } from "../tooling/case-tool.ts";
 import { createPluginStore } from "../tooling/plugin-store.ts";
+import { createPluginContextMembers } from "../tooling/facade.ts";
+import { EventDispatcher } from "./events.ts";
 
 import { budgetExtension } from "./budget.ts";
 import { lockStorage } from "./lock.ts";
@@ -189,9 +202,35 @@ async function boot(
     ...(modelTools ? { modelTools } : {}),
   };
   const workspace = built.find((plugin) => plugin.built.workspace)?.built.workspace;
-  const host = new AgentHost(engine, agentChange, workspace, {
-    maxBytes: agent.files?.maxBytes,
-  });
+  const events = new EventDispatcher(
+    built
+      .map((plugin) => ({ name: plugin.name, hooks: plugin.built.hooks }))
+      .filter(
+        (plugin): plugin is { name: string; hooks: PluginHooks } => plugin.hooks !== undefined,
+      ),
+    (plugin, conversationId) =>
+      ({
+        conversationId,
+        ...createPluginContextMembers(
+          createPluginStore(
+            { commit: (fn) => engine.commit(fn) },
+            plugin,
+            conversationId as unknown as ConversationId,
+          ),
+          conversationId,
+          bindings,
+          plugin,
+        ),
+      }) as PluginEventContext,
+    lifecycle.signal,
+  );
+  const host = new AgentHost(
+    engine,
+    agentChange,
+    workspace,
+    { maxBytes: agent.files?.maxBytes },
+    events,
+  );
   opened.engine = engine;
   opened.host = host;
   bindings.case = {

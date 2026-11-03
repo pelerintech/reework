@@ -24,6 +24,7 @@ import { settleGate } from "./hitl/gate.ts";
 import type { GateDecision } from "@reework/types";
 import type { ConversationRecord } from "./protocol/conversations.ts";
 import type { WorkspaceProvider } from "./tooling/facade.ts";
+import type { EventDispatcher } from "./runtime/events.ts";
 
 /** A conversation as the protocol sees it. Ids are strings on the wire. */
 export interface ConversationInfo {
@@ -88,6 +89,8 @@ export class AgentHost {
   private readonly workspace: WorkspaceProvider | undefined;
   private readonly fileStore: FileStore;
   private readonly filesMaxBytes: number;
+  /** The agent's event-hook dispatcher; events reach plugins after their commit. */
+  private readonly events: EventDispatcher | undefined;
   /** In-process listeners for case writes, for surfaces watching the conversation. */
   private readonly caseListeners = new Set<(c: Case) => void>();
 
@@ -96,12 +99,14 @@ export class AgentHost {
     agent: AgentChange,
     workspace?: WorkspaceProvider,
     files: { maxBytes?: number } = {},
+    events?: EventDispatcher,
   ) {
     this.engine = engine;
     this.agent = agent;
     this.workspace = workspace;
     this.fileStore = new FileStore(engine.path);
     this.filesMaxBytes = files.maxBytes ?? 10 * 1024 * 1024;
+    this.events = events;
   }
 
   async createConversation(options: CreateConversationOptions = {}): Promise<ConversationInfo> {
@@ -355,6 +360,12 @@ export class AgentHost {
       CONTEXT,
     );
     const submissionId = String(submission.id);
+    this.events?.enqueue("onInput", id, {
+      conversationId: id,
+      submissionId,
+      content,
+      ...(from === undefined ? {} : { from }),
+    });
     if (!options.wait) return { submissionId };
     const settled = await submission.wait(CONTEXT);
     if (settled.status !== "done" || settled.type !== "input") return { submissionId };

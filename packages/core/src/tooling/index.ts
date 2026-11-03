@@ -32,6 +32,7 @@ export type {
   PluginSetupContext,
   PluginHooks,
   PluginHookContext,
+  PluginEventContext,
   ReeworkPlugin,
   ReeworkTool,
   ToolContext,

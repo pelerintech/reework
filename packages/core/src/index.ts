@@ -45,6 +45,7 @@ export type {
   PluginSetupContext,
   PluginHooks,
   PluginHookContext,
+  PluginEventContext,
   PluginStore,
   PluginStoreScope,
   PluginStoreItem,

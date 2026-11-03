@@ -21,6 +21,7 @@ import type { AssistantMessage, Message, Usage } from "@earendil-works/pi-ai";
 import type { Models } from "@earendil-works/pi-ai/models";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import type {
+  Author,
   Case,
   CasePatch,
   FileRecord,
@@ -322,6 +323,19 @@ export interface PluginHookContext {
   memo<T extends JsonValue>(name: string, compute: () => Promise<T>): Promise<T>;
 }
 
+/** The context an event hook receives: a run hook's bindings without `memo`. */
+export interface PluginEventContext {
+  readonly conversationId: string;
+  /** The named models this plugin declared. */
+  readonly models: PluginModels;
+  /** This plugin's storage, agent-wide and per case. */
+  readonly store: PluginStore;
+  /** Files scoped to this conversation. */
+  readonly files: CaseFiles;
+  /** The conversation's case. */
+  readonly case: CaseContext;
+}
+
 /** The hooks a plugin may provide, run in plugin declaration order. */
 export interface PluginHooks {
   beforeModelRequest?(
@@ -346,6 +360,11 @@ export interface PluginHooks {
     input: { reason: string; messages: ModelMessage[] },
     ctx: PluginHookContext,
   ): Promise<{ summary: string } | { decline: true } | void>;
+  /** Input was admitted (not a duplicate); it covers every source of input. */
+  onInput?(
+    input: { conversationId: string; submissionId: string; content: string; from?: Author },
+    ctx: PluginEventContext,
+  ): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
