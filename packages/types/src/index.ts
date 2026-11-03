@@ -24,6 +24,18 @@ export interface ModelCallUsage {
   readonly outputTokens: number;
 }
 
+/**
+ * Token usage of one model response. Tokens only: reework agents use custom
+ * endpoints that have no catalog price, so a budget plugin prices them itself.
+ */
+export interface ModelUsage {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheWriteTokens: number;
+  readonly totalTokens: number;
+}
+
 /** A single conversation message in the shared reework vocabulary. */
 export interface Message {
   role: MessageRole;

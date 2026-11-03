@@ -61,6 +61,8 @@ export type {
   WorkspaceTarget,
 } from "./tooling/index.ts";
 
+export type { ModelCallUsage, ModelUsage } from "@reework/types";
+
 export { createServer } from "./server/index.ts";
 
 export { MODEL_PROVIDER_ID, startAgent } from "./runtime/bootstrap.ts";

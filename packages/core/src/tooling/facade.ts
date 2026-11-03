@@ -27,6 +27,7 @@ import type {
   GateDecision,
   ModelCallUsage,
   ModelMessage,
+  ModelUsage,
 } from "@reework/types";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static, TSchema } from "@earendil-works/pi-ai";
@@ -328,7 +329,7 @@ export interface PluginHooks {
     ctx: PluginHookContext,
   ): Promise<{ messages: ModelMessage[] } | void>;
   afterModelResponse?(
-    input: { message: ModelMessage; usage?: unknown },
+    input: { message: ModelMessage; usage?: ModelUsage },
     ctx: PluginHookContext,
   ): Promise<void>;
   beforeTool?(
@@ -1049,8 +1050,16 @@ function messageText(message: AssistantMessage): string {
   return "";
 }
 
-function usageOf(message: AssistantMessage): unknown {
-  return (message as { usage?: unknown }).usage;
+function usageOf(message: AssistantMessage): ModelUsage | undefined {
+  const usage = (message as { usage?: Usage }).usage;
+  if (!usage) return undefined;
+  return {
+    inputTokens: usage.input,
+    outputTokens: usage.output,
+    cacheReadTokens: usage.cacheRead,
+    cacheWriteTokens: usage.cacheWrite,
+    totalTokens: usage.totalTokens,
+  };
 }
 
 function logHookError(plugin: string, hook: string, err: unknown): void {
