@@ -1,6 +1,6 @@
 {
   "name": "@reework/tui",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Terminal operator console for reework agents: inbox, chat and proposal answering.",
   "keywords": [
     "ai-agents",
