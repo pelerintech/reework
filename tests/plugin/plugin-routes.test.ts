@@ -121,3 +121,36 @@ describe("plugin routes: context", () => {
     expect((await agent.host.listConversations()).map((c) => c.id)).toContain(conversation.id);
   });
 });
+
+describe("plugin routes: errors", () => {
+  it("contain a thrown handler error and map protocol errors first", async () => {
+    const plugin = definePlugin("items", () => ({
+      routes(app, ctx) {
+        app.get("/boom", () => {
+          throw new Error("broken");
+        });
+        app.get("/missing", async (c) => c.json(await ctx.host.getCase("nope")));
+      },
+    }));
+    const errors: unknown[][] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args) => errors.push(args));
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }));
+    const authed = authedApp(agent);
+
+    const boom = await authed.request("/plugins/items/boom");
+    expect(boom.status).toBe(500);
+    expect(await boom.json()).toEqual({ error: "plugin_error", plugin: "items" });
+
+    const missing = await authed.request("/plugins/items/missing");
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({
+      error: "conversation_not_found",
+      conversationId: "nope",
+    });
+    spy.mockRestore();
+
+    const logged = errors.map((args) => args.join(" ")).join("\n");
+    expect(logged).toContain('plugin "items" route failed');
+    expect(logged).toContain("broken");
+  });
+});

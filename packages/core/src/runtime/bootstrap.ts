@@ -15,7 +15,7 @@ import { CONTEXT, Engine } from "../engine.ts";
 import { installHITL } from "../hitl/gate.ts";
 import { AgentHost } from "../host.ts";
 import { createServer } from "../server/index.ts";
-import { requireToken } from "../server/app.ts";
+import { protocolErrorResponse, requireToken } from "../server/app.ts";
 import { buildToolHooks, toDurableTool, toExtension } from "../tooling/facade.ts";
 import type {
   BuiltPlugin,
@@ -360,6 +360,12 @@ function mountPluginRoutes(
       dataDir: "",
     };
     plugin.built.routes(subApp, ctx);
+    subApp.onError((error, c) => {
+      const mapped = protocolErrorResponse(error, c);
+      if (mapped) return mapped;
+      console.error(`[reework] plugin "${plugin.name}" route failed:`, error);
+      return c.json({ error: "plugin_error", plugin: plugin.name }, 500);
+    });
     const openPrefix = `${prefix}/open`;
     const hasOpen = subApp.routes.some(
       (route) => route.path === "/open" || route.path.startsWith("/open/"),

@@ -37,6 +37,26 @@ export function requireToken(token: string): MiddlewareHandler {
   };
 }
 
+/** The protocol's error mapping: known host errors to their status and body. */
+export function protocolErrorResponse(error: unknown, c: Context): Response | undefined {
+  if (error instanceof ConversationNotFound) {
+    return c.json({ error: "conversation_not_found", conversationId: error.conversationId }, 404);
+  }
+  if (error instanceof ProposalNotFound) {
+    return c.json({ error: "proposal_not_found", proposalId: error.proposalId }, 404);
+  }
+  if (error instanceof FileNotFound) {
+    return c.json({ error: "file_not_found", fileId: error.fileId }, 404);
+  }
+  if (error instanceof FileTooLarge) {
+    return c.json({ error: "file_too_large", size: error.size, maxBytes: error.maxBytes }, 413);
+  }
+  if (error instanceof InvalidAuthor) {
+    return c.json({ error: "invalid_author" }, 400);
+  }
+  return undefined;
+}
+
 async function decisionFrom(c: Context, proposalId: string): Promise<GateDecision> {
   const body = await c.req.json<Partial<GateDecision>>().catch(() => ({}) as Partial<GateDecision>);
   const decidedBy = body.decidedBy === undefined ? undefined : (body.decidedBy as Author);
@@ -59,21 +79,8 @@ export function createServer(host: AgentHost, options: ServerOptions) {
   const nodeWebSocket = createNodeWebSocket({ app });
 
   app.onError((error, c) => {
-    if (error instanceof ConversationNotFound) {
-      return c.json({ error: "conversation_not_found", conversationId: error.conversationId }, 404);
-    }
-    if (error instanceof ProposalNotFound) {
-      return c.json({ error: "proposal_not_found", proposalId: error.proposalId }, 404);
-    }
-    if (error instanceof FileNotFound) {
-      return c.json({ error: "file_not_found", fileId: error.fileId }, 404);
-    }
-    if (error instanceof FileTooLarge) {
-      return c.json({ error: "file_too_large", size: error.size, maxBytes: error.maxBytes }, 413);
-    }
-    if (error instanceof InvalidAuthor) {
-      return c.json({ error: "invalid_author" }, 400);
-    }
+    const mapped = protocolErrorResponse(error, c);
+    if (mapped) return mapped;
     throw error;
   });
 
