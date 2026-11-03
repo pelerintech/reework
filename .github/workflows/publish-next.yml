@@ -1,0 +1,42 @@
+name: Publish next
+
+# Manual prerelease path: stamps the four packages to `<base>-next.<id>` and publishes them to the
+# `next` dist-tag. Nothing here ever moves `latest`; release-please keeps cutting stable versions.
+on:
+  workflow_dispatch:
+    inputs:
+      id:
+        description: Prerelease id (defaults to the run number)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish-next:
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec vp check
+      - run: pnpm exec vp test
+      - run: node scripts/version-next.mjs "${{ inputs.id || github.run_number }}"
+      - run: pnpm build
+      - run: pnpm check:packages
+      - run: pnpm smoke:pack
+      # Publishes every package to `next`, in dependency order; `latest` is never touched.
+      - run: pnpm -r --filter "./packages/*" publish --tag next --access public --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: "true"
