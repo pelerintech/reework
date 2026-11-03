@@ -1,6 +1,6 @@
 {
   "name": "@reework/client",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Client for reework agents: REST + WebSocket protocol and a conversation view model.",
   "keywords": [
     "ai-agents",
