@@ -105,6 +105,7 @@ export async function startAgent(
       built.push(await buildPlugin(declared));
     }
     validateNamedModels(agent, built);
+    validatePluginRouteNames(built);
     if (options.models) {
       for (const name of Object.keys(agent.models ?? {})) {
         if (options.models.getModels(`reework.model.${name}`).length === 0) {
@@ -266,7 +267,14 @@ async function boot(
   }
   const { app, nodeWebSocket } = createServer(host, { token, name: agent.name });
   mountPluginRoutes(app, built, host, engine, lifecycle.signal, token);
+  const beforeAgentRoutes = app.routes.length;
   agent.routes?.(app, host);
+  const agentPluginRoute = app.routes
+    .slice(beforeAgentRoutes)
+    .find((route) => route.path.startsWith(`${PLUGIN_ROUTE_PREFIX}/`));
+  if (agentPluginRoute) {
+    throw new Error(`agent routes may not use the /plugins/ prefix (${agentPluginRoute.path})`);
+  }
   // Continue whatever the previous process left unfinished: runs, gates, tasks.
   engine.resume();
   const servers = new Set<ServerType>();
@@ -359,7 +367,12 @@ function mountPluginRoutes(
       signal,
       dataDir: "",
     };
-    plugin.built.routes(subApp, ctx);
+    try {
+      plugin.built.routes(subApp, ctx);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`plugin "${plugin.name}" routes failed: ${message}`, { cause: error });
+    }
     subApp.onError((error, c) => {
       const mapped = protocolErrorResponse(error, c);
       if (mapped) return mapped;
@@ -442,6 +455,16 @@ function buildPlugin(declared: DeclaredModule): Promise<Built> {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`plugin "${name}" failed: ${message}`, { cause: error });
     });
+}
+
+/** A plugin with routes must have a name safe to use as one URL path segment. */
+function validatePluginRouteNames(built: readonly Built[]): void {
+  const safe = /^[a-z0-9][a-z0-9-]*$/;
+  for (const plugin of built) {
+    if (plugin.built.routes && !safe.test(plugin.name)) {
+      throw new Error(`plugin "${plugin.name}" has routes but its name is not URL-safe`);
+    }
+  }
 }
 
 /** Each plugin's required names must be declared; `main` is reserved; a passed-in
