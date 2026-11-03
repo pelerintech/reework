@@ -10,7 +10,7 @@ import type { JsonValue } from "@earendil-works/chord";
 import type { GateDecision, ModelCallUsage, Proposal } from "@reework/types";
 import type { Engine } from "../engine.ts";
 import { CONTEXT } from "../engine.ts";
-import { markProposalSettled, publishProposal } from "../protocol/proposals.ts";
+import { markProposalSettled, ProposalsDoc, publishProposal } from "../protocol/proposals.ts";
 import type { StorageSeam } from "../tooling/storage.ts";
 import { createPluginContextMembers, modelUsageOf } from "../tooling/facade.ts";
 import type { NamedModelCall, PluginBindings, ToolContext } from "../tooling/facade.ts";
@@ -101,11 +101,13 @@ export interface HitlState {
   bindings?: PluginBindings;
 }
 
-/** A proposal settled by a human decision. */
+/** A proposal settled by a decision. */
 export interface SettledProposal {
   readonly proposalId: string;
   readonly conversationId: string;
   readonly decision: GateDecision;
+  /** The settled proposal as it was recorded (without its `status`). */
+  readonly proposal?: Proposal;
 }
 
 const states = new WeakMap<object, HitlState>();
@@ -153,8 +155,9 @@ export async function settleGate(engine: Engine, decision: GateDecision): Promis
   });
   const conversationId = await markProposalSettled(engine, proposalId);
   if (conversationId !== undefined) {
+    const proposal = await settledProposal(engine, proposalId);
     for (const listener of engine.hitl.settledListeners) {
-      listener({ proposalId, conversationId, decision });
+      listener({ proposalId, conversationId, decision, ...(proposal ? { proposal } : {}) });
     }
   }
   const wake = engine.hitl.pending.get(proposalId);
@@ -162,6 +165,15 @@ export async function settleGate(engine: Engine, decision: GateDecision): Promis
     engine.hitl.pending.delete(proposalId);
     wake(decision);
   }
+}
+
+/** The recorded proposal, settled, without its `status` field. */
+async function settledProposal(engine: Engine, proposalId: string): Promise<Proposal | undefined> {
+  const doc = await engine.harness.snapshot(ProposalsDoc, CONTEXT);
+  const found = doc?.proposals.find((p) => p.id === proposalId);
+  if (!found) return undefined;
+  const { status: _status, ...proposal } = found;
+  return proposal;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,10 +1,11 @@
 // Event hooks: plugins learn about input after it is admitted, once per input, through
 // a per-agent queue that never delays the caller.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createClient } from "@reework/client";
-import { definePlugin } from "@reework/core";
-import type { AgentDefinition, PluginEventContext } from "@reework/core";
-import { startTestAgent, text } from "@reework/core/testing";
+import { definePlugin, gatedAction } from "@reework/core";
+import type { AgentDefinition, GateDecision, PluginEventContext } from "@reework/core";
+import { startTestAgent, text, toolCall, waitForProposal } from "@reework/core/testing";
+import type { Proposal } from "@reework/types";
 import { eventually } from "../support/wait.ts";
 
 interface Seen {
@@ -84,6 +85,86 @@ describe("event hooks: onInput", () => {
     await client.submit(id, "hi");
     expect(Date.now() - begun).toBeLessThan(1000);
 
+    await test.dispose();
+  });
+});
+
+describe("event hooks: onDecision", () => {
+  it("delivers the proposal and the attributed decision, isolating failures", async () => {
+    const received: { proposal: Proposal; decision: GateDecision }[] = [];
+    let ran = false;
+    const failing = definePlugin("a", () => ({
+      hooks: {
+        async onDecision() {
+          throw new Error("nope");
+        },
+      },
+    }));
+    const recording = definePlugin("b", () => ({
+      hooks: {
+        async onDecision(input) {
+          received.push(input);
+        },
+      },
+    }));
+    const ops = definePlugin("ops", () => ({
+      tools: [
+        gatedAction({
+          name: "deploy",
+          gate: {
+            title: "Deploy?",
+            options: [
+              { id: "a", label: "A" },
+              { id: "b", label: "B" },
+            ],
+          },
+          run: async () => {
+            ran = true;
+            return "deployed";
+          },
+        }),
+      ],
+    }));
+    const test = await startTestAgent({
+      name: "decision-agent",
+      model: { provider: { baseUrl: "http://127.0.0.1:1/v1", apiKeyEnv: "K" }, modelId: "m1" },
+      plugins: [
+        { plugin: failing, config: {} },
+        { plugin: recording, config: {} },
+        { plugin: ops, config: {} },
+      ],
+      channels: [],
+      mission: { role: "You deploy when asked." },
+    });
+    test.model.respond([toolCall("deploy"), text("asked"), text("done")]);
+    const errors: unknown[][] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args) => errors.push(args));
+    const { id } = await test.agent.host.createConversation();
+    await test.agent.host.submitInput(id, "ship it");
+    const proposal = await waitForProposal(test.agent.host, id);
+    const decidedBy = { kind: "human" as const, name: "Ana" };
+
+    await test.agent.host.submitDecision({
+      proposalId: proposal.id,
+      selectedOption: "a",
+      instruction: null,
+      decidedBy,
+    });
+    const delivered = await eventually(() => received[0]);
+    spy.mockRestore();
+
+    expect(delivered.proposal.title).toBe("Deploy?");
+    expect(delivered.proposal.options).toEqual([
+      { id: "a", label: "A" },
+      { id: "b", label: "B" },
+    ]);
+    expect(delivered.proposal).not.toHaveProperty("status");
+    expect(delivered.decision.decidedBy).toEqual(decidedBy);
+
+    const logged = errors.map((args) => args.join(" ")).join("\n");
+    expect(logged).toContain('plugin "a"');
+    expect(logged).toContain("onDecision");
+    await eventually(() => ran);
     await test.dispose();
   });
 });

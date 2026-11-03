@@ -23,6 +23,7 @@ import type { Context, JsonValue } from "@earendil-works/chord";
 import type {
   Author,
   Case,
+  Proposal,
   CasePatch,
   FileRecord,
   GateDecision,
@@ -363,6 +364,11 @@ export interface PluginHooks {
   /** Input was admitted (not a duplicate); it covers every source of input. */
   onInput?(
     input: { conversationId: string; submissionId: string; content: string; from?: Author },
+    ctx: PluginEventContext,
+  ): Promise<void>;
+  /** A gate proposal was settled by a decision. */
+  onDecision?(
+    input: { proposal: Proposal; decision: GateDecision },
     ctx: PluginEventContext,
   ): Promise<void>;
 }
