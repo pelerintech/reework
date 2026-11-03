@@ -1,3 +1,5 @@
+import { mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import type { ServerType } from "@hono/node-server";
@@ -253,12 +255,15 @@ async function boot(
     add: (id, input) => host.addFile(id, input),
   };
   for (const plugin of built) {
+    const dataDir = pluginDataDir(options.storagePath, plugin.name);
+    if (plugin.built.setup || plugin.built.routes) mkdirSync(dataDir, { recursive: true });
     try {
       await plugin.built.setup?.({
         host,
         store: createPluginStore({ commit: (fn) => engine.commit(fn) }, plugin.name),
         config: plugin.config,
         signal: lifecycle.signal,
+        dataDir,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -266,7 +271,7 @@ async function boot(
     }
   }
   const { app, nodeWebSocket } = createServer(host, { token, name: agent.name });
-  mountPluginRoutes(app, built, host, engine, lifecycle.signal, token);
+  mountPluginRoutes(app, built, host, engine, lifecycle.signal, token, options.storagePath);
   const beforeAgentRoutes = app.routes.length;
   agent.routes?.(app, host);
   const agentPluginRoute = app.routes
@@ -347,6 +352,11 @@ async function boot(
 
 const DEFAULT_STOP_TIMEOUT_MS = 8_000;
 
+/** A plugin's persistent directory beside the agent's storage file. */
+function pluginDataDir(storagePath: string, name: string): string {
+  return resolve(`${storagePath}.plugins`, name);
+}
+
 /** Mount each plugin's routes under its prefix, behind the token by default. */
 function mountPluginRoutes(
   app: Hono,
@@ -355,6 +365,7 @@ function mountPluginRoutes(
   engine: Engine,
   signal: AbortSignal,
   token: string,
+  storagePath: string,
 ): void {
   for (const plugin of built) {
     if (!plugin.built.routes) continue;
@@ -365,7 +376,7 @@ function mountPluginRoutes(
       store: createPluginStore({ commit: (fn) => engine.commit(fn) }, plugin.name),
       config: plugin.config,
       signal,
-      dataDir: "",
+      dataDir: pluginDataDir(storagePath, plugin.name),
     };
     try {
       plugin.built.routes(subApp, ctx);

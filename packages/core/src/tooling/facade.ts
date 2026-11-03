@@ -395,6 +395,8 @@ export interface PluginSetupContext<TConfig> {
   readonly config: TConfig;
   /** Aborted when the agent begins to stop; a loop started here breaks out on it. */
   readonly signal: AbortSignal;
+  /** This plugin's directory beside the agent's storage. */
+  readonly dataDir: string;
 }
 
 /** What a plugin's `routes(app, ctx)` receives. */
