@@ -360,7 +360,20 @@ function mountPluginRoutes(
       dataDir: "",
     };
     plugin.built.routes(subApp, ctx);
-    app.use(`${prefix}/*`, requireToken(token));
+    const openPrefix = `${prefix}/open`;
+    const hasOpen = subApp.routes.some(
+      (route) => route.path === "/open" || route.path.startsWith("/open/"),
+    );
+    if (hasOpen) {
+      console.warn(
+        `[reework] plugin "${plugin.name}" serves unauthenticated routes under ${openPrefix}/`,
+      );
+    }
+    const guard = requireToken(token);
+    app.use(`${prefix}/*`, async (c, next) => {
+      if (c.req.path === openPrefix || c.req.path.startsWith(`${openPrefix}/`)) return next();
+      return guard(c, next);
+    });
     app.route(prefix, subApp);
   }
 }
