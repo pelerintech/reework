@@ -67,6 +67,11 @@ export function budgetExtension(
   });
 }
 
+/** Whether an entry is user input, attributed (`reework.input`) or not (`pi.user`). */
+export function isUserEntry(entry: EntryRecord): boolean {
+  return entry.kind === "pi.user" || entry.kind === "reework.input";
+}
+
 /** Assistant replies with tool calls since the latest user entry (the current round included). */
 async function roundsSinceInput(engine: Engine, conversationId: ConversationId): Promise<number> {
   const conversation = await engine.harness.conversation(conversationId, CONTEXT);
@@ -76,7 +81,7 @@ async function roundsSinceInput(engine: Engine, conversationId: ConversationId):
   for (;;) {
     const page = await conversation.entries({ order: "descending" }, PAGE, cursor, CONTEXT);
     for (const entry of page.items) {
-      if (entry.kind === "pi.user") return rounds;
+      if (isUserEntry(entry)) return rounds;
       if (entry.kind === "pi.assistant" && callsTools(entry)) rounds += 1;
     }
     if (!page.next) return rounds;
