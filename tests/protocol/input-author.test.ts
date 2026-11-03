@@ -3,9 +3,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createClient } from "@reework/client";
 import type { ReeworkClient } from "@reework/client";
-import { defineAgent } from "@reework/core";
+import { defineAgent, InvalidAuthor } from "@reework/core";
 import type { Author, RunningAgent } from "@reework/core";
-import { TEST_TOKEN, startTestAgent } from "../support/agent.ts";
+import { TEST_TOKEN, authedApp, startTestAgent } from "../support/agent.ts";
 import { startFakeLlm } from "../support/fake-llm.ts";
 import type { FakeLlm } from "../support/fake-llm.ts";
 
@@ -106,6 +106,47 @@ describe("input attribution", () => {
 
     const snapshot = await agent.host.snapshot(id);
     expect(snapshot.messages.find((m) => m.role === "user")?.from).toEqual(from);
+  });
+
+  it("refuses an invalid author over HTTP without adding an entry", async () => {
+    const { agent, id } = await start();
+    const app = authedApp(agent);
+    const invalid: unknown[] = [
+      { kind: "boss" },
+      "me",
+      { kind: "human", id: 3 },
+      { kind: "human", name: "" },
+      { kind: "human", name: "n".repeat(201) },
+    ];
+    const before = (await agent.host.readConversation(id)).entries.length;
+
+    for (const from of invalid) {
+      const res = await app.request(`/conversations/${id}/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: "hi", from }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "invalid_author" });
+    }
+    expect((await agent.host.readConversation(id)).entries.length).toBe(before);
+  });
+
+  it("throws InvalidAuthor in-process and keeps only known author fields", async () => {
+    const { llm, agent, id } = await start();
+    llm.script({ text: "answer" });
+
+    await expect(
+      agent.host.submitInput(id, "hi", { from: { kind: "boss" } as unknown as Author }),
+    ).rejects.toBeInstanceOf(InvalidAuthor);
+
+    await agent.host.submitInput(id, "hi", {
+      from: { kind: "system", id: "alerts", token: "x" } as unknown as Author,
+      wait: true,
+    });
+    const read = await agent.host.readConversation(id);
+    const entry = read.entries.find((e) => e.kind === "reework.input");
+    expect(entry?.data).toEqual({ from: { kind: "system", id: "alerts" } });
   });
 
   it("keeps one message for a repeated request id, attributed once", async () => {

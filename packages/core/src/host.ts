@@ -12,7 +12,7 @@ import type {
   Proposal,
   TranscriptItem,
 } from "@reework/types";
-import { isAuthor } from "@reework/types";
+import { isAuthor, normalizeAuthor } from "@reework/types";
 import type { Engine } from "./engine.ts";
 import { CONTEXT } from "./engine.ts";
 import { ConversationsDoc } from "./protocol/conversations.ts";
@@ -301,6 +301,7 @@ export class AgentHost {
     content: string,
     options: SubmitOptions = {},
   ): Promise<SubmitResult> {
+    const from = options.from === undefined ? undefined : requireAuthor(options.from);
     if (options.files?.length) {
       const lines: string[] = [];
       for (const fid of options.files) {
@@ -342,12 +343,12 @@ export class AgentHost {
         content,
         whenBusy,
         ...(requestId === undefined ? {} : { requestId }),
-        ...(options.from === undefined
+        ...(from === undefined
           ? {}
           : {
               entry: {
                 kind: "reework.input",
-                data: { from: options.from } as unknown as JsonValue,
+                data: { from } as unknown as JsonValue,
               },
             }),
       },
@@ -488,6 +489,19 @@ export class FileTooLarge extends Error {
     super(`file too large: ${size} bytes (limit ${maxBytes})`);
     this.size = size;
     this.maxBytes = maxBytes;
+  }
+}
+
+/** A well-formed author, with only its known fields. */
+function requireAuthor(value: unknown): Author {
+  if (!isAuthor(value)) throw new InvalidAuthor();
+  return normalizeAuthor(value);
+}
+
+/** An input or decision carried an author that is not well-formed. */
+export class InvalidAuthor extends Error {
+  constructor() {
+    super("invalid author");
   }
 }
 

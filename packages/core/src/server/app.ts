@@ -9,7 +9,13 @@ import type { AgentEvent, Author, CasePatch, GateDecision, RouteId } from "@reew
 import { createEventMapper } from "../protocol/event-mapper.ts";
 import { onProposalOpen, onProposalSettled } from "../protocol/proposals.ts";
 import { CONTEXT } from "../engine.ts";
-import { ConversationNotFound, FileNotFound, FileTooLarge, ProposalNotFound } from "../host.ts";
+import {
+  ConversationNotFound,
+  FileNotFound,
+  FileTooLarge,
+  InvalidAuthor,
+  ProposalNotFound,
+} from "../host.ts";
 import type { AgentHost } from "../host.ts";
 
 export interface ServerOptions {
@@ -62,6 +68,9 @@ export function createServer(host: AgentHost, options: ServerOptions) {
     }
     if (error instanceof FileTooLarge) {
       return c.json({ error: "file_too_large", size: error.size, maxBytes: error.maxBytes }, 413);
+    }
+    if (error instanceof InvalidAuthor) {
+      return c.json({ error: "invalid_author" }, 400);
     }
     throw error;
   });
@@ -137,8 +146,7 @@ export function createServer(host: AgentHost, options: ServerOptions) {
       const files = Array.isArray(body.files)
         ? body.files.filter((f): f is string => typeof f === "string")
         : undefined;
-      const from =
-        typeof body.from === "object" && body.from !== null ? (body.from as Author) : undefined;
+      const from = body.from === undefined ? undefined : (body.from as Author);
       const wait = c.req.query("wait") === "true";
       try {
         const { duplicate, ...result } = await host.submitInput(id, content, {
