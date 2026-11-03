@@ -27,9 +27,11 @@ function definition(): AgentDefinition {
     tools: [
       defineTool({
         name: "cycle",
-        description: "Close the case, then reopen it to waiting.",
+        description: "Close the case, reopen it to open, close it, then reopen it to waiting.",
         parameters: Type.Object({}),
         async execute(_args, ctx) {
+          await ctx.case.update({ status: "closed" });
+          await ctx.case.update({ status: "open" });
           await ctx.case.update({ status: "closed" });
           await ctx.case.update({ status: "waiting" });
           return "cycled";
@@ -76,14 +78,23 @@ describe("case lifecycle event hooks", () => {
     test.model.respond([toolCall("update_case", { status: "closed" }), text("closed it")]);
     await test.agent.host.submitInput(id, "close it", { wait: true });
     await eventually(() => closes() === 2);
+    // The input that caused the close is delivered before the close itself.
+    expect(log.slice(-2)).toEqual(["input:close it", "closed:closed"]);
 
     test.model.respond([toolCall("cycle"), text("cycled it")]);
     await test.agent.host.submitInput(id, "cycle it", { wait: true });
     await eventually(() => log.includes("reopened:update:waiting"));
-    expect(closes()).toBe(3);
+    expect(closes()).toBe(4);
+    expect(log.slice(-5)).toEqual([
+      "input:cycle it",
+      "closed:closed",
+      "reopened:update:open",
+      "closed:closed",
+      "reopened:update:waiting",
+    ]);
 
     await closeOverHttp();
-    await eventually(() => closes() === 4);
+    await eventually(() => closes() === 5);
     await test.dispose();
   }, 20_000);
 });

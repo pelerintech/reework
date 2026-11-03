@@ -132,6 +132,20 @@ describe("the conversation view", () => {
     await done();
   });
 
+  it("keeps the input author on the view's user message", async () => {
+    const { agent, model, client, id, done } = await setup();
+    model.respond([text("hi there")]);
+    const from = { kind: "system" as const, id: "alerts" };
+    await agent.host.submitInput(id, "hello", { from, wait: true });
+
+    const { state, close } = await follow(client, id);
+    const user = state.view.items.find((i) => i.type === "message" && i.role === "user");
+    expect(user).toMatchObject({ text: "hello", from });
+
+    close();
+    await done();
+  });
+
   it("shows a tool as running when the view starts mid-tool", async () => {
     const { agent, model, client, id, release, done } = await setup();
     model.respond([toolCall("scan", { depth: 1 }), text("done")]);

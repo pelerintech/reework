@@ -2,6 +2,7 @@
 // from the endpoint's report, with no pi-ai type and no cost.
 import { describe, expect, it, expectTypeOf } from "vitest";
 import { definePlugin } from "@reework/core";
+import { toExtension } from "@reework/core/internal";
 import type { AgentDefinition, ModelUsage, PluginHooks } from "@reework/core";
 import { startTestAgent } from "../support/agent.ts";
 import { startFakeLlm } from "../support/fake-llm.ts";
@@ -29,6 +30,26 @@ async function agentWith(hooks: PluginHooks): Promise<Harness> {
   return { llm, agent };
 }
 
+/**
+ * The message the facade hands to `afterModelResponse`, built from a provider message that
+ * carries no usage object at all. The agent path cannot produce one (pi-durable's usage
+ * ledger needs the counters), so this drives the facade's own hook conversion.
+ */
+type AfterResponse = (
+  message: { content: unknown[]; provider: string; model: string },
+  api: unknown,
+  context: unknown,
+) => Promise<void>;
+
+function afterResponseHook(hooks: PluginHooks): AfterResponse {
+  const extension = toExtension("usage", { hooks });
+  const registration = extension.hooks?.find(
+    (h) => typeof (h.handlers as Record<string, unknown>).afterResponse === "function",
+  );
+  if (!registration) throw new Error("the facade registered no afterResponse hook");
+  return (registration.handlers as { afterResponse: AfterResponse }).afterResponse;
+}
+
 describe("typed model usage", () => {
   it("maps the endpoint's usage to ModelUsage without cost", async () => {
     const seen: unknown[] = [];
@@ -49,6 +70,21 @@ describe("typed model usage", () => {
       totalTokens: 150,
     });
     expect(seen[0]).not.toHaveProperty("cost");
+  });
+
+  it("still runs the hook with usage undefined when the message has no usage", async () => {
+    const seen: (ModelUsage | undefined)[] = [];
+    const hook = afterResponseHook({
+      async afterModelResponse(input) {
+        seen.push(input.usage);
+      },
+    });
+    const api = { conversationId: "c1", memo: async () => undefined };
+
+    await hook({ content: [], provider: "p", model: "m" }, api, {});
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toBeUndefined();
   });
 
   it("types the hook's usage as ModelUsage | undefined", () => {

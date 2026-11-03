@@ -1,11 +1,13 @@
 // Decision attribution: every gate decision records who decided, carried to the action,
 // the watch event and the resumed message, and kept across a restart.
 import { describe, expect, it } from "vitest";
+import { createRegistry } from "@earendil-works/pi-durable";
 import { createClient } from "@reework/client";
 import type { ProtocolError } from "@reework/client";
 import type { AgentEvent } from "@reework/types";
 import { definePlugin, gatedAction, InvalidAuthor } from "@reework/core";
 import type { AgentDefinition, GateDecision } from "@reework/core";
+import { Engine, installHITL, settleGate } from "@reework/core/internal";
 import { startTestAgent, text, toolCall, waitFor, waitForProposal } from "@reework/core/testing";
 import { tmpStorage } from "../support/agent.ts";
 
@@ -166,7 +168,7 @@ describe("decision attribution", () => {
     await test.dispose();
   });
 
-  it("keeps decidedBy across a restart before the action runs", async () => {
+  it("keeps decidedBy across a restart when the decision is stored before it", async () => {
     const storagePath = tmpStorage();
     const decidedBy = { kind: "agent" as const, id: "supervisor" };
 
@@ -175,19 +177,25 @@ describe("decision attribution", () => {
     const { id } = await first.agent.host.createConversation();
     await first.agent.host.submitInput(id, "ship it");
     const proposal = await waitForProposal(first.agent.host, id);
-    // Stop before any decision: the gated action is still suspended durably.
+    // Stop before the decision: the gated action is still suspended durably.
     await first.agent.stop();
 
-    recorded = [];
-    const second = await startTestAgent(definition(), { storagePath });
-    second.model.respond([text("done")]);
-    await second.agent.host.submitDecision({
+    // Record the decision on the storage without resuming the gate, so the next
+    // start is the one that reads it back.
+    const registry = createRegistry();
+    installHITL(registry);
+    const engine = await Engine.open({ storagePath, registry });
+    await settleGate(engine, {
       proposalId: proposal.id,
       selectedOption: "a",
       instruction: null,
       decidedBy,
     });
+    await engine.close();
 
+    recorded = [];
+    const second = await startTestAgent(definition(), { storagePath });
+    second.model.respond([text("done")]);
     await waitFor(() => recorded.length > 0);
     expect(recorded[0]?.decidedBy).toEqual(decidedBy);
     await second.dispose();
