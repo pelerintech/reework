@@ -19,6 +19,7 @@ import type {
 } from "@earendil-works/pi-durable";
 import type { AssistantMessage, Message, Usage } from "@earendil-works/pi-ai";
 import type { Models } from "@earendil-works/pi-ai/models";
+import type { Hono } from "hono";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import type {
   Author,
@@ -49,6 +50,9 @@ import type { StoreBackend } from "./plugin-store.ts";
  * are reework shapes (an opaque `ReeworkTool`, a reework `ToolContext`), and the
  * pi-durable plumbing (registrations, `StorageSeam`, internals) is confined here.
  */
+
+/** A plugin's route app; plugins never import hono themselves. */
+export type { Hono as RouteApp };
 
 /** The schema builder for tool parameters, so plugins need not import pi-ai. */
 export { Type };
@@ -393,11 +397,24 @@ export interface PluginSetupContext<TConfig> {
   readonly signal: AbortSignal;
 }
 
+/** What a plugin's `routes(app, ctx)` receives. */
+export interface PluginRouteContext<TConfig> {
+  readonly host: AgentHost;
+  readonly store: PluginStore;
+  readonly config: TConfig;
+  /** Aborted when the agent begins to stop. */
+  readonly signal: AbortSignal;
+  /** This plugin's directory beside the agent's storage. */
+  readonly dataDir: string;
+}
+
 /** What a plugin factory returns for one config. */
 export interface BuiltPlugin<TConfig = unknown> {
   readonly tools?: readonly ReeworkTool[];
   readonly sections?: readonly PromptSection[];
   readonly hooks?: PluginHooks;
+  /** Mount HTTP routes under `/plugins/<name>` after setup. */
+  routes?(app: Hono, ctx: PluginRouteContext<TConfig>): void;
   /** Runtime wiring after the engine opens (watchers, channel transports). */
   setup?(ctx: PluginSetupContext<TConfig>): void | Promise<void>;
   /** Release what the factory or `setup` opened; runs once, on stop, before the engine closes. */

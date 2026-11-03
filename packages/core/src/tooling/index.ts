@@ -29,6 +29,8 @@ export type {
   Static,
   TSchema,
   BuiltPlugin,
+  RouteApp,
+  PluginRouteContext,
   PluginSetupContext,
   PluginHooks,
   PluginHookContext,

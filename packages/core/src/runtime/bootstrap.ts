@@ -1,4 +1,5 @@
 import { serve } from "@hono/node-server";
+import { Hono } from "hono";
 import type { ServerType } from "@hono/node-server";
 import { createRegistry, defineExtension, section } from "@earendil-works/pi-durable";
 import type {
@@ -8,17 +9,20 @@ import type {
   ToolRegistration,
 } from "@earendil-works/pi-durable";
 import type { Models } from "@earendil-works/pi-ai/models";
+import { PLUGIN_ROUTE_PREFIX } from "@reework/types";
 import type { AgentDefinition, DeclaredModule } from "../agent-definition.ts";
 import { CONTEXT, Engine } from "../engine.ts";
 import { installHITL } from "../hitl/gate.ts";
 import { AgentHost } from "../host.ts";
 import { createServer } from "../server/index.ts";
+import { requireToken } from "../server/app.ts";
 import { buildToolHooks, toDurableTool, toExtension } from "../tooling/facade.ts";
 import type {
   BuiltPlugin,
   PluginBindings,
   PluginEventContext,
   PluginHooks,
+  PluginRouteContext,
   ReeworkTool,
 } from "../tooling/facade.ts";
 import { caseExtension } from "../tooling/case-tool.ts";
@@ -261,6 +265,7 @@ async function boot(
     }
   }
   const { app, nodeWebSocket } = createServer(host, { token, name: agent.name });
+  mountPluginRoutes(app, built, host, engine, lifecycle.signal, token);
   agent.routes?.(app, host);
   // Continue whatever the previous process left unfinished: runs, gates, tasks.
   engine.resume();
@@ -333,6 +338,32 @@ async function boot(
 }
 
 const DEFAULT_STOP_TIMEOUT_MS = 8_000;
+
+/** Mount each plugin's routes under its prefix, behind the token by default. */
+function mountPluginRoutes(
+  app: Hono,
+  built: readonly Built[],
+  host: AgentHost,
+  engine: Engine,
+  signal: AbortSignal,
+  token: string,
+): void {
+  for (const plugin of built) {
+    if (!plugin.built.routes) continue;
+    const prefix = `${PLUGIN_ROUTE_PREFIX}/${plugin.name}`;
+    const subApp = new Hono();
+    const ctx: PluginRouteContext<unknown> = {
+      host,
+      store: createPluginStore({ commit: (fn) => engine.commit(fn) }, plugin.name),
+      config: plugin.config,
+      signal,
+      dataDir: "",
+    };
+    plugin.built.routes(subApp, ctx);
+    app.use(`${prefix}/*`, requireToken(token));
+    app.route(prefix, subApp);
+  }
+}
 
 /** Run every built plugin's `stop` in reverse declaration order; a failure is logged and skipped. */
 async function stopPlugins(

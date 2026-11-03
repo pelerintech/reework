@@ -26,7 +26,7 @@ export interface ServerOptions {
 }
 
 /** Reject requests whose `Authorization: Bearer` header is not `token`. */
-function requireToken(token: string): MiddlewareHandler {
+export function requireToken(token: string): MiddlewareHandler {
   const expected = Buffer.from(`Bearer ${token}`);
   return async (c, next) => {
     const given = Buffer.from(c.req.header("authorization") ?? "");

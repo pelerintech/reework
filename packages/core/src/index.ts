@@ -42,6 +42,8 @@ export {
 } from "./tooling/index.ts";
 export type {
   BuiltPlugin,
+  RouteApp,
+  PluginRouteContext,
   PluginSetupContext,
   PluginHooks,
   PluginHookContext,
@@ -63,7 +65,7 @@ export type {
 } from "./tooling/index.ts";
 
 export type { Author, AuthorKind, ModelCallUsage, ModelUsage } from "@reework/types";
-export { isAuthor, normalizeAuthor } from "@reework/types";
+export { isAuthor, normalizeAuthor, PLUGIN_ROUTE_PREFIX } from "@reework/types";
 
 export { createServer } from "./server/index.ts";
 

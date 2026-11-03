@@ -409,6 +409,13 @@ export interface SubmissionAnswered extends SubmissionAccepted {
 }
 
 // ---------------------------------------------------------------------------
+// Plugin routes
+// ---------------------------------------------------------------------------
+
+/** Prefix every plugin-mounted route sits under; a plugin's own paths are relative. */
+export const PLUGIN_ROUTE_PREFIX = "/plugins";
+
+// ---------------------------------------------------------------------------
 // Route table: every built-in protocol route. The server mounts from it and
 // clients call by id, so they cannot drift.
 // ---------------------------------------------------------------------------
