@@ -387,6 +387,15 @@ function createHitlTasks(state: HitlState) {
   return { GateTask, GatedActionTask, GatedToolTask, BackgroundTask };
 }
 
+/** Who decided, as the resumed message names them: a name, an id, a kind, or someone unknown. */
+function deciderLabel(decision: GateDecision): string {
+  const by = decision.decidedBy;
+  if (!by) return "Someone";
+  if (by.name) return by.name;
+  if (by.id) return by.id;
+  return by.kind === "human" ? "A human" : by.kind === "system" ? "A system" : "An agent";
+}
+
 /** The input that tells the agent how a gated action ended. */
 function describeOutcome(
   name: string,
@@ -406,7 +415,7 @@ function describeOutcome(
       ? `failed: ${result.error}`
       : `result: ${JSON.stringify(result.output ?? null)}`;
   const usage = result.usage?.length ? ` usage: ${JSON.stringify(result.usage)}` : "";
-  return `[gated action ${name}] The human decided (${choice || "no choice"}). ${outcome}${usage}`;
+  return `[gated action ${name}] ${deciderLabel(decision)} decided (${choice || "no choice"}). ${outcome}${usage}`;
 }
 
 /** Task tokens used to create HITL tasks; the registry runs its own per-state copies. */

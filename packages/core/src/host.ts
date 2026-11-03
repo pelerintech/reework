@@ -380,6 +380,8 @@ export class AgentHost {
     options: { conversationId?: string } = {},
   ): Promise<void> {
     if (options.conversationId !== undefined) await this.conversation(options.conversationId);
+    const decidedBy =
+      decision.decidedBy === undefined ? undefined : requireAuthor(decision.decidedBy);
     const open = await listOpenProposals(this.engine);
     const proposal = open.find((p) => p.id === decision.proposalId);
     if (
@@ -388,7 +390,12 @@ export class AgentHost {
     ) {
       throw new ProposalNotFound(decision.proposalId);
     }
-    await settleGate(this.engine, decision);
+    await settleGate(this.engine, {
+      proposalId: decision.proposalId,
+      selectedOption: decision.selectedOption,
+      instruction: decision.instruction,
+      ...(decidedBy === undefined ? {} : { decidedBy }),
+    });
   }
 
   async snapshot(id: string): Promise<ConversationSnapshot> {

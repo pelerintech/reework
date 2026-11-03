@@ -30,11 +30,11 @@ export interface ModelCallUsage {
  */
 export type AuthorKind = "human" | "system" | "agent";
 
-export interface Author {
+export type Author = {
   readonly kind: AuthorKind;
   readonly id?: string;
   readonly name?: string;
-}
+};
 
 const AUTHOR_KINDS: readonly AuthorKind[] = ["human", "system", "agent"];
 
@@ -261,6 +261,8 @@ export interface ProposalClosedEvent extends AgentEventBase {
   proposalId: string;
   selectedOption: string | null;
   instruction: string | null;
+  /** Who decided; absent means unattributed. */
+  decidedBy?: Author;
 }
 
 /** The conversation's case changed. */
@@ -363,13 +365,15 @@ export function isProposal(value: unknown): value is Proposal {
 // Gate decision records (business-flow-driven)
 // ---------------------------------------------------------------------------
 
-/** A human decision on a gate: a finite choice and/or a free-form instruction. */
+/** A decision on a gate: a finite choice and/or a free-form instruction, and who decided. */
 export type GateDecision = {
   proposalId: string;
   /** Finite choice offered by the gate, or null when none was selected. */
   selectedOption: string | null;
   /** Open-ended instruction the agent interprets, or null when none was given. */
   instruction: string | null;
+  /** Who decided; absent means unattributed (never assumed human). */
+  decidedBy?: Author;
 };
 
 export function isGateDecision(value: unknown): value is GateDecision {
@@ -378,6 +382,7 @@ export function isGateDecision(value: unknown): value is GateDecision {
   if (typeof d.proposalId !== "string") return false;
   const hasOption = typeof d.selectedOption === "string";
   const hasInstruction = typeof d.instruction === "string";
+  if (d.decidedBy !== undefined && !isAuthor(d.decidedBy)) return false;
   return hasOption || hasInstruction;
 }
 

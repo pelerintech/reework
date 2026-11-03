@@ -39,10 +39,12 @@ function requireToken(token: string): MiddlewareHandler {
 
 async function decisionFrom(c: Context, proposalId: string): Promise<GateDecision> {
   const body = await c.req.json<Partial<GateDecision>>().catch(() => ({}) as Partial<GateDecision>);
+  const decidedBy = body.decidedBy === undefined ? undefined : (body.decidedBy as Author);
   return {
     proposalId,
     selectedOption: typeof body.selectedOption === "string" ? body.selectedOption : null,
     instruction: typeof body.instruction === "string" ? body.instruction : null,
+    ...(decidedBy === undefined ? {} : { decidedBy }),
   };
 }
 
@@ -248,6 +250,7 @@ export function createServer(host: AgentHost, options: ServerOptions) {
                 proposalId,
                 selectedOption: decision.selectedOption,
                 instruction: decision.instruction,
+                ...(decision.decidedBy === undefined ? {} : { decidedBy: decision.decidedBy }),
                 timestamp: Date.now(),
               });
             }),
