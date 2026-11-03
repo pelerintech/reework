@@ -258,15 +258,18 @@ async function boot(
     add: (id, input) => host.addFile(id, input),
   };
   for (const plugin of built) {
-    const dataDir = pluginDataDir(options.storagePath, plugin.name);
-    if (plugin.built.setup || plugin.built.routes) mkdirSync(dataDir, { recursive: true });
+    if (plugin.built.setup || plugin.built.routes) {
+      mkdirSync(pluginDataDir(options.storagePath, plugin.name), { recursive: true });
+    }
+  }
+  for (const plugin of built) {
     try {
       await plugin.built.setup?.({
         host,
         store: createPluginStore({ commit: (fn) => engine.commit(fn) }, plugin.name),
         config: plugin.config,
         signal: lifecycle.signal,
-        dataDir,
+        dataDir: pluginDataDir(options.storagePath, plugin.name),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -394,9 +397,7 @@ function mountPluginRoutes(
       return c.json({ error: "plugin_error", plugin: plugin.name }, 500);
     });
     const openPrefix = `${prefix}/open`;
-    const hasOpen = subApp.routes.some(
-      (route) => route.path === "/open" || route.path.startsWith("/open/"),
-    );
+    const hasOpen = subApp.routes.some((route) => route.path.startsWith("/open/"));
     if (hasOpen) {
       console.warn(
         `[reework] plugin "${plugin.name}" serves unauthenticated routes under ${openPrefix}/`,
@@ -404,7 +405,7 @@ function mountPluginRoutes(
     }
     const guard = requireToken(token);
     app.use(`${prefix}/*`, async (c, next) => {
-      if (c.req.path === openPrefix || c.req.path.startsWith(`${openPrefix}/`)) return next();
+      if (c.req.path.startsWith(`${openPrefix}/`)) return next();
       return guard(c, next);
     });
     app.route(prefix, subApp);

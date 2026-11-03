@@ -18,13 +18,15 @@ interface Seen {
   dir?: string;
   existed?: boolean;
   content?: string;
+  siblingExisted?: boolean;
 }
 
-function pluginA(seen: Seen) {
+function pluginA(seen: Seen, sibling?: string) {
   return definePlugin("a", () => ({
     setup(ctx) {
       seen.dir = ctx.dataDir;
       seen.existed = existsSync(ctx.dataDir);
+      seen.siblingExisted = sibling ? existsSync(sibling) : undefined;
       const file = join(ctx.dataDir, "x.txt");
       seen.content = existsSync(file) ? readFileSync(file, "utf8") : undefined;
       writeFileSync(file, "kept");
@@ -57,19 +59,20 @@ describe("plugin data directories", () => {
   it("sit beside the storage, exist before setup, persist, and skip tools-only plugins", async () => {
     const storagePath = tmpStorage();
     const seen: Seen = {};
+    const expectedA = `${storagePath}.plugins/a`;
+    const expectedB = `${storagePath}.plugins/b`;
     const first = await startTestAgent(
       definition([
-        { plugin: pluginA(seen), config: {} },
+        { plugin: pluginA(seen, expectedB), config: {} },
         { plugin: pluginB, config: {} },
         { plugin: pluginC, config: {} },
       ]),
       { storagePath },
     );
 
-    const expectedA = `${storagePath}.plugins/a`;
-    const expectedB = `${storagePath}.plugins/b`;
     expect(seen.dir).toBe(expectedA);
     expect(seen.existed).toBe(true);
+    expect(seen.siblingExisted).toBe(true);
     expect(existsSync(join(expectedA, "x.txt"))).toBe(true);
 
     const dir = await authedApp(first).request("/plugins/b/dir");

@@ -42,6 +42,7 @@ describe("plugin routes: open paths", () => {
   it("serve /open/ without the token and warn at startup", async () => {
     const inbound = vi.fn((c) => c.json({ ok: true }));
     const other = vi.fn((c) => c.json({ ok: true }));
+    const exact = vi.fn((c) => c.json({ ok: true }));
     const items = definePlugin("items", () => ({
       routes(app) {
         app.get("/list", (c) => c.json({ items: [] }));
@@ -50,7 +51,13 @@ describe("plugin routes: open paths", () => {
     const hookin = definePlugin("hookin", () => ({
       routes(app) {
         app.post("/open/inbound", inbound);
+        app.get("/open", exact);
         app.get("/other", other);
+      },
+    }));
+    const exactopen = definePlugin("exactopen", () => ({
+      routes(app) {
+        app.get("/open", exact);
       },
     }));
 
@@ -61,6 +68,7 @@ describe("plugin routes: open paths", () => {
         plugins: [
           { plugin: items, config: {} },
           { plugin: hookin, config: {} },
+          { plugin: exactopen, config: {} },
         ],
       }),
     );
@@ -71,6 +79,13 @@ describe("plugin routes: open paths", () => {
     expect(await open.json()).toEqual({ ok: true });
     expect(inbound).toHaveBeenCalledTimes(1);
 
+    const exactNoToken = await agent.app.request("/plugins/hookin/open");
+    expect(exactNoToken.status).toBe(401);
+    expect(await exactNoToken.json()).toEqual({ error: "unauthorized" });
+    const exactOnlyNoToken = await agent.app.request("/plugins/exactopen/open");
+    expect(exactOnlyNoToken.status).toBe(401);
+    expect(exact).not.toHaveBeenCalled();
+
     const guarded = await agent.app.request("/plugins/hookin/other");
     expect(guarded.status).toBe(401);
     expect(await guarded.json()).toEqual({ error: "unauthorized" });
@@ -80,6 +95,7 @@ describe("plugin routes: open paths", () => {
     expect(logged).toContain('plugin "hookin"');
     expect(logged).toContain("/plugins/hookin/open/");
     expect(logged).not.toContain('plugin "items"');
+    expect(logged).not.toContain('plugin "exactopen"');
   });
 });
 
