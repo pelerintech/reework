@@ -61,7 +61,8 @@ export type {
   WorkspaceTarget,
 } from "./tooling/index.ts";
 
-export type { ModelCallUsage, ModelUsage } from "@reework/types";
+export type { Author, AuthorKind, ModelCallUsage, ModelUsage } from "@reework/types";
+export { isAuthor, normalizeAuthor } from "@reework/types";
 
 export { createServer } from "./server/index.ts";
 

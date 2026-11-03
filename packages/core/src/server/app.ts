@@ -5,7 +5,7 @@ import { createNodeWebSocket } from "@hono/node-ws";
 import { watchEvents } from "@earendil-works/pi-durable";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { ROUTES } from "@reework/types";
-import type { AgentEvent, CasePatch, GateDecision, RouteId } from "@reework/types";
+import type { AgentEvent, Author, CasePatch, GateDecision, RouteId } from "@reework/types";
 import { createEventMapper } from "../protocol/event-mapper.ts";
 import { onProposalOpen, onProposalSettled } from "../protocol/proposals.ts";
 import { CONTEXT } from "../engine.ts";
@@ -129,6 +129,7 @@ export function createServer(host: AgentHost, options: ServerOptions) {
         requestId?: unknown;
         mode?: unknown;
         files?: unknown;
+        from?: unknown;
       }>();
       const content = typeof body.content === "string" ? body.content : "";
       const requestId = typeof body.requestId === "string" ? body.requestId : undefined;
@@ -136,6 +137,8 @@ export function createServer(host: AgentHost, options: ServerOptions) {
       const files = Array.isArray(body.files)
         ? body.files.filter((f): f is string => typeof f === "string")
         : undefined;
+      const from =
+        typeof body.from === "object" && body.from !== null ? (body.from as Author) : undefined;
       const wait = c.req.query("wait") === "true";
       try {
         const { duplicate, ...result } = await host.submitInput(id, content, {
@@ -143,6 +146,7 @@ export function createServer(host: AgentHost, options: ServerOptions) {
           requestId,
           mode,
           files,
+          from,
         });
         return c.json({ conversationId: id, ...result }, wait || duplicate ? 200 : 202);
       } catch (error) {

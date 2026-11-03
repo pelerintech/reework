@@ -4,6 +4,7 @@ import WebSocket from "ws";
 import { ROUTES } from "@reework/types";
 import type {
   AgentEvent,
+  Author,
   Case,
   CasePatch,
   ConversationCreated,
@@ -45,6 +46,8 @@ export interface SubmitOptions {
   readonly mode?: "followUp" | "steer";
   /** File ids of this conversation to name in the input. */
   readonly files?: readonly string[];
+  /** Who the input is from; absent means unattributed (never assumed human). */
+  readonly from?: Author;
 }
 
 /** A frame of `watch`: the snapshot first, then batches of live events. */

@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { configure } from "@earendil-works/pi-durable";
 import type { AgentChange, ConversationId, EntryRecord } from "@earendil-works/pi-durable";
+import type { JsonValue } from "@earendil-works/chord";
 import type {
+  Author,
   Case,
   CasePatch,
   CasePriority,
@@ -10,6 +12,7 @@ import type {
   Proposal,
   TranscriptItem,
 } from "@reework/types";
+import { isAuthor } from "@reework/types";
 import type { Engine } from "./engine.ts";
 import { CONTEXT } from "./engine.ts";
 import { ConversationsDoc } from "./protocol/conversations.ts";
@@ -53,6 +56,8 @@ export interface SubmitOptions {
   readonly requestId?: string;
   /** File ids of this conversation to name in the input. */
   readonly files?: readonly string[];
+  /** Who the input is from; absent means unattributed (never assumed human). */
+  readonly from?: Author;
   /**
    * While a run is active: `followUp` (default) queues the input for after it;
    * `steer` takes it into the current run at its next step.
@@ -332,9 +337,20 @@ export class AgentHost {
     }
     const whenBusy = options.mode ?? "followUp";
     const submission = await conversation.submit(
-      requestId === undefined
-        ? { type: "input", content, whenBusy }
-        : { type: "input", content, whenBusy, requestId },
+      {
+        type: "input",
+        content,
+        whenBusy,
+        ...(requestId === undefined ? {} : { requestId }),
+        ...(options.from === undefined
+          ? {}
+          : {
+              entry: {
+                kind: "reework.input",
+                data: { from: options.from } as unknown as JsonValue,
+              },
+            }),
+      },
       CONTEXT,
     );
     const submissionId = String(submission.id);
@@ -487,8 +503,10 @@ export function toMessage(entry: EntryRecord): Message | undefined {
     | { role?: string; content?: unknown; timestamp?: number }
     | undefined;
   if (!model || (model.role !== "assistant" && model.role !== "user")) return undefined;
+  const from = authorOf(entry);
+  const timestamp = model.timestamp ?? Date.now();
   if (typeof model.content === "string") {
-    return { role: model.role, content: model.content, timestamp: model.timestamp ?? Date.now() };
+    return { role: model.role, content: model.content, timestamp, ...(from ? { from } : {}) };
   }
   const blocks = Array.isArray(model.content) ? model.content : [];
   const content = blocks
@@ -497,7 +515,13 @@ export function toMessage(entry: EntryRecord): Message | undefined {
       return block.type === "text" && typeof block.text === "string";
     })
     .map((b) => ({ type: "text" as const, text: b.text }));
-  return { role: model.role, content, timestamp: model.timestamp ?? Date.now() };
+  return { role: model.role, content, timestamp, ...(from ? { from } : {}) };
+}
+
+/** The author an entry records, when it carries a well-formed one. */
+function authorOf(entry: EntryRecord): Author | undefined {
+  const data = entry.data as { from?: unknown } | undefined;
+  return isAuthor(data?.from) ? data.from : undefined;
 }
 
 /**
@@ -545,7 +569,15 @@ export function toTranscript(entries: readonly EntryRecord[], running: boolean):
       .filter((b) => b.type === "text" && typeof b.text === "string")
       .map((b) => b.text)
       .join("");
-    if (text) items.push({ type: "message", role: model.role, text, timestamp });
+    const from = authorOf(entry);
+    if (text)
+      items.push({
+        type: "message",
+        role: model.role,
+        text,
+        timestamp,
+        ...(from ? { from } : {}),
+      });
     for (const block of blocks) {
       if (block.type !== "toolCall" || !block.id) continue;
       const call: Extract<TranscriptItem, { type: "tool" }> = {

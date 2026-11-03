@@ -25,6 +25,42 @@ export interface ModelCallUsage {
 }
 
 /**
+ * Who an input or a decision is from. `id` is stable within the kind (a user name,
+ * an integration, a plugin or agent name); `name` is what a surface displays.
+ */
+export type AuthorKind = "human" | "system" | "agent";
+
+export interface Author {
+  readonly kind: AuthorKind;
+  readonly id?: string;
+  readonly name?: string;
+}
+
+const AUTHOR_KINDS: readonly AuthorKind[] = ["human", "system", "agent"];
+
+/** Guard: a well-formed author (`kind` known; `id`/`name` non-empty, at most 200 chars). */
+export function isAuthor(value: unknown): value is Author {
+  if (typeof value !== "object" || value === null) return false;
+  const author = value as Record<string, unknown>;
+  if (!AUTHOR_KINDS.includes(author.kind as AuthorKind)) return false;
+  for (const field of ["id", "name"] as const) {
+    const given = author[field];
+    if (given === undefined) continue;
+    if (typeof given !== "string" || given.length === 0 || given.length > 200) return false;
+  }
+  return true;
+}
+
+/** Keep only the author's known fields. */
+export function normalizeAuthor(author: Author): Author {
+  return {
+    kind: author.kind,
+    ...(author.id === undefined ? {} : { id: author.id }),
+    ...(author.name === undefined ? {} : { name: author.name }),
+  };
+}
+
+/**
  * Token usage of one model response. Tokens only: reework agents use custom
  * endpoints that have no catalog price, so a budget plugin prices them itself.
  */
@@ -41,6 +77,8 @@ export interface Message {
   role: MessageRole;
   content: MessageContent;
   timestamp: number;
+  /** Who the message is from; absent means unattributed, never a human. */
+  from?: Author;
 }
 
 /** Guard: is this value a pi-ai-style message (`{ role, content }`)? */
@@ -197,6 +235,8 @@ export type TranscriptItem =
       role: "user" | "assistant";
       text: string;
       timestamp: number;
+      /** Who the message is from; absent means unattributed. */
+      from?: Author;
     }
   | {
       type: "tool";
