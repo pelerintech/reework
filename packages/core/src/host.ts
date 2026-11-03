@@ -7,6 +7,7 @@ import type {
   Case,
   CasePatch,
   CasePriority,
+  CaseStatus,
   FileRecord,
   Message,
   Proposal,
@@ -217,6 +218,21 @@ export class AgentHost {
     });
   }
 
+  /** Enqueue the case-lifecycle hook a status change calls for; a no-op change fires nothing. */
+  private caseTransition(
+    id: string,
+    before: CaseStatus,
+    after: Case,
+    cause: "input" | "update",
+  ): void {
+    if (before === after.status) return;
+    if (after.status === "closed") {
+      this.events?.enqueue("onCaseClosed", id, { case: after });
+    } else if (before === "closed") {
+      this.events?.enqueue("onCaseReopened", id, { case: after, cause });
+    }
+  }
+
   /** Update a conversation's case. An invalid patch is refused naming the field. */
   async updateCase(id: string, patch: CasePatch): Promise<Case> {
     const result = validateCasePatch(patch);
@@ -232,6 +248,7 @@ export class AgentHost {
         );
       }
     }
+    const before = (await this.conversationRecord(id)).status ?? "open";
     await this.engine.commit(async (tx) => {
       const doc = (await tx.doc(ConversationsDoc)) as { conversations: ConversationRecord[] };
       const rec = doc.conversations.find((c) => c.id === id);
@@ -242,6 +259,7 @@ export class AgentHost {
     const openProposals = (await this.listProposals({ conversationId: id })).length;
     const updated = toCase(record, openProposals);
     this.notifyCaseUpdated(updated);
+    this.caseTransition(id, before, updated, "update");
     return updated;
   }
 
@@ -319,6 +337,7 @@ export class AgentHost {
       content = `${content}\n\n${lines.join("\n")}`;
     }
     const conversation = await this.conversation(id);
+    const before = (await this.conversationRecord(id)).status ?? "open";
     // Submitting input reopens a closed case (and clears `closedAt`) and always
     // moves `updatedAt`; a waiting case stays waiting. (The gate's resume is
     // separate and never reopens.)
@@ -333,7 +352,9 @@ export class AgentHost {
         rec.caseUpdatedAt = Math.max(Date.now(), (rec.caseUpdatedAt ?? rec.createdAt) + 1);
       }
     });
-    this.notifyCaseUpdated(await this.getCase(id));
+    const reopened = await this.getCase(id);
+    this.notifyCaseUpdated(reopened);
+    this.caseTransition(id, before, reopened, "input");
     const { requestId } = options;
     if (requestId !== undefined) {
       const earlier = await this.engine.commit((tx) =>

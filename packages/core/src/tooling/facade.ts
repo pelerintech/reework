@@ -371,6 +371,13 @@ export interface PluginHooks {
     input: { proposal: Proposal; decision: GateDecision },
     ctx: PluginEventContext,
   ): Promise<void>;
+  /** A case's status became `closed` (from `open` or `waiting`). */
+  onCaseClosed?(input: { case: Case }, ctx: PluginEventContext): Promise<void>;
+  /** A closed case became `open` or `waiting`, through input or an update. */
+  onCaseReopened?(
+    input: { case: Case; cause: "input" | "update" },
+    ctx: PluginEventContext,
+  ): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
