@@ -111,6 +111,18 @@ export function createClient(options: ClientOptions) {
   return {
     call,
 
+    /** Call a plugin route under `/plugins/<name>`, with the bearer token. */
+    plugin(name: string) {
+      return {
+        request(path: string, init: RequestInit = {}): Promise<Response> {
+          if (!path.startsWith("/")) throw new Error(`plugin request path must start with "/"`);
+          const headers = new Headers(init.headers);
+          headers.set("authorization", `Bearer ${options.token}`);
+          return fetch(`${baseUrl}/plugins/${name}${path}`, { ...init, headers });
+        },
+      };
+    },
+
     /** Liveness, and the agent's name. */
     async health(): Promise<{ ok: boolean; name?: string }> {
       return (await call<{ ok: boolean; name?: string }>("health")).body;

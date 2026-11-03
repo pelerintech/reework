@@ -76,3 +76,30 @@ describe("@reework/client", () => {
     expect(frames.slice(1).every((f) => f.kind === "events")).toBe(true);
   });
 });
+
+describe("@reework/client plugin requests", () => {
+  it("calls a plugin route with the token and returns raw responses", async () => {
+    const plugin = definePlugin("items", () => ({
+      routes(app) {
+        app.get("/list", (c) => c.json({ items: [1], auth: c.req.header("authorization") }));
+        app.get("/gone", (c) => c.json({ error: "gone" }, 404));
+      },
+    }));
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }));
+    const { port } = await agent.listen(0);
+    const client = createClient({ baseUrl: `http://127.0.0.1:${port}`, token: TEST_TOKEN });
+
+    const list = await client.plugin("items").request("/list");
+    expect(list.status).toBe(200);
+    expect(await list.json()).toEqual({
+      items: [1],
+      auth: `Bearer ${TEST_TOKEN}`,
+    });
+
+    const gone = await client.plugin("items").request("/gone");
+    expect(gone.status).toBe(404);
+    expect(await gone.json()).toEqual({ error: "gone" });
+
+    expect(() => client.plugin("items").request("list")).toThrow(/must start with/);
+  });
+});
