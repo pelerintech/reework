@@ -138,8 +138,9 @@ export const guard = definePlugin("guard", () => ({
 
 ## Event hooks
 
-Four hooks cover moments outside a run: `onInput` (input was admitted), `onDecision` (a gate proposal was
-settled), `onCaseClosed` and `onCaseReopened` (a case crossed the closed boundary). They fire **after** the
+Five hooks cover moments outside a run: `onInput` (input was admitted), `onProposalOpened` (a gate proposal
+opened), `onDecision` (a gate proposal was settled), `onCaseClosed` and `onCaseReopened` (a case crossed the
+closed boundary). A proposal's `onProposalOpened` is delivered before its `onDecision`. They fire **after** the
 commit, from one FIFO queue per agent: one event at a time, plugins in declaration order, each hook awaited.
 The caller never waits — a submit or a decide returns as soon as its commit is done — and delivery is **at most
 once**, in-process: an event that happens while the process crashes is lost, and nothing is replayed on
@@ -156,6 +157,9 @@ export const journal = definePlugin("journal", () => ({
   hooks: {
     async onInput({ content }, ctx) {
       await ctx.store.case.set("last-input", content);
+    },
+    async onProposalOpened({ proposal }, ctx) {
+      await ctx.store.agent.set(`opened/${proposal.id}`, proposal.title);
     },
     async onDecision({ proposal, decision }, ctx) {
       await ctx.store.agent.set(`decision/${proposal.id}`, decision.selectedOption ?? "none");
@@ -260,10 +264,11 @@ by core act there. Core does not confine paths: wrap tools if you need a hard bo
 
 ## Setup and the host
 
-`setup({ host, store, config, signal })` runs once the engine is open — for watchers, schedules or
+`setup({ host, store, config, signal, dataDir })` runs once the engine is open — for watchers, schedules or
 channel transports. `host` is the in-process protocol (`createConversation`, `submitInput`, `getCase`,
 `listCases`, `updateCase`, `addFile`, `listFiles`, `readFile`, `listProposals`, `submitDecision`,
-`snapshot`, `abort`); `store` is the plugin's durable store.
+`snapshot`, `abort`); `store` is the plugin's durable store; `dataDir` is the plugin's own directory beside the
+agent's storage (see [Plugin data directory](#plugin-data-directory)).
 
 ## Lifecycle
 
@@ -317,10 +322,59 @@ export const trust = definePlugin("trust", () => ({
 }));
 ```
 
+## Plugin routes
+
+A plugin can mount its own HTTP routes under `/plugins/<name>` by returning `routes(app, ctx)`; paths it
+registers are relative to that prefix. Every route needs the API token by default. The only exception is a path
+under `/plugins/<name>/open/` (for inbound webhooks), served without the token and announced once at startup with
+`[reework] plugin "<name>" serves unauthenticated routes under /plugins/<name>/open/`. There is no other opt-out.
+A plugin with routes must have a URL-safe name (`^[a-z0-9][a-z0-9-]*$`). A throwing handler is logged as
+`plugin "<name>" route failed:` and answers `500 { "error": "plugin_error", "plugin": "<name>" }`; known protocol
+errors such as a missing conversation keep their protocol status. Agent routes (`defineAgent({ routes })`) may not
+mount under `/plugins/`.
+
+```ts
+import { definePlugin } from "@reework/core";
+
+export const reader = definePlugin("reader", () => ({
+  routes(app, ctx) {
+    app.get("/events", async (c) => {
+      const cursor = await ctx.store.agent.get<string>("cursor");
+      return c.json({ cursor: cursor ?? null });
+    });
+    app.post("/open/inbound", (c) => c.json({ ok: true }));
+  },
+}));
+```
+
+Mounting happens after every `setup` and before `defineAgent.routes` and the engine resumes, so a handler can rely
+on what `setup` prepared. `ctx` carries `host`, `store`, `config`, `signal` and `dataDir`.
+
+## Plugin data directory
+
+Every plugin with `setup` or `routes` gets a directory beside the agent's storage file:
+`<storagePath>.plugins/<name>/`, created by core before `setup` and persistent across restarts. It is the plugin's
+own space for append-only logs or file bundles; core never deletes or rewrites it. A tools-only plugin gets no
+directory. Both `setup` and route contexts receive it as `dataDir`.
+
+```ts
+import { definePlugin } from "@reework/core";
+
+export const journal = definePlugin("journal", () => ({
+  setup({ dataDir }) {
+    console.log(`journal files live in ${dataDir}`);
+  },
+  routes(app, ctx) {
+    app.get("/dir", (c) => c.json({ dataDir: ctx.dataDir }));
+  },
+}));
+```
+
 ## Custom routes
 
 `defineAgent({ routes: (app, host) => … })` mounts routes such as a webhook next to the built-in API.
 They are **not** behind the API token: authenticate them yourself (a shared secret, a signature).
+Agent routes may not use the `/plugins/` prefix, which is reserved for plugin routes.
 Create one conversation per subject with `createConversation({ key })` and deduplicate deliveries
 with `submitInput(id, text, { requestId })`.
 
