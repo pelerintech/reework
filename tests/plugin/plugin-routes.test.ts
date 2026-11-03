@@ -82,3 +82,42 @@ describe("plugin routes: open paths", () => {
     expect(logged).not.toContain('plugin "items"');
   });
 });
+
+describe("plugin routes: context", () => {
+  it("give handlers the plugin's context after setup", async () => {
+    const plugin = definePlugin("items", () => ({
+      setup(ctx) {
+        return ctx.store.agent.set("ready", "yes");
+      },
+      routes(app, ctx) {
+        app.get("/ctx", async (c) =>
+          c.json({
+            ready: await ctx.store.agent.get("ready"),
+            config: ctx.config,
+            aborted: ctx.signal.aborted,
+            hasDataDir: typeof ctx.dataDir === "string",
+          }),
+        );
+        app.post("/conv", async (c) => c.json(await ctx.host.createConversation({ key: "k1" })));
+      },
+    }));
+    const agent = await startTestAgent(
+      testDefinition({ plugins: [{ plugin, config: { mode: "declared" } }] }),
+    );
+    const authed = authedApp(agent);
+
+    const context = await authed.request("/plugins/items/ctx");
+    expect(context.status).toBe(200);
+    expect(await context.json()).toEqual({
+      ready: "yes",
+      config: { mode: "declared" },
+      aborted: false,
+      hasDataDir: true,
+    });
+
+    const created = await authed.request("/plugins/items/conv", { method: "POST" });
+    expect(created.status).toBe(200);
+    const conversation = (await created.json()) as { id: string };
+    expect((await agent.host.listConversations()).map((c) => c.id)).toContain(conversation.id);
+  });
+});
