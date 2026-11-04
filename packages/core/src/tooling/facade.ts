@@ -9,6 +9,7 @@ import {
 } from "@earendil-works/pi-durable";
 import type {
   Extension,
+  EntryRecord,
   HookApi,
   HookRegistration,
   PromptInput,
@@ -32,6 +33,7 @@ import type {
   ModelMessage,
   ModelUsage,
 } from "@reework/types";
+import { isAuthor } from "@reework/types";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static, TSchema } from "@earendil-works/pi-ai";
 import type { AgentHost } from "../host.ts";
@@ -701,6 +703,14 @@ export interface PluginBindings {
   readonly lent: ReadonlyMap<string, readonly string[]>;
   case?: PluginCaseAccess;
   files?: PluginFilesAccess;
+  /**
+   * The committed model context's user messages, oldest first, each with the
+   * author of the entry that contributed it, so hooks can name an input's
+   * author. Filled once the engine exists.
+   */
+  inputAuthors?: (
+    conversationId: string,
+  ) => Promise<readonly { timestamp?: number; from?: Author }[]>;
 }
 
 function makePluginModels(
@@ -868,11 +878,11 @@ function buildHooks(
           const run = async () => {
             if (!hooks.beforeModelRequest) return undefined;
             const next = await hooks.beforeModelRequest(
-              { messages: messages.map(reworkMessageFrom) },
+              { messages: await authoredRequestMessages(name, messages, api, bindings) },
               hookCtx(api, context),
             );
             if (!next?.messages) return undefined;
-            return { messages: next.messages.map(reworkMessageTo) };
+            return { messages: next.messages.map(hookMessageTo) };
           };
           return run().catch((err) => {
             logHookError(name, "beforeModelRequest", err);
@@ -915,10 +925,10 @@ function buildHooks(
   if (hooks.beforeCompaction) {
     registration.push(
       hook(CompactionTask, {
-        beforeCompact({ messages, reason }, api, context) {
+        beforeCompact({ messages, entries, reason }, api, context) {
           const run = async () => {
             const next = await hooks.beforeCompaction!(
-              { reason, messages: messages.map(reworkMessageFrom) },
+              { reason, messages: authoredCompactionMessages(entries, messages) },
               hookCtx(api, context),
             );
             if (!next) return undefined;
@@ -1019,6 +1029,122 @@ export function buildToolHooks(
       return toDurableResult(current);
     },
   });
+}
+
+/**
+ * Input authors on hook messages. A user message pi-durable hands to a hook
+ * carries no author of its own, so core aligns it with the committed entry that
+ * contributed it. Once a hook has returned messages, the chain keeps whatever
+ * author each message kept: a message a hook built from scratch has none.
+ */
+const pristineInputs = new WeakMap<
+  readonly Message[],
+  Promise<readonly { timestamp?: number; from?: Author }[]>
+>();
+const hookReturned = new WeakSet<Message>();
+const keptAuthors = new WeakMap<Message, Author>();
+
+/** A message as a hook sees it, with the author of the input that contributed it. */
+async function authoredRequestMessages(
+  name: string,
+  messages: readonly Message[],
+  api: HookApi,
+  bindings?: PluginBindings,
+): Promise<ModelMessage[]> {
+  if (messages.some((message) => hookReturned.has(message))) {
+    return messages.map((message) => withKeptAuthor(message));
+  }
+  const inputs = await inputsOf(name, messages, api, bindings);
+  const authors = authorsOf(messages, inputs);
+  return messages.map((message, index) => {
+    const model = reworkMessageFrom(message);
+    const from = model.role === "user" ? authors[index] : undefined;
+    return from ? { ...model, from } : model;
+  });
+}
+
+/** Read the committed input authors once per request, shared by every plugin. */
+function inputsOf(
+  name: string,
+  messages: readonly Message[],
+  api: HookApi,
+  bindings?: PluginBindings,
+): Promise<readonly { timestamp?: number; from?: Author }[]> {
+  const cached = pristineInputs.get(messages);
+  if (cached) return cached;
+  const reader = bindings?.inputAuthors;
+  const pending = reader
+    ? reader(String(api.conversationId)).catch((err) => {
+        logHookError(name, "beforeModelRequest", err);
+        return [];
+      })
+    : Promise.resolve([]);
+  pristineInputs.set(messages, pending);
+  return pending;
+}
+
+/** Pair each user message with the newest input entry that shares its timestamp. */
+function authorsOf(
+  messages: readonly Message[],
+  inputs: readonly { timestamp?: number; from?: Author }[],
+): (Author | undefined)[] {
+  const authors: (Author | undefined)[] = messages.map(() => undefined);
+  let input = inputs.length - 1;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!;
+    if (message.role !== "user") continue;
+    while (input >= 0 && inputs[input]!.timestamp !== message.timestamp) input--;
+    if (input < 0) break;
+    authors[index] = inputs[input]!.from;
+    input--;
+  }
+  return authors;
+}
+
+/** The author an entry records, when it carries a well-formed one. */
+function entryAuthor(entry: EntryRecord): Author | undefined {
+  const data = entry.data as { from?: unknown } | undefined;
+  return isAuthor(data?.from) ? data.from : undefined;
+}
+
+/**
+ * A compaction hook's messages, authored from the entries it summarizes: the
+ * entries carry their own author, so no read is needed.
+ */
+function authoredCompactionMessages(
+  entries: readonly EntryRecord[],
+  messages: readonly Message[],
+): ModelMessage[] {
+  const inputs: { timestamp?: number; from?: Author }[] = [];
+  for (const entry of entries) {
+    const from = entryAuthor(entry);
+    for (const message of entry.model ?? []) {
+      if (message.role === "user") inputs.push({ timestamp: message.timestamp, from });
+    }
+  }
+  const authors = authorsOf(messages, inputs);
+  return messages.map((message, index) => {
+    const model = reworkMessageFrom(message);
+    const from = model.role === "user" ? authors[index] : undefined;
+    return from ? { ...model, from } : model;
+  });
+}
+
+/**
+ * A message a hook returned, keeping the author it carried so the next hook in
+ * the chain sees it. A message a hook built from scratch keeps none.
+ */
+function hookMessageTo(message: ModelMessage): Message {
+  const converted = reworkMessageTo(message);
+  hookReturned.add(converted);
+  if (message.role === "user" && message.from) keptAuthors.set(converted, message.from);
+  return converted;
+}
+
+function withKeptAuthor(message: Message): ModelMessage {
+  const model = reworkMessageFrom(message);
+  const from = model.role === "user" ? keptAuthors.get(message) : undefined;
+  return from ? { ...model, from } : model;
 }
 
 function reworkMessageFrom(message: Message): ModelMessage {

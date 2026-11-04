@@ -11,7 +11,8 @@ import type {
   ToolRegistration,
 } from "@earendil-works/pi-durable";
 import type { Models } from "@earendil-works/pi-ai/models";
-import { PLUGIN_ROUTE_PREFIX } from "@reework/types";
+import { isAuthor, PLUGIN_ROUTE_PREFIX } from "@reework/types";
+import type { Author } from "@reework/types";
 import type { AgentDefinition, DeclaredModule } from "../agent-definition.ts";
 import { CONTEXT, Engine } from "../engine.ts";
 import { installHITL } from "../hitl/gate.ts";
@@ -256,6 +257,25 @@ async function boot(
     list: (id) => host.listFiles(id),
     read: (id, fid) => host.readFile(id, fid),
     add: (id, input) => host.addFile(id, input),
+  };
+  bindings.inputAuthors = async (id) => {
+    const conversation = await engine.harness.conversation(
+      Number(id) as unknown as ConversationId,
+      CONTEXT,
+    );
+    if (!conversation) return [];
+    const view = await conversation.context(CONTEXT);
+    const inputs: { timestamp?: number; from?: Author }[] = [];
+    for (const [index, entry] of view.entries.entries()) {
+      const data = entry.data as { from?: unknown } | undefined;
+      const from = isAuthor(data?.from) ? data.from : undefined;
+      for (const message of view.contributions[index] ?? []) {
+        if (message.role === "user") {
+          inputs.push({ timestamp: message.timestamp, ...(from ? { from } : {}) });
+        }
+      }
+    }
+    return inputs;
   };
   for (const plugin of built) {
     if (plugin.built.setup || plugin.built.routes) {
