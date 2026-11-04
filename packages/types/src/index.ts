@@ -143,6 +143,11 @@ export interface ModelMessage {
   timestamp?: number;
   /** Present on a `toolResult` message: whether the tool failed. */
   isError?: boolean;
+  /**
+   * On a `user` message in a hook's input: who it is from. Absent means
+   * unattributed, never a human.
+   */
+  from?: Author;
 }
 
 // ---------------------------------------------------------------------------
