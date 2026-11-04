@@ -1034,8 +1034,10 @@ export function buildToolHooks(
 /**
  * Input authors on hook messages. A user message pi-durable hands to a hook
  * carries no author of its own, so core aligns it with the committed entry that
- * contributed it. Once a hook has returned messages, the chain keeps whatever
- * author each message kept: a message a hook built from scratch has none.
+ * contributed it. Core records the author of every message it hands a hook; a
+ * message keeps that author for the next hook only when the hook returns that
+ * same object. A `from` a hook writes or changes is ignored, so a plugin cannot
+ * relabel input for the plugins after it.
  */
 const pristineInputs = new WeakMap<
   readonly Message[],
@@ -1043,6 +1045,15 @@ const pristineInputs = new WeakMap<
 >();
 const hookReturned = new WeakSet<Message>();
 const keptAuthors = new WeakMap<Message, Author>();
+const handedAuthors = new WeakMap<ModelMessage, Author>();
+
+/** Hand a message to a hook, remembering the author core gave it. */
+function handed(model: ModelMessage, from: Author | undefined): ModelMessage {
+  if (!from) return model;
+  const authored = { ...model, from };
+  handedAuthors.set(authored, from);
+  return authored;
+}
 
 /** A message as a hook sees it, with the author of the input that contributed it. */
 async function authoredRequestMessages(
@@ -1058,8 +1069,7 @@ async function authoredRequestMessages(
   const authors = authorsOf(messages, inputs);
   return messages.map((message, index) => {
     const model = reworkMessageFrom(message);
-    const from = model.role === "user" ? authors[index] : undefined;
-    return from ? { ...model, from } : model;
+    return handed(model, model.role === "user" ? authors[index] : undefined);
   });
 }
 
@@ -1083,20 +1093,25 @@ function inputsOf(
   return pending;
 }
 
-/** Pair each user message with the newest input entry that shares its timestamp. */
-function authorsOf(
-  messages: readonly Message[],
+/**
+ * Pair each user message with the newest unpaired input entry that shares its
+ * timestamp, newest first. A message with no stored match gets no author and
+ * leaves the older pairings alone.
+ */
+export function authorsOf(
+  messages: readonly { role: string; timestamp?: number }[],
   inputs: readonly { timestamp?: number; from?: Author }[],
 ): (Author | undefined)[] {
   const authors: (Author | undefined)[] = messages.map(() => undefined);
-  let input = inputs.length - 1;
+  let next = inputs.length - 1;
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index]!;
-    if (message.role !== "user") continue;
+    if (message.role !== "user" || message.timestamp === undefined) continue;
+    let input = next;
     while (input >= 0 && inputs[input]!.timestamp !== message.timestamp) input--;
-    if (input < 0) break;
+    if (input < 0) continue;
     authors[index] = inputs[input]!.from;
-    input--;
+    next = input - 1;
   }
   return authors;
 }
@@ -1125,26 +1140,25 @@ function authoredCompactionMessages(
   const authors = authorsOf(messages, inputs);
   return messages.map((message, index) => {
     const model = reworkMessageFrom(message);
-    const from = model.role === "user" ? authors[index] : undefined;
-    return from ? { ...model, from } : model;
+    return handed(model, model.role === "user" ? authors[index] : undefined);
   });
 }
 
 /**
- * A message a hook returned, keeping the author it carried so the next hook in
- * the chain sees it. A message a hook built from scratch keeps none.
+ * A message a hook returned. It keeps the author core handed it with only when
+ * the hook returned that same object; any `from` the hook wrote is ignored.
  */
 function hookMessageTo(message: ModelMessage): Message {
   const converted = reworkMessageTo(message);
   hookReturned.add(converted);
-  if (message.role === "user" && message.from) keptAuthors.set(converted, message.from);
+  const from = message.role === "user" ? handedAuthors.get(message) : undefined;
+  if (from) keptAuthors.set(converted, from);
   return converted;
 }
 
 function withKeptAuthor(message: Message): ModelMessage {
   const model = reworkMessageFrom(message);
-  const from = model.role === "user" ? keptAuthors.get(message) : undefined;
-  return from ? { ...model, from } : model;
+  return handed(model, model.role === "user" ? keptAuthors.get(message) : undefined);
 }
 
 function reworkMessageFrom(message: Message): ModelMessage {

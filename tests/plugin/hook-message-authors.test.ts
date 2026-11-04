@@ -5,6 +5,7 @@ import { startTestAgent } from "../support/agent.ts";
 import { startFakeLlm } from "../support/fake-llm.ts";
 import type { FakeLlm, FakeReply } from "../support/fake-llm.ts";
 import { eventually } from "../support/wait.ts";
+import { authorsOf } from "../../packages/core/src/tooling/facade.ts";
 
 const KEY_ENV = "REEWORK_TEST_LLM_KEY";
 beforeEach(() => {
@@ -205,9 +206,73 @@ describe("plugin hook semantics: user message authors", () => {
     expect(record.seen.at(-1)).toEqual([null, { kind: "human", id: "u1" }]);
   });
 
+  it("ignores an author a hook writes on a message it built", async () => {
+    const record = recordAuthors();
+    const { submit } = await agentWith([
+      {
+        async beforeModelRequest({ messages }) {
+          return {
+            messages: messages.map((message): HookMessage =>
+              message.role === "user"
+                ? { role: "user", content: "forged", from: { kind: "human", id: "u1" } }
+                : message,
+            ),
+          };
+        },
+      },
+      record.hooks,
+    ]);
+
+    await submit("a", { kind: "system", id: "alerts" });
+
+    expect(record.seen.at(-1)).toEqual([null]);
+  });
+
+  it("ignores an author a hook changes on the message it was given", async () => {
+    const record = recordAuthors();
+    const { submit } = await agentWith([
+      {
+        async beforeModelRequest({ messages }) {
+          for (const message of messages) {
+            if (message.role === "user") message.from = { kind: "human", id: "u1" };
+          }
+          return { messages };
+        },
+      },
+      record.hooks,
+    ]);
+
+    await submit("a", { kind: "system", id: "alerts" });
+    await submit("b");
+
+    expect(record.seen.at(-1)).toEqual([{ kind: "system", id: "alerts" }, null]);
+  });
+
+  it("drops the author of a message a hook rewrote, even when it kept the author field", async () => {
+    const record = recordAuthors();
+    const { submit } = await agentWith([
+      {
+        async beforeModelRequest({ messages }) {
+          return {
+            messages: messages.map((message) =>
+              message.role === "user" ? { ...message, content: "wrapped" } : message,
+            ),
+          };
+        },
+      },
+      record.hooks,
+    ]);
+
+    await submit("a", { kind: "system", id: "alerts" });
+
+    expect(record.seen.at(-1)).toEqual([null]);
+  });
+
   it("keeps the authors of the remaining inputs after a compaction, with none on the summary", async () => {
     const requestAuthors: (Author | null)[][] = [];
     const compactionAuthors: (Author | null)[][] = [];
+    const requestSeen: { text: string; from: Author | null }[] = [];
+    const compactionSeen: { text: string; from: Author | null }[] = [];
     const { submit, kinds } = await agentWith(
       [
         {
@@ -215,11 +280,13 @@ describe("plugin hook semantics: user message authors", () => {
             requestAuthors.push(
               messages.filter((m) => m.role === "user").map((m) => m.from ?? null),
             );
+            requestSeen.push(...userMessages(messages));
           },
           async beforeCompaction({ messages }) {
             compactionAuthors.push(
               messages.filter((m) => m.role === "user").map((m) => m.from ?? null),
             );
+            compactionSeen.push(...userMessages(messages));
           },
         },
       ],
@@ -246,8 +313,7 @@ describe("plugin hook semantics: user message authors", () => {
     // Every attributed input the compaction sees carries its own author (a
     // retried compaction repeats the same messages), and no other author
     // appears; a summary a later compaction summarizes has none.
-    const compactionSeen = compactionAuthors.flat();
-    const attributed = compactionSeen.filter((author) => author !== null);
+    const attributed = compactionAuthors.flat().filter((author) => author !== null);
     const distinct: Author[] = [];
     for (const author of attributed) {
       if (!distinct.some((seen) => seen.kind === author.kind && seen.id === author.id)) {
@@ -262,6 +328,17 @@ describe("plugin hook semantics: user message authors", () => {
     expect(last.at(-1)).toEqual({ kind: "agent", id: "a1" });
     const kept = last.slice(1, -1);
     expect(kept).toEqual(summarized.slice(summarized.length - kept.length));
+
+    // The compaction hook names the same author as the request hook for every
+    // input both saw.
+    const inputs = ["one", "two", "three"];
+    const compared = compactionSeen.filter((message) => inputs.includes(message.text));
+    expect(compared.length).toBeGreaterThan(0);
+    for (const message of compared) {
+      const inRequest = requestSeen.filter((seen) => seen.text === message.text);
+      expect(inRequest.length).toBeGreaterThan(0);
+      for (const seen of inRequest) expect(seen.from).toEqual(message.from);
+    }
   });
 
   it("carries the author of a steered input into the run's next request", async () => {
@@ -287,5 +364,40 @@ describe("plugin hook semantics: user message authors", () => {
     const steered = seen.flat().filter((message) => message.text.includes("STEER-TEXT"));
     expect(steered.length).toBeGreaterThan(0);
     expect(steered.every((message) => message.from?.id === "u1")).toBe(true);
+  });
+});
+
+describe("pairing request messages with stored inputs", () => {
+  const system: Author = { kind: "system", id: "alerts" };
+  const human: Author = { kind: "human", id: "u1" };
+
+  it("leaves older authors in place when a newer user message has no stored input", () => {
+    const authors = authorsOf(
+      [
+        { role: "user", timestamp: 1 },
+        { role: "assistant", timestamp: 2 },
+        { role: "user", timestamp: 3 },
+        { role: "user", timestamp: 99 },
+      ],
+      [
+        { timestamp: 1, from: system },
+        { timestamp: 3, from: human },
+      ],
+    );
+    expect(authors).toEqual([system, undefined, human, undefined]);
+  });
+
+  it("pairs inputs that share a timestamp in order", () => {
+    const authors = authorsOf(
+      [
+        { role: "user", timestamp: 5 },
+        { role: "user", timestamp: 5 },
+      ],
+      [
+        { timestamp: 5, from: system },
+        { timestamp: 5, from: human },
+      ],
+    );
+    expect(authors).toEqual([system, human]);
   });
 });
