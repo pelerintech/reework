@@ -2,9 +2,11 @@ name: Release
 
 # release-please keeps a release PR open from Conventional Commits on main (versions + changelogs for the
 # four packages). Merging it tags the release; this workflow then builds, verifies and publishes to npm.
+# A manual run publishes whatever versions on main are not on npm yet, to finish a failed publish.
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -24,7 +26,7 @@ jobs:
 
   publish:
     needs: release-please
-    if: needs.release-please.outputs.releases_created == 'true'
+    if: needs.release-please.outputs.releases_created == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: npm
     permissions:
@@ -53,6 +55,11 @@ jobs:
       - run: |
           for pkg in types client core tui; do
             version=$(node -p "require('./packages/$pkg/package.json').version")
+            # A release usually bumps only some packages; skip versions already on npm.
+            if npm view "@reework/$pkg@$version" version >/dev/null 2>&1; then
+              echo "@reework/$pkg@$version is already published; skipping"
+              continue
+            fi
             pnpm --dir "packages/$pkg" pack --pack-destination "$RUNNER_TEMP/packs"
             npm publish "$RUNNER_TEMP/packs/reework-$pkg-$version.tgz" --access public
           done
