@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.0](https://github.com/pelerintech/reework/compare/types-v1.0.0...types-v1.1.0) (2026-11-04)
+
+
+### Features
+
+* **core:** attach input authors to hook messages ([8372213](https://github.com/pelerintech/reework/commit/837221365483d15b8408dcfb389b9acf4c964613))
+* **types:** carry an input author on hook model messages ([1e3c099](https://github.com/pelerintech/reework/commit/1e3c099d541fae5703a80f069c15c35d2e5e5455))
+
 ## [1.0.0](https://github.com/pelerintech/reework/compare/types-v0.1.0...types-v1.0.0) (2026-11-03)
 
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.1](https://github.com/pelerintech/reework/compare/client-v1.0.0...client-v1.0.1) (2026-11-04)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @reework/types bumped to 1.1.0
+
 ## [1.0.0](https://github.com/pelerintech/reework/compare/client-v0.1.0...client-v1.0.0) (2026-11-03)
 
 

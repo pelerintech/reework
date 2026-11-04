@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.1.0](https://github.com/pelerintech/reework/compare/core-v1.0.0...core-v1.1.0) (2026-11-04)
+
+
+### Features
+
+* **core:** attach input authors to hook messages ([8372213](https://github.com/pelerintech/reework/commit/837221365483d15b8408dcfb389b9acf4c964613))
+* **core:** attach input authors to hook messages ([947e7ee](https://github.com/pelerintech/reework/commit/947e7ee756c2ffa40190e8abf1cdf54bc5da2caa))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @reework/types bumped to 1.1.0
+
 ## [1.0.0](https://github.com/pelerintech/reework/compare/core-v0.1.0...core-v1.0.0) (2026-11-03)
 
 
