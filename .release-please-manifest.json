@@ -1,6 +1,6 @@
 {
   "packages/types": "1.1.0",
   "packages/client": "1.0.1",
-  "packages/core": "1.1.0",
+  "packages/core": "1.1.1",
   "packages/tui": "1.0.1"
 }
