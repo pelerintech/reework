@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.1](https://github.com/pelerintech/reework/compare/core-v1.1.0...core-v1.1.1) (2026-11-04)
+
+
+### Bug Fixes
+
+* **core:** stop hooks from relabelling input authors ([97dabf3](https://github.com/pelerintech/reework/commit/97dabf33872f649bb3a2d7aa9dd5a87769faf229))
+* **core:** stop hooks from relabelling input authors ([45fa408](https://github.com/pelerintech/reework/commit/45fa408eab65720b39dfe113fcadb58ae5c3c8ed))
+
 ## [1.1.0](https://github.com/pelerintech/reework/compare/core-v1.0.0...core-v1.1.0) (2026-11-04)
 
 
