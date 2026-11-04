@@ -143,7 +143,9 @@ was attributed — the same `{ kind, id?, name? }` shape as everywhere else. It 
 without an author, for the compaction summary, and for a message a hook built itself; absent means
 unattributed, **never a human**. The field never reaches the model: it is dropped on the way back, so a hook
 that returns the messages it received leaves the request byte-identical. Between plugins in declaration order,
-a message a hook returned keeps its author for the next hook, while a message built from scratch has none.
+a message keeps its author for the next hook only when a hook returns the same message object it was given. A
+message a hook built, copied or rewrote has none, and a `from` a hook writes or changes is ignored, so one plugin
+cannot relabel input for the plugins after it.
 Trust caveat, as in [Authors](#authors): any holder of the API token can claim `kind: "human"`, so `from`
 records what the caller declared, not proof.
 
@@ -151,21 +153,25 @@ A hook that presents non-human input to the model as data:
 
 ```ts
 import { definePlugin } from "@reework/core";
-
 export const wrapExternal = definePlugin("wrap-external", () => ({
   hooks: {
     async beforeModelRequest({ messages }) {
       return {
-        messages: messages.map((message) =>
-          message.role === "user" && message.from && message.from.kind !== "human"
-            ? {
-                ...message,
-                content: `<external kind="${message.from.kind}">${
-                  typeof message.content === "string" ? message.content : ""
-                }</external>`,
-              }
-            : message,
-        ),
+        messages: messages.map((message) => {
+          if (message.role !== "user" || !message.from || message.from.kind === "human") {
+            return message;
+          }
+          const open = `<external kind="${message.from.kind}">`;
+          const content =
+            typeof message.content === "string"
+              ? `${open}${message.content}</external>`
+              : [
+                  { type: "text" as const, text: open },
+                  ...message.content,
+                  { type: "text" as const, text: "</external>" },
+                ];
+          return { role: "user" as const, content };
+        }),
       };
     },
   },
