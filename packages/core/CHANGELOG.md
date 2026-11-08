@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.0](https://github.com/pelerintech/reework/compare/core-v1.1.1...core-v1.2.0) (2026-11-08)
+
+
+### Features
+
+* **core:** give setup and route contexts the plugin's named models ([f64f5b4](https://github.com/pelerintech/reework/commit/f64f5b4e22e0f9dc0480dcd8101a4f24b728a861))
+* **core:** give setup and route contexts the plugin's named models ([ddc8c35](https://github.com/pelerintech/reework/commit/ddc8c35d1037b87d38dc076b87e2988e045bc40c))
+
 ## [1.1.1](https://github.com/pelerintech/reework/compare/core-v1.1.0...core-v1.1.1) (2026-11-04)
 
 
