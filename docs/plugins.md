@@ -227,8 +227,10 @@ models: {
 ```
 
 `main` is reserved. A plugin calls only models it declared: `definePlugin(name, factory, { models: ["fast"] })`,
-then `await ctx.models.complete("fast", { messages })` (from a tool or hook). Calls do not retry and carry
-the caller's abort signal. Each named model has its own request cap (`maxConcurrentRequests`) and its own
+then `await ctx.models.complete("fast", { messages })` — from a tool or hook, or outside a run from `setup`'s
+context (a background loop may keep it for the agent's life) and a route's context. Calls do not retry and carry
+the caller's abort signal; outside a run, pass your own `signal` (for example `setup`'s). Usage is recorded on a
+tool's result only for calls made by that tool. Each named model has its own request cap (`maxConcurrentRequests`) and its own
 catalog entry (`reework.model.<name>`); a model the agent declares but the plugin does not request fails at
 the call, while a model the plugin requests but the agent does not declare stops startup. Images are sent only to a model that
 declares `input: ["text", "image"]`; a text-only model rejects an image before any request is made.
@@ -306,8 +308,8 @@ by core act there. Core does not confine paths: wrap tools if you need a hard bo
 
 ## Setup and the host
 
-`setup({ host, store, config, signal, dataDir })` runs once the engine is open — for watchers, schedules or
-channel transports. `host` is the in-process protocol (`createConversation`, `submitInput`, `getCase`,
+`setup({ host, store, config, signal, dataDir, models })` runs once the engine is open — for watchers, schedules or
+channel transports. `models` calls the plugin's named models from that work (see [Named models](#named-models)). `host` is the in-process protocol (`createConversation`, `submitInput`, `getCase`,
 `listCases`, `updateCase`, `addFile`, `listFiles`, `readFile`, `listProposals`, `submitDecision`,
 `snapshot`, `abort`); `store` is the plugin's durable store; `dataDir` is the plugin's own directory beside the
 agent's storage (see [Plugin data directory](#plugin-data-directory)).
@@ -390,7 +392,7 @@ export const reader = definePlugin("reader", () => ({
 ```
 
 Mounting happens after every `setup` and before `defineAgent.routes` and the engine resumes, so a handler can rely
-on what `setup` prepared. `ctx` carries `host`, `store`, `config`, `signal` and `dataDir`.
+on what `setup` prepared. `ctx` carries `host`, `store`, `config`, `signal`, `dataDir` and `models`.
 
 ## Plugin data directory
 
