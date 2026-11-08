@@ -41,6 +41,17 @@ const caseIndex = defineDocFamily<{ keys: string[] }, string>({
   initial: () => ({ keys: [] }),
 });
 
+/**
+ * A plain copy of a stored value. A doc read inside a transaction returns an
+ * overlay bound to it; handing that out would fail ("settled overlay") as soon
+ * as the plugin touches it after the store call returned.
+ */
+function plain<T extends JsonValue | null | undefined>(value: T): T {
+  return value === null || value === undefined || typeof value !== "object"
+    ? value
+    : (JSON.parse(JSON.stringify(value)) as T);
+}
+
 /** The write/read boundary a plugin store runs over: a tool call or the engine. */
 export interface StoreBackend {
   commit<T>(fn: (tx: Tx) => T | Promise<T>): Promise<T>;
@@ -81,7 +92,7 @@ function makeScope(
   return {
     async get<T extends JsonValue>(key: string): Promise<T | undefined> {
       return backend.commit(
-        async (tx) => ((await readRecord(tx, key)).value ?? undefined) as T | undefined,
+        async (tx) => plain((await readRecord(tx, key)).value ?? undefined) as T | undefined,
       );
     },
     async set(key, value) {
@@ -93,7 +104,7 @@ function makeScope(
     },
     async update(key, change) {
       await backend.commit(async (tx) => {
-        const current = (await readRecord(tx, key)).value ?? undefined;
+        const current = plain((await readRecord(tx, key)).value ?? undefined);
         const next = change(current);
         const index = await readIndex(tx);
         if (!index.keys.includes(key)) index.keys.push(key);
@@ -113,7 +124,7 @@ function makeScope(
         const matches = index.keys.filter((k) => k.startsWith(prefix));
         const items: { key: string; value: JsonValue }[] = [];
         for (const key of matches) {
-          const value = (await readRecord(tx, key)).value ?? undefined;
+          const value = plain((await readRecord(tx, key)).value ?? undefined);
           if (value !== undefined) items.push({ key, value });
         }
         return items;
