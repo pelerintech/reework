@@ -19,7 +19,7 @@ import { installHITL } from "../hitl/gate.ts";
 import { AgentHost } from "../host.ts";
 import { createServer } from "../server/index.ts";
 import { protocolErrorResponse, requireToken } from "../server/app.ts";
-import { buildToolHooks, toDurableTool, toExtension } from "../tooling/facade.ts";
+import { buildToolHooks, makePluginModels, toDurableTool, toExtension } from "../tooling/facade.ts";
 import type {
   BuiltPlugin,
   PluginBindings,
@@ -290,6 +290,7 @@ async function boot(
         config: plugin.config,
         signal: lifecycle.signal,
         dataDir: pluginDataDir(options.storagePath, plugin.name),
+        models: makePluginModels(plugin.name, bindings),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -297,7 +298,16 @@ async function boot(
     }
   }
   const { app, nodeWebSocket } = createServer(host, { token, name: agent.name });
-  mountPluginRoutes(app, built, host, engine, lifecycle.signal, token, options.storagePath);
+  mountPluginRoutes(
+    app,
+    built,
+    host,
+    engine,
+    lifecycle.signal,
+    token,
+    options.storagePath,
+    bindings,
+  );
   const beforeAgentRoutes = app.routes.length;
   agent.routes?.(app, host);
   const agentPluginRoute = app.routes
@@ -392,6 +402,7 @@ function mountPluginRoutes(
   signal: AbortSignal,
   token: string,
   storagePath: string,
+  bindings: PluginBindings,
 ): void {
   for (const plugin of built) {
     if (!plugin.built.routes) continue;
@@ -403,6 +414,7 @@ function mountPluginRoutes(
       config: plugin.config,
       signal,
       dataDir: pluginDataDir(storagePath, plugin.name),
+      models: makePluginModels(plugin.name, bindings),
     };
     try {
       plugin.built.routes(subApp, ctx);

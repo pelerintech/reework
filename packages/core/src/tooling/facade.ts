@@ -401,6 +401,11 @@ export interface PluginSetupContext<TConfig> {
   readonly signal: AbortSignal;
   /** This plugin's directory beside the agent's storage. */
   readonly dataDir: string;
+  /**
+   * The named models this plugin declared, for work outside a run (a background
+   * loop started here). Usable for the agent's whole life, not only during setup.
+   */
+  readonly models: PluginModels;
 }
 
 /** What a plugin's `routes(app, ctx)` receives. */
@@ -412,6 +417,8 @@ export interface PluginRouteContext<TConfig> {
   readonly signal: AbortSignal;
   /** This plugin's directory beside the agent's storage. */
   readonly dataDir: string;
+  /** The named models this plugin declared, for a route handler's own work. */
+  readonly models: PluginModels;
 }
 
 /** What a plugin factory returns for one config. */
@@ -713,7 +720,7 @@ export interface PluginBindings {
   ) => Promise<readonly { timestamp?: number; from?: Author }[]>;
 }
 
-function makePluginModels(
+export function makePluginModels(
   pluginName: string,
   bindings?: PluginBindings,
   collect?: (call: NamedModelCall) => void,
