@@ -258,6 +258,7 @@ async function boot(
     read: (id, fid) => host.readFile(id, fid),
     add: (id, input) => host.addFile(id, input),
   };
+  bindings.storage = { commit: (fn) => engine.commit(fn) };
   bindings.inputAuthors = async (id) => {
     const conversation = await engine.harness.conversation(
       Number(id) as unknown as ConversationId,

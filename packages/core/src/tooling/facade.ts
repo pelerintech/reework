@@ -718,6 +718,8 @@ export interface PluginBindings {
   inputAuthors?: (
     conversationId: string,
   ) => Promise<readonly { timestamp?: number; from?: Author }[]>;
+  /** The engine's storage, for the plugin store run hooks get. Filled once the engine exists. */
+  storage?: StoreBackend;
 }
 
 export function makePluginModels(
@@ -963,7 +965,11 @@ function makeHookContext(
 ): PluginHookContext {
   return {
     conversationId: String(api.conversationId),
-    ...createPluginContextMembers(undefined, undefined, bindings),
+    ...createPluginContextMembers(
+      bindings?.storage ? createPluginStore(bindings.storage, name, api.conversationId) : undefined,
+      undefined,
+      bindings,
+    ),
     models: makePluginModels(name, bindings),
     files: makeFileContext(String(api.conversationId), bindings),
     case: makeCaseContext(String(api.conversationId), bindings),

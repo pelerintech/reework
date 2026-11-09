@@ -254,6 +254,10 @@ const items = await ctx.store.agent.list("cursor"); // { key, value }[] — keys
 `agent` and `case` are separate scopes; each plugin's keys are its own namespace. `update(key, fn)`
 reads, applies `fn`, and writes atomically. Plugins never see the raw storage seam.
 
+The same store is available in tools, run hooks (`beforeTool`, `afterTool`, `beforeModelRequest`, …), event hooks,
+gated actions, `setup` and routes. A tool's writes commit with its call; everywhere else each write commits on its
+own, not with the run, so a hook that runs again on a retry should write idempotently (set a value, not append).
+
 ## Cases
 
 Every conversation is a **case** — the operator-facing unit. A case has `title`, `summary`, `status`
