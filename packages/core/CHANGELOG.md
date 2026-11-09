@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.1](https://github.com/pelerintech/reework/compare/core-v1.2.0...core-v1.2.1) (2026-11-09)
+
+
+### Bug Fixes
+
+* **core:** return plain values from the plugin store ([c5fdc12](https://github.com/pelerintech/reework/commit/c5fdc12047f2839cefbfbf0fdc680893a70e7cd1))
+* **core:** return plain values from the plugin store ([04965b2](https://github.com/pelerintech/reework/commit/04965b2b51fabac5b0e59d521fe52ccfb6e38d6e))
+
 ## [1.2.0](https://github.com/pelerintech/reework/compare/core-v1.1.1...core-v1.2.0) (2026-11-08)
 
 
