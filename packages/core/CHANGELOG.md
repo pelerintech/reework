@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.2](https://github.com/pelerintech/reework/compare/core-v1.2.1...core-v1.2.2) (2026-11-09)
+
+
+### Bug Fixes
+
+* **core:** give run hooks the plugin's real store ([70fe10a](https://github.com/pelerintech/reework/commit/70fe10a2ac82e0bc2a4c21efd2f9f20ae1ab1c77))
+* **core:** give run hooks the plugin's real store ([c054775](https://github.com/pelerintech/reework/commit/c05477537292abd7fba215c85acfb10b118ffbfc))
+
 ## [1.2.1](https://github.com/pelerintech/reework/compare/core-v1.2.0...core-v1.2.1) (2026-11-09)
 
 
