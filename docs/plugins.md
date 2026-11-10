@@ -188,19 +188,28 @@ even when the tool is not flagged, so a plugin can mark only the passages its ow
 
 Hooks see the flag as `call.external` (the tool's own flag, in `beforeTool` and `afterTool`) and
 `result.external` (true when the tool is flagged, the result said so, or a hook set it). Marking is allowed — a
-tool, a result or a hook may set `external: true` — but **clearing is impossible**: the tool's flag, the result's
-flag and every hook's flag are OR-ed, so `external: false` or a dropped field never removes it. A hook that
-returns a fresh result without `external` keeps it, and a hook that sets `external: true` on a plain or blocked
-result makes it stick for the hooks after it. A blocked call's result starts not external, because no outside
-content was read; a hook's flag on a blocked result reaches later hooks, but the stored blocked result carries no
-flag (pi-durable settles blocked calls itself, and a blocked call carries no outside content).
+tool, a result or an `afterTool` hook may set `external: true` on a tool result — but **clearing is impossible
+there**: the tool's flag, the result's flag and every hook's flag are OR-ed, so `external: false` or a dropped
+field never removes it. A hook that returns a fresh result without `external` keeps it, and a hook that sets
+`external: true` on a plain or blocked result makes it stick for the hooks after it. A blocked call's result
+starts not external, because no outside content was read; a hook's flag on a blocked result reaches later hooks,
+but the stored blocked result carries no flag (pi-durable settles blocked calls itself, and a blocked call
+carries no outside content).
 
 Core stores the flag as documented core metadata, `details.reework.external`, beside model usage
 (`details.reework.modelUsage`). A hook returning its own `details` keeps both. Later `beforeModelRequest` calls
-see `external: true` on the tool-result `ModelMessage` that answers the call; a hook that returns messages keeps
-it for later hooks because core re-derives it from the stored result by call id, so a returned message cannot
-clear it either. A conversation snapshot's transcript tool item carries `external: true`, so a surface or audit
-log can record it.
+see `external: true` on the tool-result `ModelMessage` that answers the call. Core re-derives that flag for every
+tool-result message handed to the next hook from the stored result **by `toolCallId`**, so a hook cannot clear
+it there — even by returning the messages unchanged, dropping the field, or setting `external: false`. A flag a
+hook adds to a message itself (rather than to a tool result via `afterTool`) is not sticky: it lasts only for
+the next hook's input and is not re-derived from storage. A conversation snapshot's transcript tool item carries
+`external: true`, so a surface or audit log can record it.
+
+These guarantees are against **accidental** loss, not against a hostile plugin. Plugins are trusted code: a
+plugin declared before another can deliberately strip a tool result's `toolCallId`, re-add it under a different
+id, or relabel it as a `user` message; core then cannot match it to the stored result, and the outside text
+reaches later hooks (and the model) unflagged. A trust-sensitive plugin such as guardrails must therefore be
+declared before any plugin it does not trust to rewrite messages.
 
 Guardrails (a Layer-2 plugin) treats a flagged tool or result as external automatically, in addition to its
 `external.tools` config, and wraps/taints it the same way. The flag says the content is untrusted; it does not
