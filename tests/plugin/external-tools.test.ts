@@ -5,6 +5,7 @@ import { codingTools, definePlugin, defineTool, gatedAction, Type } from "@reewo
 import type { AgentDefinition, ReeworkPlugin } from "@reework/core";
 import { startTestAgent, text, toolCall } from "@reework/core/testing";
 import type { TestAgent } from "@reework/core/testing";
+import type { TranscriptItem } from "@reework/types";
 
 const started: TestAgent[] = [];
 afterEach(async () => {
@@ -348,5 +349,31 @@ describe("external tools", () => {
     expect(result.details?.reework?.modelUsage).toEqual([
       expect.objectContaining({ model: "fast" }),
     ]);
+  });
+
+  it("shows the flag on the stored transcript tool item", async () => {
+    const source = definePlugin("source", () => ({
+      tools: [
+        defineTool({
+          name: "lookup",
+          description: "Read outside content.",
+          external: true,
+          parameters: Type.Object({}),
+          async execute() {
+            return "data";
+          },
+        }),
+      ],
+    }));
+    const { test, id } = await start([{ plugin: source }]);
+    test.model.respond([toolCall("lookup", {}), text("done")]);
+    await test.agent.host.submitInput(id, "go", { wait: true });
+
+    const snapshot = await test.agent.host.snapshot(id);
+    const item = snapshot.transcript.find(
+      (entry): entry is Extract<TranscriptItem, { type: "tool" }> =>
+        entry.type === "tool" && entry.name === "lookup",
+    );
+    expect(item?.external).toBe(true);
   });
 });

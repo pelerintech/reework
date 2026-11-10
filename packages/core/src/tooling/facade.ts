@@ -511,7 +511,7 @@ export function toDurableTool(
     async execute(args, api: ToolExecutionApi, context: Context): Promise<ToolExecutionResult> {
       const { ctx, modelCalls } = buildToolContext(api, context, pluginName, bindings);
       const result = await tool.execute(args, ctx);
-      return toDurableResult(result, modelCalls);
+      return toDurableResult(result, modelCalls, tool.external === true);
     },
   });
   const run = gatedRunOf(tool);
@@ -584,6 +584,7 @@ function buildToolContext(
 function toDurableResult(
   result: string | ToolResult,
   modelCalls: readonly NamedModelCall[] = [],
+  toolExternal = false,
 ): ToolExecutionResult {
   const base: ToolExecutionResult =
     typeof result === "string"
@@ -595,7 +596,9 @@ function toDurableResult(
         };
   const metadata: FrameworkMetadata = {
     ...(modelCalls.length > 0 ? { modelUsage: modelUsageOf(modelCalls) } : {}),
-    ...(typeof result !== "string" && result.external === true ? { external: true } : {}),
+    ...(toolExternal || (typeof result !== "string" && result.external === true)
+      ? { external: true }
+      : {}),
   };
   if (metadata.modelUsage === undefined && metadata.external === undefined) return base;
   return {

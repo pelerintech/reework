@@ -257,6 +257,8 @@ export type TranscriptItem =
       status: "running" | "done" | "error";
       startedAt: number;
       endedAt?: number;
+      /** The stored result is outside content (`details.reework.external`). */
+      external?: boolean;
     };
 
 /** A gated action asked a human; the proposal waits for a decision. */
