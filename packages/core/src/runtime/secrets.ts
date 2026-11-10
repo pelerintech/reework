@@ -86,10 +86,17 @@ export class SecretsRuntime {
     if (!definition) throw new Error(`secret "${name}" is not declared`);
     const value = this.resolve(name);
     const target = new URL(url);
+    const allowed = definition.hosts ?? [];
+    if (!allowed.some((host) => host.toLowerCase() === target.hostname.toLowerCase())) {
+      throw new Error(`secret "${name}" may not be sent to host "${target.hostname}"`);
+    }
     const headers = new Headers(init.headers);
-    if (definition.apply && "header" in definition.apply) {
+    if (!definition.apply) throw new Error(`secret "${name}" has no apply rule`);
+    if ("header" in definition.apply) {
       const format = definition.apply.format ?? "{}";
       headers.set(definition.apply.header, format.replace("{}", value));
+    } else {
+      target.searchParams.set(definition.apply.query, value);
     }
     return fetch(target, { ...init, headers });
   }

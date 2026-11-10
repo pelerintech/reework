@@ -400,6 +400,8 @@ export interface PluginEventContext {
   readonly conversationId?: string;
   /** The named models this plugin declared. */
   readonly models: PluginModels;
+  /** Requests with a declared secret applied. */
+  readonly secrets: PluginSecrets;
   /** This plugin's storage, agent-wide and (with a conversation) per case. */
   readonly store: PluginStore;
   /** Files scoped to this conversation; absent for agent-level entries. */
@@ -496,6 +498,8 @@ export interface PluginHooks {
 export interface PluginSetupContext<TConfig> {
   readonly host: AgentHost;
   readonly store: PluginStore;
+  /** Requests with a declared secret applied. */
+  readonly secrets: PluginSecrets;
   readonly config: TConfig;
   /** Aborted when the agent begins to stop; a loop started here breaks out on it. */
   readonly signal: AbortSignal;
@@ -512,6 +516,8 @@ export interface PluginSetupContext<TConfig> {
 export interface PluginRouteContext<TConfig> {
   readonly host: AgentHost;
   readonly store: PluginStore;
+  /** Requests with a declared secret applied. */
+  readonly secrets: PluginSecrets;
   readonly config: TConfig;
   /** Aborted when the agent begins to stop. */
   readonly signal: AbortSignal;
@@ -1496,6 +1502,7 @@ export function makeEventContext(
   const cases = makePluginCases(name, bindings);
   return {
     models: makePluginModels(name, bindings, undefined, conversationId),
+    secrets: makePluginSecrets(name, bindings, conversationId),
     store: bindings?.storage
       ? createPluginStore(bindings.storage, name, conversation)
       : uninitializedStore(),

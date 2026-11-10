@@ -26,6 +26,7 @@ export interface GatedActionGateContext {
   /** The conversation the gate opens in (e.g. to read that conversation's workspace). */
   readonly conversationId: string;
   readonly models: ToolContext["models"];
+  readonly secrets: ToolContext["secrets"];
   readonly files: ToolContext["files"];
   readonly store: ToolContext["store"];
   readonly case: ToolContext["case"];
@@ -38,6 +39,7 @@ export interface GatedActionRunContext {
   readonly conversationId: string;
   readonly signal: AbortSignal;
   readonly models: ToolContext["models"];
+  readonly secrets: ToolContext["secrets"];
   readonly files: ToolContext["files"];
   readonly store: ToolContext["store"];
   readonly case: ToolContext["case"];
@@ -94,6 +96,7 @@ export function gatedAction<TParameters extends TSchema>(
       const gate = await gateFor(args as Static<TParameters>, {
         conversationId: ctx.conversationId,
         models: ctx.models,
+        secrets: ctx.secrets,
         files: ctx.files,
         store: ctx.store,
         case: ctx.case,

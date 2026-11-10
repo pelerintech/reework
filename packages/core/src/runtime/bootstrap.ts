@@ -27,6 +27,7 @@ import {
   buildUsageHooks,
   makeEventContext,
   makePluginModels,
+  makePluginSecrets,
   toDurableTool,
   toExtension,
 } from "../tooling/facade.ts";
@@ -357,6 +358,7 @@ async function boot(
       await plugin.built.setup?.({
         host,
         store: createPluginStore({ commit: (fn) => engine.commit(fn) }, plugin.name),
+        secrets: makePluginSecrets(plugin.name, bindings),
         config: plugin.config,
         signal: lifecycle.signal,
         dataDir: pluginDataDir(options.storagePath, plugin.name),
@@ -481,6 +483,7 @@ function mountPluginRoutes(
     const ctx: PluginRouteContext<unknown> = {
       host,
       store: createPluginStore({ commit: (fn) => engine.commit(fn) }, plugin.name),
+      secrets: makePluginSecrets(plugin.name, bindings),
       config: plugin.config,
       signal,
       dataDir: pluginDataDir(storagePath, plugin.name),

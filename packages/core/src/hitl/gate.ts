@@ -50,6 +50,7 @@ export interface GatedActionRunContext {
   /** Aborted when the agent stops. */
   signal: AbortSignal;
   models: ToolContext["models"];
+  secrets: ToolContext["secrets"];
   files: ToolContext["files"];
   store: ToolContext["store"];
   case: ToolContext["case"];
