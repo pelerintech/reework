@@ -41,6 +41,7 @@ import { Type } from "@earendil-works/pi-ai";
 import type { Static, TSchema } from "@earendil-works/pi-ai";
 import type { AgentHost, ConversationSnapshot, ListCasesFilter } from "../host.ts";
 import { endRun } from "../runtime/abort.ts";
+import type { SecretsAccess } from "../runtime/secrets.ts";
 import { markGated } from "../hitl/gate.ts";
 import type { GatedActionRunContext } from "../hitl/gate.ts";
 import { once } from "./once.ts";
@@ -176,6 +177,18 @@ export interface PluginModels {
 }
 
 // ---------------------------------------------------------------------------
+// Secrets: requests made with a declared secret applied, and audited raw reads.
+// ---------------------------------------------------------------------------
+
+/** The secrets a plugin may use: fetch applies a secret, get returns its value. */
+export interface PluginSecrets {
+  /** Send `url` with the named secret applied; the value is never returned. */
+  fetch(name: string, url: string, init?: RequestInit): Promise<Response>;
+  /** The raw value of a named secret; declared and audited. */
+  get(name: string): Promise<string>;
+}
+
+// ---------------------------------------------------------------------------
 // Files (§5): scoped to the calling conversation.
 // ---------------------------------------------------------------------------
 
@@ -271,6 +284,8 @@ export interface ToolContext {
   output(chunk: string): void;
   /** The named models this plugin declared. */
   readonly models: PluginModels;
+  /** Requests with a declared secret applied. */
+  readonly secrets: PluginSecrets;
   /** Files scoped to this conversation. */
   readonly files: CaseFiles;
   /** This plugin's storage, agent-wide and per case. */
@@ -365,6 +380,8 @@ export interface PluginHookContext {
   readonly conversationId: string;
   /** The named models this plugin declared. */
   readonly models: PluginModels;
+  /** Requests with a declared secret applied. */
+  readonly secrets: PluginSecrets;
   /** This plugin's storage, agent-wide and per case. */
   readonly store: PluginStore;
   /** Files scoped to this conversation. */
@@ -657,6 +674,7 @@ function buildToolContext(
     signal,
     output: (chunk) => api.output(chunk),
     store: createPluginStore(backend, pluginName, api.conversationId),
+    secrets: makePluginSecrets(pluginName, bindings),
     models: makePluginModels(
       pluginName,
       bindings,
@@ -816,10 +834,13 @@ export function createPluginContextMembers(
   pluginName = "?",
   collect?: (call: NamedModelCall) => void,
   includeCases = false,
-): Pick<ToolContext, "models" | "files" | "store" | "case"> & { cases?: PluginCases } {
+): Pick<ToolContext, "models" | "secrets" | "files" | "store" | "case"> & {
+  cases?: PluginCases;
+} {
   const cases = includeCases ? makePluginCases(pluginName, bindings) : undefined;
   return {
     models: makePluginModels(pluginName, bindings, collect, conversationId),
+    secrets: makePluginSecrets(pluginName, bindings, conversationId),
     files: conversationId ? makeFileContext(conversationId, bindings) : stubFiles(),
     store: store ?? uninitializedStore(),
     case: conversationId ? makeCaseContext(conversationId, bindings) : stubCase(),
@@ -887,6 +908,8 @@ export interface PluginFilesAccess {
  *  plugin's lent names, and its host-backed case and file access. */
 export interface PluginBindings {
   catalog?: Models;
+  /** The agent's secrets: fetch applies one, get returns it. */
+  secrets?: SecretsAccess;
   readonly lent: ReadonlyMap<string, readonly string[]>;
   /** The plugins that declared `{ cases: true }`; the declaration is the grant. */
   readonly lentCases?: ReadonlySet<string>;
@@ -923,6 +946,22 @@ export interface PluginBindings {
    * no access to other plugins' hooks).
    */
   beforeModelCall?: (call: ModelCallRequest) => Promise<string | undefined>;
+}
+
+/** Build the secrets surface for one plugin (its declaration is checked when used). */
+export function makePluginSecrets(
+  pluginName: string,
+  bindings?: PluginBindings,
+  conversationId?: string,
+): PluginSecrets {
+  const required = () => {
+    if (!bindings?.secrets) throw new Error("plugin secrets are not wired in this build");
+    return bindings.secrets;
+  };
+  return {
+    fetch: (name, url, init) => required().fetch(pluginName, name, url, init, conversationId),
+    get: (name) => required().get(pluginName, name, conversationId),
+  };
 }
 
 export function makePluginModels(

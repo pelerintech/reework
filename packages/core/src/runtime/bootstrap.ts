@@ -131,6 +131,7 @@ export async function startAgent(
     // names, plus the host-backed case/file access filled in once the host exists.
     const bindings: PluginBindings = {
       catalog: models,
+      secrets,
       lent: new Map(built.map((p) => [p.name, p.models])),
       lentCases: new Set(built.filter((p) => p.cases).map((p) => p.name)),
     };

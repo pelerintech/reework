@@ -43,6 +43,7 @@ export type {
   ToolContext,
   ToolResult,
   PluginModels,
+  PluginSecrets,
   PluginStore,
   PluginStoreScope,
   PluginStoreItem,

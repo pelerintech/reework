@@ -9,6 +9,7 @@ export type {
   AgentMission,
   DeclaredModule,
   RunLimits,
+  SecretDefinition,
 } from "./agent-definition.ts";
 
 export {
@@ -62,6 +63,7 @@ export type {
   PluginStoreScope,
   PluginStoreItem,
   PluginModels,
+  PluginSecrets,
   CaseFiles,
   CaseContext,
   PluginCases,
