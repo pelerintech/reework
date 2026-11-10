@@ -1,5 +1,10 @@
 import { readFileSync } from "node:fs";
-import type { AgentDefinition, AgentModel, SecretDefinition } from "../agent-definition.ts";
+import type {
+  AgentDefinition,
+  AgentModel,
+  SecretDefinition,
+  SecretsBackend,
+} from "../agent-definition.ts";
 import type { SecretUseEvent } from "../tooling/facade.ts";
 
 /**
@@ -10,15 +15,43 @@ import type { SecretUseEvent } from "../tooling/facade.ts";
 export class SecretsRuntime {
   private readonly definitions: Record<string, SecretDefinition>;
   private readonly modelKeySecrets: ReadonlySet<string>;
+  private readonly backend: SecretsBackend;
   private declarations = new Map<string, readonly string[]>();
   private onUse?: (event: SecretUseEvent) => void;
 
   constructor(
     definitions: Record<string, SecretDefinition>,
     modelKeySecrets: ReadonlySet<string> = new Set(),
+    backend: SecretsBackend = { kind: "local" },
   ) {
     this.definitions = definitions;
     this.modelKeySecrets = modelKeySecrets;
+    this.backend = backend;
+  }
+
+  /** Whether values live at a gateway rather than in this process. */
+  isGateway(): boolean {
+    return this.backend.kind === "gateway";
+  }
+
+  /** The gateway URL for one of its routes, without a trailing slash. */
+  gatewayUrl(path: string): string {
+    if (this.backend.kind !== "gateway") throw new Error("secrets backend is not a gateway");
+    return `${this.backend.url.replace(/\/$/, "")}${path}`;
+  }
+
+  /** The box token the gateway backend authenticates with. */
+  gatewayToken(): string {
+    if (this.backend.kind !== "gateway") throw new Error("secrets backend is not a gateway");
+    const token = process.env[this.backend.tokenEnv];
+    if (!token)
+      throw new Error(`secret gateway token variable ${this.backend.tokenEnv} is not set`);
+    return token;
+  }
+
+  /** The provider base URL for a gateway upstream (the provider appends its path). */
+  gatewayBaseUrl(upstream: string): string {
+    return this.gatewayUrl(`/plugins/secrets-gateway/open/llm/${encodeURIComponent(upstream)}`);
   }
 
   /** Record which secrets each built plugin declared. */
@@ -75,6 +108,7 @@ export class SecretsRuntime {
       ) {
         throw new Error(`secret "${name}": hosts is required for a fetchable secret`);
       }
+      if (this.backend.kind === "gateway") continue;
       if (env) {
         const variable = definition.from.slice("env:".length);
         if (!process.env[variable]) {
@@ -88,6 +122,9 @@ export class SecretsRuntime {
           throw new Error(`secret "${name}" file ${path} could not be read`);
         }
       }
+    }
+    if (this.backend.kind === "gateway" && !process.env[this.backend.tokenEnv]) {
+      throw new Error(`secret gateway token variable ${this.backend.tokenEnv} is not set`);
     }
   }
 
@@ -125,6 +162,26 @@ export class SecretsRuntime {
     this.requireDeclared(plugin, name);
     const definition = this.definitions[name];
     if (!definition) throw new Error(`secret "${name}" is not declared`);
+    if (this.backend.kind === "gateway") {
+      const headers = new Headers(init.headers);
+      const targetHeaders: Record<string, string> = {};
+      for (const [key, value] of headers) targetHeaders[key] = value;
+      this.audit(plugin, name, "fetch", conversationId);
+      return fetch(this.gatewayUrl("/plugins/secrets-gateway/open/proxy"), {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${this.gatewayToken()}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          secret: name,
+          url,
+          method: init.method ?? "GET",
+          headers: targetHeaders,
+          ...(typeof init.body === "string" ? { body: init.body } : {}),
+        }),
+      });
+    }
     const value = this.resolve(name);
     const target = new URL(url);
     const allowed = definition.hosts ?? [];
@@ -146,6 +203,25 @@ export class SecretsRuntime {
   /** The raw value of a declared secret (local backend). */
   async get(plugin: string, name: string, conversationId?: string): Promise<string> {
     this.requireDeclared(plugin, name);
+    if (this.backend.kind === "gateway") {
+      const response = await fetch(this.gatewayUrl("/plugins/secrets-gateway/open/raw"), {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${this.gatewayToken()}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ secret: name }),
+      });
+      if (!response.ok) {
+        throw new Error(`secret "${name}" raw access refused (${response.status})`);
+      }
+      const body = (await response.json()) as { value?: unknown };
+      if (typeof body.value !== "string") {
+        throw new Error(`secret "${name}" raw access returned no value`);
+      }
+      this.audit(plugin, name, "get", conversationId);
+      return body.value;
+    }
     const value = this.resolve(name);
     this.audit(plugin, name, "get", conversationId);
     return value;

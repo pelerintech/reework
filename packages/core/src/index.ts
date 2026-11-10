@@ -10,6 +10,7 @@ export type {
   DeclaredModule,
   RunLimits,
   SecretDefinition,
+  SecretsBackend,
 } from "./agent-definition.ts";
 
 export {

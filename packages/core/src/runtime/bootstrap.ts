@@ -99,7 +99,11 @@ export async function startAgent(
   const tokenEnv = options.auth?.tokenEnv ?? "REEWORK_API_TOKEN";
   const token = options.auth?.token ?? process.env[tokenEnv];
   if (!token) throw new Error(`API token variable ${tokenEnv} is not set`);
-  const secrets = new SecretsRuntime(agent.secrets ?? {}, modelSecretNames(agent));
+  const secrets = new SecretsRuntime(
+    agent.secrets ?? {},
+    modelSecretNames(agent),
+    agent.secretsBackend,
+  );
   secrets.validate();
   validateModelKeys(agent);
   const models = options.models ?? customModels(agent.model, agent.models, secrets);

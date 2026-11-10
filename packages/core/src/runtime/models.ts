@@ -51,12 +51,12 @@ export function customModels(
   secrets?: SecretsRuntime,
 ): MutableModels {
   const models = createModels();
-  if (model) models.setProvider(agentModelProvider(MODEL_PROVIDER_ID, model, secrets));
+  if (model) models.setProvider(agentModelProvider(MODEL_PROVIDER_ID, model, secrets, "main"));
   for (const [name, def] of Object.entries(named)) {
     if (name === "main") {
       throw new Error(`model name "main" is reserved; it names the conversation model`);
     }
-    models.setProvider(agentModelProvider(`reework.model.${name}`, def, secrets));
+    models.setProvider(agentModelProvider(`reework.model.${name}`, def, secrets, name));
   }
   return models;
 }
@@ -65,16 +65,24 @@ export function customModels(
 function agentModelProvider(
   providerId: string,
   model: AgentModel,
-  secrets?: SecretsRuntime,
+  secrets: SecretsRuntime | undefined,
+  upstream: string,
 ): ReturnType<typeof createProvider> {
-  const { baseUrl } = model.provider;
   const api = model.provider.api ?? "openai-completions";
   const { contextWindow, maxTokens } = modelLimits(model);
+  const gateway = secrets?.isGateway() === true;
+  const baseUrl = gateway ? secrets!.gatewayBaseUrl(upstream) : model.provider.baseUrl;
+  const auth = gateway
+    ? {
+        name: "secrets gateway token",
+        resolve: async () => ({ auth: { apiKey: secrets!.gatewayToken() }, source: "gateway" }),
+      }
+    : modelApiKeyAuth(model, secrets);
   return createProvider({
     id: providerId,
     name: providerId,
     baseUrl,
-    auth: { apiKey: modelApiKeyAuth(model, secrets) },
+    auth: { apiKey: auth },
     models: [
       {
         id: model.modelId,
