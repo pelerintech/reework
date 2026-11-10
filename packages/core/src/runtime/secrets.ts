@@ -214,12 +214,12 @@ export class SecretsRuntime {
       });
       if (!REDIRECT_STATUSES.has(response.status)) {
         this.audit(plugin, name, "fetch", conversationId);
-        return response;
+        return "query" in definition.apply ? redactResponseUrl(response, value) : response;
       }
       const location = response.headers.get("location");
       if (!location) {
         this.audit(plugin, name, "fetch", conversationId);
-        return response;
+        return "query" in definition.apply ? redactResponseUrl(response, value) : response;
       }
       if (hop === MAX_REDIRECTS) {
         throw new Error(`secret "${name}" redirect limit exceeded at host "${host}"`);
@@ -277,6 +277,33 @@ export function modelSecretNames(agent: AgentDefinition): Set<string> {
   collect(agent.model);
   for (const model of Object.values(agent.models ?? {})) collect(model);
   return names;
+}
+
+/** Replace a query secret value in the response URL the plugin sees. */
+function redactResponseUrl(response: Response, secret: string): Response {
+  let url: URL;
+  try {
+    url = new URL(response.url);
+  } catch {
+    return response;
+  }
+  let changed = false;
+  for (const [key, value] of url.searchParams) {
+    if (value !== secret) continue;
+    url.searchParams.set(key, "[redacted]");
+    changed = true;
+  }
+  if (!changed) return response;
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  headers.delete("content-encoding");
+  const copy = new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+  Object.defineProperty(copy, "url", { value: url.toString(), configurable: true });
+  return copy;
 }
 
 const MAX_REDIRECTS = 5;

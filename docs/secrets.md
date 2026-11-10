@@ -68,8 +68,13 @@ const body = await response.text(); // the secret value is not in the response o
 It returns the response. The value is never returned to the plugin.
 
 With the local backend the host allow-list is the only URL check — core applies no `checkUrl`, so a secret can
-reach a host only when it is in `hosts`; a refused host names the host and the secret. With the gateway backend
-the gateway checks the token, the secret and the host.
+reach a host only when it is in `hosts`; a refused host names the host and the secret. Redirects are followed with
+the same check on every hop (up to five), and a hop outside `hosts` is refused without sending the secret there.
+With the gateway backend the gateway checks the token, the secret and the host.
+
+For a query secret, core redacts the value in the response URL (`[redacted]`) so `response.url` does not expose
+it. An allowed host that echoes the secret in its response body is inside the trust boundary — the host already
+has the secret, and core does not inspect bodies.
 
 `get(name)` returns the raw value for a library that cannot take a request; it is audited and should be used
 only where unavoidable. Both `get` and `fetch` fire the `onSecretUse` event:

@@ -73,6 +73,7 @@ describe("ctx.secrets.fetch: applying a secret", () => {
   it("applies a query secret beside existing query parameters", async () => {
     process.env[QUERY_ENV] = "query-secret";
     const target = await startFakeHttp();
+    let responseUrl: string | undefined;
     const caller = definePlugin(
       "caller",
       () => ({
@@ -82,7 +83,8 @@ describe("ctx.secrets.fetch: applying a secret", () => {
             description: "Call the target with a query secret",
             parameters: Type.Object({}),
             async execute(_args, ctx) {
-              await ctx.secrets.fetch("query", `${target.url}/x?existing=1`);
+              const response = await ctx.secrets.fetch("query", `${target.url}/x?existing=1`);
+              responseUrl = response.url;
               return "called";
             },
           }),
@@ -112,6 +114,11 @@ describe("ctx.secrets.fetch: applying a secret", () => {
     const url = new URL(`http://127.0.0.1${target.requests[0]!.path}`);
     expect(url.searchParams.get("existing")).toBe("1");
     expect(url.searchParams.get("key")).toBe("query-secret");
+    expect(responseUrl).toBeDefined();
+    expect(responseUrl).not.toContain("query-secret");
+    const returned = new URL(responseUrl!);
+    expect(returned.searchParams.get("existing")).toBe("1");
+    expect(returned.searchParams.get("key")).toBe("[redacted]");
   });
 
   it("refuses a host outside the secret's hosts, naming host and secret", async () => {
