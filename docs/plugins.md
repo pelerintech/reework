@@ -70,16 +70,17 @@ export const remote = definePlugin("remote", async (config: { baseUrl: string })
 
 A tool's `execute(args, ctx)` receives a reework `ToolContext`:
 
-| Member                             | What it is                                                                              |
-| ---------------------------------- | --------------------------------------------------------------------------------------- |
-| `ctx.conversationId`               | The conversation the tool runs in, as a string.                                         |
-| `ctx.signal`                       | Aborted when the run is stopped or the agent shuts down.                                |
-| `ctx.output(chunk)`                | Append running output; it becomes the result's output when omitted.                     |
-| `ctx.models.complete(name, input)` | Call a named model this plugin declared (no retry).                                     |
-| `ctx.files.list/read/add`          | The conversation's files (see [Files](#files)).                                         |
-| `ctx.store`                        | This plugin's storage, agent-wide and per case (see [Plugin storage](#plugin-storage)). |
-| `ctx.case.get/update`              | The conversation's case (see [Cases](#cases)).                                          |
-| `ctx.once(key, fn)`                | Run `fn` at most once per tool call and key; a replay returns the value.                |
+| Member                             | What it is                                                                                                            |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `ctx.conversationId`               | The conversation the tool runs in, as a string.                                                                       |
+| `ctx.signal`                       | Aborted when the run is stopped or the agent shuts down.                                                              |
+| `ctx.output(chunk)`                | Append running output; it becomes the result's output when omitted.                                                   |
+| `ctx.models.complete(name, input)` | Call a named model this plugin declared (no retry).                                                                   |
+| `ctx.files.list/read/add`          | The conversation's files (see [Files](#files)).                                                                       |
+| `ctx.store`                        | This plugin's storage, agent-wide and per case (see [Plugin storage](#plugin-storage)).                               |
+| `ctx.case.get/update`              | The conversation's case (see [Cases](#cases)).                                                                        |
+| `ctx.cases.*`                      | Other cases, when the plugin declared `{ cases: true }` (see [Reaching other cases](#reaching-other-cases-ctxcases)). |
+| `ctx.once(key, fn)`                | Run `fn` at most once per tool call and key; a replay returns the value.                                              |
 
 A tool returns a string (the model sees it) or a `ToolResult` `{ output, isError?, details? }`.
 
@@ -113,8 +114,12 @@ value computed once per task attempt and reused on retry).
 | `afterModelResponse` | observe every assistant message and its typed `ModelUsage` token counts.                              |
 | `beforeModelCall`    | refuse a named-model call (`{ refuse: reason }`); see [Refusing model calls](#refusing-model-calls).  |
 | `onModelUsage`       | observe usage of every model call; see [Model usage events](#model-usage-events).                     |
-| `onAnswer`           | observe the answer to an input; return `{ continue }` to keep the run going.                          |
+| `onAnswer`           | observe the answer and the input that started the run; return `{ continue }` to keep the run going.   |
 | `beforeCompaction`   | supply `{ summary }` or `{ decline: true }` to skip compaction.                                       |
+
+`onAnswer` names the input that started the run: alongside the answer's `text` it receives the
+input's `submissionId` and its `from` author (absent when the input was unattributed, never assumed
+to be a human).
 
 **Error rules.** A `beforeTool` that throws **blocks** the call. Any other hook that throws is
 logged and skipped — it never fails the run. pi-durable does not run `afterTool` for a blocked call;
@@ -377,9 +382,15 @@ own, not with the run, so a hook that runs again on a retry should write idempot
 
 ## Cases
 
-Every conversation is a **case** — the operator-facing unit. A case has `title`, `summary`, `status`
-(`open` | `waiting` | `closed`), `stage` (an agent-defined label surfaces show but never interpret),
-`priority`, `tags`, `dueAt`, and derived `needsHuman` / `openProposals` from its open proposals.
+Every conversation is a **case** or a **desk**. A case is the operator-facing unit; a desk is a
+principal's ongoing conversation that routes to many cases. The kind is set at creation and never
+changes: `createConversation({ kind: "desk" })` on the host, in the HTTP create body and through
+`client.createConversation`; an ordinary conversation is `kind: "case"`, and a record stored before
+kinds existed reads as `case`.
+
+A case has `title`, `summary`, `status` (`open` | `waiting` | `closed`), `stage` (an agent-defined
+label surfaces show but never interpret), `priority`, `tags`, `dueAt`, `owner`, and derived
+`needsHuman` / `openProposals` from its open proposals.
 
 A plugin reads and writes it through `ctx.case`:
 
@@ -392,6 +403,64 @@ A patch is validated field by field (an invalid field is refused naming it). Clo
 proposals is refused; submitting input reopens a closed case; a waiting case stays waiting. The model
 may also write the case with the `update_case` tool unless the agent sets `cases.modelTool: false`
 (or narrows it with `{ fields }`). Case writes emit `case_updated` and ride the snapshot as `case`.
+
+**Desks.** A desk is otherwise a normal conversation (inputs, runs, tools, proposals), but it stays
+out of case listings by default, cannot be closed and is visible to plugins as `kind: "desk"` so
+memory, budget, audit and scheduler can treat it correctly. `listCases()` returns cases only;
+`listCases({ kind: ["desk"] })` returns desks and `listCases({ kind: ["case", "desk"] })` returns
+both. The HTTP list route takes `?kind=` (comma-separated) and the client takes `listCases({ kind })`.
+Closing a desk is refused with `cannot close a desk` (HTTP 400; the model's `update_case` tool gets it
+as an error result), so `onCaseClosed` never fires for a desk. Input to a desk is accepted like any
+conversation, and updates or reopens it the same way.
+
+**Owners.** `owner` is the principal that receives the case's notifications. A principal spans
+identities, so its ownership is one stable author — `{ kind, id: "principal:<name>" }` — not each
+channel identity. Set it at creation (`createConversation({ case: { owner } })`) or with a patch
+(`ctx.case.update({ owner })`, `host.updateCase`, HTTP); it is validated like input authors, appears
+on `ctx.case.get()`, snapshots and case events, and `listCases({ owner })` filters by one author (the
+HTTP route takes `ownerKind` and `ownerId`, the client takes `listCases({ owner })`).
+
+### Reaching other cases: `ctx.cases`
+
+A desk tool or event hook can reach the agent's other cases when its plugin declares the capability:
+
+```ts
+import { definePlugin } from "@reework/core";
+
+export const deskTools = definePlugin(
+  "desk-tools",
+  () => ({
+    tools: [],
+    hooks: {
+      async onInput(input, ctx) {
+        const capability = ctx.cases;
+        if (!capability) return;
+        const cases = await capability.list({ kind: ["case"] });
+        if (cases.length === 0) return;
+        await capability.submit(cases[0].id, `desk saw: ${input.content}`, {
+          from: { kind: "human", id: "principal:ana" },
+        });
+      },
+    },
+  }),
+  { cases: true },
+);
+```
+
+The declaration (`definePlugin(name, factory, { cases: true })`) is the grant and the audit point.
+A declared plugin gets `ctx.cases` in tools, event hooks, and gated-action gate/run contexts, scoped to
+the agent:
+
+| Member                                                  | What it does                                                                           |
+| ------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `ctx.cases.list(filter)`                                | The agent's cases with the same filter as `host.listCases`.                            |
+| `ctx.cases.get(id)`                                     | One case.                                                                              |
+| `ctx.cases.snapshot(id)`                                | A conversation snapshot.                                                               |
+| `ctx.cases.submit(id, text, { from })`                  | Submit input attributed to `from`; returns `{ submissionId }`.                         |
+| `ctx.cases.decide({ proposalId, decision, decidedBy })` | Settle a proposal as `decidedBy`; `decision` is `{ selectedOption, instruction }`.     |
+| `ctx.cases.update(id, patch)`                           | Update a case with the host's validation, including `owner`; desks still cannot close. |
+
+A plugin without the declaration has no `cases` member at all.
 
 ## Files
 
@@ -419,7 +488,12 @@ it, a **proposal** opens (title, options, attachments such as a diff or a file, 
 answers) and the tool tells the model that **nothing has happened yet**. The human decides through any
 surface; then `run(ctx, decision, args)` executes and the agent is resumed with the decision and the
 result as a new message. `gate` may be a function of the arguments (and may be async, e.g. to compute
-a diff); it gets `{ conversationId, models, files, store, case }`. Gates survive restarts.
+a diff); it gets `{ conversationId, models, files, store, case }` (plus `cases` when the plugin
+declared it). Gates survive restarts.
+
+Settled proposals stay readable: `host.listProposals({ status: "settled" })` returns decided
+proposals with `decidedBy` and the `decision` that settled them, while the default
+`listProposals()` still returns open proposals only.
 
 ## Workspaces
 

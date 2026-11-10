@@ -104,15 +104,21 @@ submit, stored on the entry and shown on messages and snapshots — and gate dec
 
 ## Cases, files, hooks and named models
 
-Every conversation is a **case**: fields stored flat on the conversation record, written by the host,
-plugins (`ctx.case`), the `update_case` model tool and HTTP, validated field by field, with a lifecycle
-(closing refused with open proposals, input reopening a closed case). Files are content-addressed bytes
-beside the SQLite file, listed per case, uploaded/downloaded over the protocol and read/added by plugins
-(`ctx.files`) and gated-action attachments. Hooks (`beforeTool`, `afterTool`, `beforeModelRequest`,
-`afterModelResponse`, `onAnswer`, `beforeCompaction`) let plugins shape the run; named models give a
-plugin its own endpoint (`ctx.models.complete`) with its own request cap. All of these reach pi-durable
-only through the facade; the facade's `@reework/core/internal` entry (the `Engine`, the storage seam) is
-**unstable** and only for the framework's own tests.
+Every conversation is a **case** or a **desk**: case fields are stored flat on the conversation record,
+written by the host, plugins (`ctx.case`), the `update_case` model tool and HTTP, validated field by
+field, with a lifecycle (closing refused with open proposals, input reopening a closed case). A desk
+is a principal's ongoing conversation that routes to many cases: it stays out of case listings by
+default, cannot be closed, and carries `kind: "desk"` to plugins. A case may carry an `owner` — one
+stable author for a principal that spans identities — settable at creation or by patch. A plugin that
+declares `{ cases: true }` gets `ctx.cases` to list, read, snapshot, submit input to, decide and update
+other cases as a principal. Files are content-addressed bytes beside the SQLite file, listed per case,
+uploaded/downloaded over the protocol and read/added by plugins (`ctx.files`) and gated-action
+attachments. Hooks (`beforeTool`, `afterTool`, `beforeModelRequest`, `afterModelResponse`, `onAnswer`,
+`beforeCompaction`) let plugins shape the run; `onAnswer` also names the input that started the run
+(`submissionId` and `from`). Named models give a plugin its own endpoint (`ctx.models.complete`) with
+its own request cap, and settled proposals stay readable through `listProposals({ status: "settled" })`.
+All of these reach pi-durable only through the facade; the facade's `@reework/core/internal` entry (the
+`Engine`, the storage seam) is **unstable** and only for the framework's own tests.
 
 ## Deploying
 
