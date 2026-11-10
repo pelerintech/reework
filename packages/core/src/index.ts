@@ -16,6 +16,7 @@ export type {
 export {
   AgentHost,
   ConversationNotFound,
+  HeadlessAgentError,
   InvalidAuthor,
   InvalidProposalStatus,
   ProposalNotFound,

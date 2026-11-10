@@ -1,6 +1,7 @@
 // A headless agent has no model: it serves routes and runs setup, refuses input
 // that would start a run, and still settles gates and runs gated actions.
 import { afterEach, describe, expect, it } from "vitest";
+import { createClient } from "@reework/client";
 import { Type, definePlugin, gatedAction, listOpenProposals, startAgent } from "@reework/core";
 import type { AgentDefinition, RunningAgent } from "@reework/core";
 import { text, toolCall, waitFor, waitForProposal } from "@reework/core/testing";
@@ -34,6 +35,26 @@ function definition(plugin: ReturnType<typeof definePlugin>): AgentDefinition {
 }
 
 describe("headless agents", () => {
+  it("refuses an HTTP submit with a 409 and the clear message", async () => {
+    const agent = await startAgent(
+      { name: "headless-http", plugins: [], channels: [], mission: { role: "Route work." } },
+      { storagePath: tmpStorage(), auth: { token: TEST_TOKEN } },
+    );
+    running.push(agent);
+    const { port, close } = await agent.listen(0);
+    const client = createClient({ baseUrl: `http://127.0.0.1:${port}`, token: TEST_TOKEN });
+    const { id } = await client.createConversation();
+    const failure = await client.submit(id, "hello").then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    await close();
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as { status?: number }).status).toBe(409);
+    expect((failure as Error).message).toContain("cannot start a run: no model configured");
+  });
+
   it("serves routes and setup, refuses runs, and settles gates", async () => {
     const seen = { setup: false, runs: [] as unknown[] };
     const headless = definePlugin("headless", () => ({

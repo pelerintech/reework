@@ -367,7 +367,7 @@ export class AgentHost {
     content: string,
     options: SubmitOptions = {},
   ): Promise<SubmitResult> {
-    if (this.headless) throw new Error("cannot start a run: no model configured");
+    if (this.headless) throw new HeadlessAgentError();
     const from = options.from === undefined ? undefined : requireAuthor(options.from);
     if (options.files?.length) {
       const lines: string[] = [];
@@ -590,6 +590,13 @@ export interface ConversationSnapshot {
   readonly case: Case;
   /** The last plugin stop of this conversation's run, when a plugin stopped it. */
   readonly stopNotice?: RunStopNotice;
+}
+
+export class HeadlessAgentError extends Error {
+  constructor() {
+    super("cannot start a run: no model configured");
+    this.name = "HeadlessAgentError";
+  }
 }
 
 export class ConversationNotFound extends Error {
