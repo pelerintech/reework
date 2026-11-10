@@ -70,10 +70,16 @@ export async function startFakeGateway(config: FakeGatewayConfig): Promise<FakeG
         const headers = new Headers((body.headers ?? {}) as Record<string, string>);
         if (secret.header) headers.set(secret.header, secret.value);
         if (secret.query) url.searchParams.set(secret.query, secret.value);
+        const forwardedBody =
+          typeof body.body === "string"
+            ? body.body
+            : typeof body.bodyBase64 === "string"
+              ? Buffer.from(body.bodyBase64, "base64")
+              : undefined;
         const upstream = await fetch(url, {
           method: typeof body.method === "string" ? body.method : "GET",
           headers,
-          ...(typeof body.body === "string" ? { body: body.body } : {}),
+          ...(forwardedBody === undefined ? {} : { body: forwardedBody }),
         });
         res.writeHead(upstream.status, {
           "content-type": upstream.headers.get("content-type") ?? "",

@@ -7,7 +7,7 @@ import type { AgentDefinition, SecretUseEvent } from "@reework/core";
 import { text, toolCall, waitFor } from "@reework/core/testing";
 import { fauxModels, startTestAgent, testDefinition } from "../support/agent.ts";
 import { startFakeGateway } from "../support/fake-gateway.ts";
-import { startFakeHttp } from "../support/fake-http.ts";
+import { startFakeHttp, startHangingHttp } from "../support/fake-http.ts";
 import { startFakeLlm } from "../support/fake-llm.ts";
 
 const BOX_TOKEN = "REEWORK_TEST_BOX_TOKEN";
@@ -141,6 +141,234 @@ describe("gateway backend: fetch and raw", () => {
     });
     expect(process.env[BOX_TOKEN]).toBe("box-token");
     expect(JSON.stringify(process.env)).not.toContain("brave-secret");
+  });
+});
+
+describe("gateway backend: request bodies, aborts and timeouts", () => {
+  it("passes a binary body to the gateway as base64", async () => {
+    process.env[BOX_TOKEN] = "box-token";
+    const target = await startFakeHttp();
+    const gateway = await startFakeGateway({
+      secrets: { brave: { value: "brave-secret", header: "X-Key", hosts: ["127.0.0.1"] } },
+      raw: [],
+      upstreams: {},
+    });
+    const caller = definePlugin(
+      "caller",
+      () => ({
+        tools: [
+          defineTool({
+            name: "post_binary",
+            description: "Post binary bytes through the gateway",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              await ctx.secrets.fetch("brave", `${target.url}/x`, {
+                method: "POST",
+                body: new Uint8Array([0x68, 0x69]),
+              });
+              return "posted";
+            },
+          }),
+        ],
+      }),
+      { secrets: ["brave"] },
+    );
+    const faux = fauxModels("m1");
+    faux.respond([toolCall("post_binary"), text("done")]);
+    const agent = await startTestAgent(
+      testDefinition({
+        secretsBackend: { kind: "gateway", url: gateway.url, tokenEnv: BOX_TOKEN },
+        secrets: {
+          brave: {
+            from: "env:BRAVE",
+            apply: { header: "X-Key" },
+            hosts: ["127.0.0.1"],
+          },
+        },
+        plugins: [{ plugin: caller, config: {} }],
+      }),
+      { models: faux.models },
+    );
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "go", { wait: true });
+
+    expect(target.requests[0]!.body).toBe("hi");
+    const proxy = gateway.requests.find(
+      (request) => request.path === "/plugins/secrets-gateway/open/proxy",
+    );
+    expect(proxy?.body.bodyBase64).toBe("aGk=");
+    expect(proxy?.body.body).toBeUndefined();
+  });
+
+  it("honours the caller's abort signal", async () => {
+    process.env[BOX_TOKEN] = "box-token";
+    const target = await startFakeHttp();
+    const gateway = await startFakeGateway({
+      secrets: { brave: { value: "brave-secret", header: "X-Key", hosts: ["127.0.0.1"] } },
+      raw: [],
+      upstreams: {},
+    });
+    let error: unknown;
+    const caller = definePlugin(
+      "caller",
+      () => ({
+        tools: [
+          defineTool({
+            name: "abort_fetch",
+            description: "Abort a gateway fetch",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              const controller = new AbortController();
+              controller.abort();
+              error = await ctx.secrets
+                .fetch("brave", `${target.url}/x`, { signal: controller.signal })
+                .then(
+                  () => undefined,
+                  (failure: unknown) => failure,
+                );
+              return "tried";
+            },
+          }),
+        ],
+      }),
+      { secrets: ["brave"] },
+    );
+    const faux = fauxModels("m1");
+    faux.respond([toolCall("abort_fetch"), text("done")]);
+    const agent = await startTestAgent(
+      testDefinition({
+        secretsBackend: { kind: "gateway", url: gateway.url, tokenEnv: BOX_TOKEN },
+        secrets: {
+          brave: {
+            from: "env:BRAVE",
+            apply: { header: "X-Key" },
+            hosts: ["127.0.0.1"],
+          },
+        },
+        plugins: [{ plugin: caller, config: {} }],
+      }),
+      { models: faux.models },
+    );
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "go", { wait: true });
+
+    expect(gateway.requests).toHaveLength(0);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("brave");
+  });
+
+  it("times out a hanging gateway, naming the secret", async () => {
+    process.env[BOX_TOKEN] = "box-token";
+    const hanging = await startHangingHttp();
+    let error: unknown;
+    const caller = definePlugin(
+      "caller",
+      () => ({
+        tools: [
+          defineTool({
+            name: "hang_fetch",
+            description: "Fetch through a hanging gateway",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              error = await ctx.secrets.fetch("brave", "http://127.0.0.1:1/x").then(
+                () => undefined,
+                (failure: unknown) => failure,
+              );
+              return "tried";
+            },
+          }),
+        ],
+      }),
+      { secrets: ["brave"] },
+    );
+    const faux = fauxModels("m1");
+    faux.respond([toolCall("hang_fetch"), text("done")]);
+    const agent = await startTestAgent(
+      testDefinition({
+        secretsBackend: {
+          kind: "gateway",
+          url: hanging.url,
+          tokenEnv: BOX_TOKEN,
+          timeoutMs: 50,
+        },
+        secrets: {
+          brave: {
+            from: "env:BRAVE",
+            apply: { header: "X-Key" },
+            hosts: ["127.0.0.1"],
+          },
+        },
+        plugins: [{ plugin: caller, config: {} }],
+      }),
+      { models: faux.models },
+    );
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "go", { wait: true });
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("brave");
+  });
+
+  it("names the secret when a raw reply is not JSON", async () => {
+    process.env[BOX_TOKEN] = "box-token";
+    const gateway = await startFakeHttp();
+    gateway.respond({ status: 200, body: "oops" });
+    let error: unknown;
+    const caller = definePlugin(
+      "caller",
+      () => ({
+        tools: [
+          defineTool({
+            name: "bad_raw",
+            description: "Read a raw value from a non-JSON gateway",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              error = await ctx.secrets.get("bot").then(
+                () => undefined,
+                (failure: unknown) => failure,
+              );
+              return "tried";
+            },
+          }),
+        ],
+      }),
+      { secrets: ["bot"] },
+    );
+    const faux = fauxModels("m1");
+    faux.respond([toolCall("bad_raw"), text("done")]);
+    const agent = await startTestAgent(
+      testDefinition({
+        secretsBackend: { kind: "gateway", url: gateway.url, tokenEnv: BOX_TOKEN },
+        secrets: { bot: { from: "env:BOT" } },
+        plugins: [{ plugin: caller, config: {} }],
+      }),
+      { models: faux.models },
+    );
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "go", { wait: true });
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("bot");
+  });
+});
+
+describe("gateway backend: model failure", () => {
+  it("surfaces a gateway model failure as an error", async () => {
+    process.env[BOX_TOKEN] = "box-token";
+    const gateway = await startFakeHttp();
+    gateway.respond({ status: 500, body: JSON.stringify({ error: "gateway down" }) });
+    const agent = await startTestAgent(
+      testDefinition({
+        model: {
+          provider: { baseUrl: "http://127.0.0.1:1", apiKeyEnv: "UNUSED_PROVIDER_KEY" },
+          modelId: "m1",
+        },
+        secretsBackend: { kind: "gateway", url: gateway.url, tokenEnv: BOX_TOKEN },
+      }),
+      { models: undefined, settings: { retry: { enabled: false, maxRetries: 0, baseDelayMs: 1 } } },
+    );
+    const { id } = await agent.host.createConversation();
+    await expect(agent.host.submitInput(id, "hello", { wait: true })).rejects.toThrow();
   });
 });
 

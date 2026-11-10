@@ -123,7 +123,12 @@ models: {
 
 ```ts
 secretsBackend: { kind: "local" };
-secretsBackend: { kind: "gateway", url: "https://gateway.example", tokenEnv: "BOX_TOKEN" };
+secretsBackend: {
+  kind: "gateway",
+  url: "https://gateway.example",
+  tokenEnv: "BOX_TOKEN",
+  timeoutMs: 30_000, // optional; default 30 seconds
+};
 ```
 
 **Local** reads `env:` and `file:` itself. A declared secret whose env variable or file is missing fails at
@@ -131,7 +136,9 @@ startup naming the secret. Model keys come from the same source (`apiKeyEnv` or 
 
 **Gateway** keeps values outside the agent; the box holds only its own token. A missing `tokenEnv` fails at
 startup naming the variable. `fetch` and `get` go to the gateway, and model calls use the gateway's upstream
-path, so no secret value exists in the agent's process or definition.
+path, so no secret value exists in the agent's process or definition. Gateway requests honour the caller's
+`init.signal` and time out after `timeoutMs` (default 30 seconds); a timeout or transport error names the
+secret. A gateway model failure surfaces as an error to the caller.
 
 ## Gateway wire protocol
 
@@ -150,8 +157,10 @@ The URL shape is shared with the gateway plugin. All three routes are under
 }
 ```
 
-The gateway checks the token allows the secret and the URL host is in the secret's `hosts`, applies the value,
-forwards the request and returns the upstream response.
+A string body is sent as `body`; a binary body (`Uint8Array`, `ArrayBuffer`, `Blob`) is sent as
+`bodyBase64` (base64 bytes, the flag being the field itself). The gateway checks the token allows the secret and
+the URL host is in the secret's `hosts`, applies the value, forwards the request and returns the upstream
+response.
 
 **Read a raw value** — `POST /open/raw`:
 

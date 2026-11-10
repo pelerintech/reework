@@ -83,7 +83,13 @@ export interface AgentCasesConfig {
 
 export type SecretsBackend =
   | { readonly kind: "local" }
-  | { readonly kind: "gateway"; readonly url: string; readonly tokenEnv: string };
+  | {
+      readonly kind: "gateway";
+      readonly url: string;
+      readonly tokenEnv: string;
+      /** Request timeout in ms; default 30000. */
+      readonly timeoutMs?: number;
+    };
 
 export interface SecretDefinition {
   /** Where the value comes from: `env:VAR` or `file:/path`. */

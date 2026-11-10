@@ -55,6 +55,38 @@ export class SecretsRuntime {
     return this.gatewayUrl(`/plugins/secrets-gateway/open/llm/${encodeURIComponent(upstream)}`);
   }
 
+  /** The gateway request timeout: configured, or 30 seconds. */
+  private gatewayTimeout(): number {
+    return this.backend.kind === "gateway" ? (this.backend.timeoutMs ?? 30_000) : 30_000;
+  }
+
+  /** A signal that honours the caller's abort and the gateway timeout. */
+  private gatewaySignal(signal?: AbortSignal): AbortSignal {
+    const timeout = AbortSignal.timeout(this.gatewayTimeout());
+    return signal ? AbortSignal.any([signal, timeout]) : timeout;
+  }
+
+  /** Encode a request body for the gateway protocol: string or base64 bytes. */
+  private async gatewayBody(
+    name: string,
+    body: RequestInit["body"],
+  ): Promise<{ body?: string; bodyBase64?: string }> {
+    if (body === undefined || body === null) return {};
+    if (typeof body === "string") return { body };
+    if (body instanceof URLSearchParams) return { body: body.toString() };
+    if (body instanceof Uint8Array) return { bodyBase64: Buffer.from(body).toString("base64") };
+    if (body instanceof ArrayBuffer) return { bodyBase64: Buffer.from(body).toString("base64") };
+    if (typeof Blob !== "undefined" && body instanceof Blob) {
+      return { bodyBase64: Buffer.from(await body.arrayBuffer()).toString("base64") };
+    }
+    if (ArrayBuffer.isView(body)) {
+      return {
+        bodyBase64: Buffer.from(body.buffer, body.byteOffset, body.byteLength).toString("base64"),
+      };
+    }
+    throw new Error(`secret "${name}" gateway request body type is unsupported`);
+  }
+
   /** Record which secrets each built plugin declared. */
   setDeclarations(declarations: ReadonlyMap<string, readonly string[]>): void {
     this.declarations = new Map(declarations);
@@ -218,20 +250,38 @@ export class SecretsRuntime {
       const headers = new Headers(init.headers);
       const targetHeaders: Record<string, string> = {};
       for (const [key, value] of headers) targetHeaders[key] = value;
-      const response = await fetch(this.gatewayUrl("/plugins/secrets-gateway/open/proxy"), {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${this.gatewayToken()}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          secret: name,
-          url,
-          method: init.method ?? "GET",
-          headers: targetHeaders,
-          ...(typeof init.body === "string" ? { body: init.body } : {}),
-        }),
-      });
+      let payload: { body?: string; bodyBase64?: string };
+      try {
+        payload = await this.gatewayBody(name, init.body);
+      } catch (error) {
+        this.audit(plugin, name, "fetch", "refused", conversationId);
+        throw new Error(`secret "${name}" gateway request failed: ${messageOf(error)}`, {
+          cause: error,
+        });
+      }
+      let response: Response;
+      try {
+        response = await fetch(this.gatewayUrl("/plugins/secrets-gateway/open/proxy"), {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${this.gatewayToken()}`,
+            "content-type": "application/json",
+          },
+          signal: this.gatewaySignal(init.signal ?? undefined),
+          body: JSON.stringify({
+            secret: name,
+            url,
+            method: init.method ?? "GET",
+            headers: targetHeaders,
+            ...payload,
+          }),
+        });
+      } catch (error) {
+        this.audit(plugin, name, "fetch", "refused", conversationId);
+        throw new Error(`secret "${name}" gateway request failed: ${messageOf(error)}`, {
+          cause: error,
+        });
+      }
       this.audit(
         plugin,
         name,
@@ -303,14 +353,23 @@ export class SecretsRuntime {
   async get(plugin: string, name: string, conversationId?: string): Promise<string> {
     this.requireDeclared(plugin, name, "get", conversationId);
     if (this.backend.kind === "gateway") {
-      const response = await fetch(this.gatewayUrl("/plugins/secrets-gateway/open/raw"), {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${this.gatewayToken()}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ secret: name }),
-      });
+      let response: Response;
+      try {
+        response = await fetch(this.gatewayUrl("/plugins/secrets-gateway/open/raw"), {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${this.gatewayToken()}`,
+            "content-type": "application/json",
+          },
+          signal: this.gatewaySignal(),
+          body: JSON.stringify({ secret: name }),
+        });
+      } catch (error) {
+        this.audit(plugin, name, "get", "refused", conversationId);
+        throw new Error(`secret "${name}" gateway request failed: ${messageOf(error)}`, {
+          cause: error,
+        });
+      }
       if (!response.ok) {
         this.audit(plugin, name, "get", "refused", conversationId);
         throw new Error(`secret "${name}" raw access refused (${response.status})`);
@@ -372,6 +431,10 @@ function redactResponseUrl(response: Response, secret: string): Response {
   });
   Object.defineProperty(copy, "url", { value: url.toString(), configurable: true });
   return copy;
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 const MAX_REDIRECTS = 5;

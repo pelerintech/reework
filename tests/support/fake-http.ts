@@ -32,6 +32,31 @@ afterEach(async () => {
   while (open.length > 0) await open.pop()!.close();
 });
 
+/** A server that accepts requests and never answers; closed by the same afterEach. */
+export async function startHangingHttp(): Promise<{ url: string; close: () => Promise<void> }> {
+  const sockets = new Set<import("node:net").Socket>();
+  const server = createServer((req) => {
+    req.on("data", () => {});
+    req.on("end", () => {});
+  });
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  const fake = {
+    url: `http://127.0.0.1:${port}`,
+    close: () =>
+      new Promise<void>((resolve) => {
+        for (const socket of sockets) socket.destroy();
+        server.close(() => resolve());
+      }),
+  };
+  open.push({ ...fake, requests: [], respond: () => {}, close: fake.close });
+  return fake;
+}
+
 export async function startFakeHttp(): Promise<FakeHttp> {
   const requests: RecordedHttpRequest[] = [];
   const queue: FakeHttpReply[] = [];

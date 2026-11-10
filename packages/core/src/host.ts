@@ -433,7 +433,15 @@ export class AgentHost {
     });
     if (!options.wait) return { submissionId };
     const settled = await submission.wait(CONTEXT);
-    if (settled.status !== "done" || settled.type !== "input") return { submissionId };
+    if (settled.status !== "done" || settled.type !== "input") {
+      if (settled.status === "unanswered" && settled.reason === "model_error") {
+        const detail = settled.detail;
+        throw new Error(
+          `model error: ${typeof detail === "string" ? detail : JSON.stringify(detail ?? "unknown")}`,
+        );
+      }
+      return { submissionId };
+    }
     const recent = await conversation.entries({ order: "descending" }, 50, undefined, CONTEXT);
     const answer = recent.items.find((entry) => entry.id === settled.answer);
     return { submissionId, message: answer ? toMessage(answer) : undefined };
