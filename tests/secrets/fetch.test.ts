@@ -17,10 +17,12 @@ import { text, toolCall } from "@reework/core/testing";
 
 const BRAVE_ENV = "REEWORK_TEST_BRAVE";
 const QUERY_ENV = "REEWORK_TEST_QUERY";
+const FORMAT_ENV = "REEWORK_TEST_FORMAT_SECRET";
 
 afterEach(() => {
   delete process.env[BRAVE_ENV];
   delete process.env[QUERY_ENV];
+  delete process.env[FORMAT_ENV];
 });
 
 /** Fetch `url` with a brave secret restricted to `hosts`; returns status or error. */
@@ -117,6 +119,47 @@ describe("ctx.secrets.fetch: applying a secret", () => {
     expect(seen.body).not.toContain("brave-secret");
     expect(target.requests).toHaveLength(1);
     expect(target.requests[0]!.headers["x-subscription-token"]).toBe("brave-secret");
+  });
+
+  it("applies a header format literally, not as replacement patterns", async () => {
+    process.env[FORMAT_ENV] = "a$&b$$c";
+    const target = await startFakeHttp();
+    const caller = definePlugin(
+      "caller",
+      () => ({
+        tools: [
+          defineTool({
+            name: "call_format",
+            description: "Call the target with a formatted secret",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              await ctx.secrets.fetch("fmt", `${target.url}/x`);
+              return "called";
+            },
+          }),
+        ],
+      }),
+      { secrets: ["fmt"] },
+    );
+    const faux = fauxModels("m1");
+    faux.respond([toolCall("call_format"), text("done")]);
+    const agent = await startTestAgent(
+      testDefinition({
+        secrets: {
+          fmt: {
+            from: `env:${FORMAT_ENV}`,
+            apply: { header: "X-Key", format: "Bearer {}" },
+            hosts: ["127.0.0.1"],
+          },
+        },
+        plugins: [{ plugin: caller, config: {} }],
+      }),
+      { models: faux.models },
+    );
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "go", { wait: true });
+
+    expect(target.requests[0]!.headers["x-key"]).toBe("Bearer a$&b$$c");
   });
 
   it("applies a query secret beside existing query parameters", async () => {

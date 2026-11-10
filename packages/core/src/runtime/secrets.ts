@@ -335,7 +335,10 @@ export class SecretsRuntime {
       const request = new URL(target);
       if ("header" in definition.apply) {
         const format = definition.apply.format ?? "{}";
-        headers.set(definition.apply.header, format.replace("{}", value));
+        headers.set(
+          definition.apply.header,
+          format.replace("{}", () => value),
+        );
       } else {
         request.searchParams.set(definition.apply.query, value);
       }
