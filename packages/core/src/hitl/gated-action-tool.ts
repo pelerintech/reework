@@ -126,7 +126,7 @@ export function gatedAction<TParameters extends TSchema>(
         id: uuidv7(),
         conversationId: ctx.conversationId,
         title: gate.title,
-        audience: def.audience ?? "human",
+        audience: gate.audience ?? def.audience ?? "human",
         ...(gate.description === undefined ? {} : { description: gate.description }),
         ...(attachments === undefined ? {} : { attachments }),
         options: gate.options ?? [],

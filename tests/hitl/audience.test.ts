@@ -193,4 +193,27 @@ describe("gate audiences", () => {
     expect(settled.decidedBy).toEqual(agentAuthor);
     expect(settled.decision).toMatchObject({ decidedBy: agentAuthor });
   });
+
+  it("lets a built gate raise the definition's human default", async () => {
+    const agentAuthor = { kind: "agent" as const, id: "agent:orchestrator" };
+    const { test, proposal } = await openGate(() => ({
+      title: "Deploy?",
+      audience: "human-or-agent",
+      options: [{ id: "yes", label: "Yes" }],
+    }));
+
+    expect(proposal.audience).toBe("human-or-agent");
+    await test.agent.host.submitDecision({
+      proposalId: proposal.id,
+      selectedOption: "yes",
+      instruction: null,
+      decidedBy: agentAuthor,
+    });
+    const settled = await waitFor(async () =>
+      (await test.agent.host.listProposals({ status: "settled" })).find(
+        (p) => p.id === proposal.id,
+      ),
+    );
+    expect(settled.decidedBy).toEqual(agentAuthor);
+  });
 });
