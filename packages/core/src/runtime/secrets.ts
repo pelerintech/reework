@@ -161,6 +161,19 @@ export class SecretsRuntime {
             `secret "${name}": apply must set exactly one of header or query (non-empty)`,
           );
         }
+        const format = (apply as { format?: unknown }).format;
+        if (format !== undefined && typeof format !== "string") {
+          throw new Error(`secret "${name}": apply.format must be a string`);
+        }
+      }
+      const hosts = definition.hosts;
+      if (hosts !== undefined) {
+        if (!Array.isArray(hosts)) {
+          throw new Error(`secret "${name}": hosts must be an array of host strings`);
+        }
+        if (hosts.some((host) => typeof host !== "string")) {
+          throw new Error(`secret "${name}": hosts must be an array of host strings`);
+        }
       }
       if (
         apply &&

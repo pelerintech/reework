@@ -144,6 +144,34 @@ describe("secret definitions: malformed definitions", () => {
     ).rejects.toThrow(/secret "emptyfile".*resolved value is empty/);
   });
 
+  it("fails naming a non-string apply format", async () => {
+    await expect(
+      startTestAgent(
+        definition({
+          fmt: {
+            from: `env:${MISSING_ENV}`,
+            apply: { header: "X-Key", format: 123 } as never,
+            hosts: ["127.0.0.1"],
+          },
+        }),
+      ),
+    ).rejects.toThrow(/secret "fmt".*format/);
+  });
+
+  it("fails naming a non-array hosts value", async () => {
+    await expect(
+      startTestAgent(
+        definition({
+          badhosts: {
+            from: `env:${MISSING_ENV}`,
+            apply: { header: "X-Key" },
+            hosts: "127.0.0.1" as never,
+          },
+        }),
+      ),
+    ).rejects.toThrow(/secret "badhosts".*hosts/);
+  });
+
   it("accepts a model-key secret without hosts", async () => {
     process.env[LLM_ENV] = "llm-key";
     const agent = await startTestAgent(
