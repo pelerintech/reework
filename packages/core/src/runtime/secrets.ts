@@ -98,8 +98,18 @@ export class SecretsRuntime {
         );
       }
       const apply = definition.apply;
-      if (apply && "header" in apply && "query" in apply) {
-        throw new Error(`secret "${name}": apply must set exactly one of header or query`);
+      if (apply !== undefined) {
+        const hasHeaderField = "header" in apply;
+        const hasQueryField = "query" in apply;
+        const header = hasHeaderField ? (apply as { header?: unknown }).header : undefined;
+        const query = hasQueryField ? (apply as { query?: unknown }).query : undefined;
+        const headerOk = typeof header === "string" && header.length > 0;
+        const queryOk = typeof query === "string" && query.length > 0;
+        if (hasHeaderField === hasQueryField || !(headerOk || queryOk)) {
+          throw new Error(
+            `secret "${name}": apply must set exactly one of header or query (non-empty)`,
+          );
+        }
       }
       if (
         apply &&
@@ -111,15 +121,23 @@ export class SecretsRuntime {
       if (this.backend.kind === "gateway") continue;
       if (env) {
         const variable = definition.from.slice("env:".length);
-        if (!process.env[variable]) {
+        const value = process.env[variable];
+        if (value === undefined) {
           throw new Error(`secret "${name}" environment variable ${variable} is not set`);
+        }
+        if (value.trim() === "") {
+          throw new Error(`secret "${name}" resolved value is empty`);
         }
       } else if (file) {
         const path = from.slice("file:".length);
+        let value: string;
         try {
-          readFileSync(path, "utf8");
+          value = readFileSync(path, "utf8");
         } catch {
           throw new Error(`secret "${name}" file ${path} could not be read`);
+        }
+        if (value.trim() === "") {
+          throw new Error(`secret "${name}" resolved value is empty`);
         }
       }
     }
@@ -142,15 +160,23 @@ export class SecretsRuntime {
       if (value === undefined) {
         throw new Error(`secret "${name}" environment variable ${variable} is not set`);
       }
+      if (value.trim() === "") {
+        throw new Error(`secret "${name}" resolved value is empty`);
+      }
       return value;
     }
     if (definition.from.startsWith("file:")) {
       const path = definition.from.slice("file:".length);
+      let value: string;
       try {
-        return readFileSync(path, "utf8").trim();
+        value = readFileSync(path, "utf8").trim();
       } catch {
         throw new Error(`secret "${name}" file ${path} could not be read`);
       }
+      if (value === "") {
+        throw new Error(`secret "${name}" resolved value is empty`);
+      }
+      return value;
     }
     throw new Error(`secret "${name}" cannot be resolved from "${definition.from}"`);
   }

@@ -40,10 +40,12 @@ A definition has three parts:
 | `apply` | `{ header: "Authorization", format?: "Bearer {}" }` or `{ query: "key" }`; how `fetch` applies it. |
 | `hosts` | Hostnames that may receive the secret through `fetch`. Required for a fetchable secret.            |
 
+File values are trimmed (leading and trailing whitespace, including a trailing newline) when they are read.
+
 A model-key secret (`apiKey: { secret: "llm" }`) needs no `hosts`, and neither does a secret used only through
 `get` (it has no `apply` rule). A secret with `apply` is fetchable and needs a non-empty `hosts`. Startup rejects
-an unknown `from` form, an `apply` with both `header` and `query`, and a fetchable secret without `hosts`, naming
-the secret and the problem.
+an unknown `from` form, an `apply` that does not name exactly one non-empty `header` or `query`, an empty
+resolved value, and a fetchable secret without `hosts`, naming the secret and the problem.
 
 Plugins declare what they use:
 

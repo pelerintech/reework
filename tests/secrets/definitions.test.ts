@@ -12,11 +12,13 @@ import { startFakeHttp } from "../support/fake-http.ts";
 
 const MISSING_ENV = "REEWORK_TEST_MISSING_SECRET";
 const LLM_ENV = "REEWORK_TEST_LLM_SECRET";
+const EMPTY_ENV = "REEWORK_TEST_EMPTY_SECRET";
 const dirs: string[] = [];
 
 afterEach(() => {
   delete process.env[MISSING_ENV];
   delete process.env[LLM_ENV];
+  delete process.env[EMPTY_ENV];
   while (dirs.length > 0) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
 
@@ -84,6 +86,64 @@ describe("secret definitions: malformed definitions", () => {
     ).rejects.toThrow(/secret "fetchable".*hosts/);
   });
 
+  it("fails naming an apply rule with neither header nor query", async () => {
+    await expect(
+      startTestAgent(
+        definition({
+          empty: {
+            from: `env:${MISSING_ENV}`,
+            apply: {} as never,
+            hosts: ["127.0.0.1"],
+          },
+        }),
+      ),
+    ).rejects.toThrow(/secret "empty".*exactly one of header or query/);
+  });
+
+  it("fails naming an empty header name", async () => {
+    await expect(
+      startTestAgent(
+        definition({
+          blank: {
+            from: `env:${MISSING_ENV}`,
+            apply: { header: "" },
+            hosts: ["127.0.0.1"],
+          },
+        }),
+      ),
+    ).rejects.toThrow(/secret "blank".*exactly one of header or query/);
+  });
+
+  it("fails naming a secret whose resolved environment value is empty", async () => {
+    process.env[EMPTY_ENV] = "";
+    await expect(
+      startTestAgent(
+        definition({
+          emptyenv: {
+            from: `env:${EMPTY_ENV}`,
+            apply: { header: "X-Key" },
+            hosts: ["127.0.0.1"],
+          },
+        }),
+      ),
+    ).rejects.toThrow(/secret "emptyenv".*resolved value is empty/);
+  });
+
+  it("fails naming a secret whose resolved file value is empty", async () => {
+    const path = keyFile("  \n");
+    await expect(
+      startTestAgent(
+        definition({
+          emptyfile: {
+            from: `file:${path}`,
+            apply: { header: "X-Key" },
+            hosts: ["127.0.0.1"],
+          },
+        }),
+      ),
+    ).rejects.toThrow(/secret "emptyfile".*resolved value is empty/);
+  });
+
   it("accepts a model-key secret without hosts", async () => {
     process.env[LLM_ENV] = "llm-key";
     const agent = await startTestAgent(
@@ -130,7 +190,7 @@ describe("secret definitions: file-backed secrets", () => {
       testDefinition({
         secrets: {
           filekey: {
-            from: `file:${keyFile("file-key")}`,
+            from: `file:${keyFile("file-key\n")}`,
             apply: { header: "X-Key" },
             hosts: ["127.0.0.1"],
           },
