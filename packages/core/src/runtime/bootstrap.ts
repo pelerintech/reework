@@ -203,6 +203,7 @@ export async function startAgent(
       unlock,
       opened,
       lifecycle,
+      secrets,
     );
   } catch (error) {
     unlock?.();
@@ -224,6 +225,7 @@ async function boot(
   unlock: () => void,
   opened: Opened,
   lifecycle: AbortController,
+  secrets: SecretsRuntime,
 ): Promise<RunningAgent> {
   const settings: HarnessSettings = {
     stream: { ...DEFAULT_SETTINGS.stream, ...options.settings?.stream },
@@ -251,6 +253,7 @@ async function boot(
     lifecycle.signal,
   );
   bindings.modelUsage = (event) => events.enqueue("onModelUsage", event.conversationId, event);
+  secrets.setOnUse((event) => events.enqueue("onSecretUse", event.conversationId, event));
   onProposalOpen(engine, (proposal) => {
     events.enqueue("onProposalOpened", proposal.conversationId, { proposal });
   });

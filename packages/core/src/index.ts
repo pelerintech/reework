@@ -59,6 +59,7 @@ export type {
   PluginEventContext,
   ModelUsageEvent,
   ModelCallRequest,
+  SecretUseEvent,
   PluginStore,
   PluginStoreScope,
   PluginStoreItem,

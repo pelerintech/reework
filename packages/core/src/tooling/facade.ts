@@ -435,6 +435,17 @@ export interface ModelCallRequest {
   readonly conversationId?: string;
 }
 
+/** A plugin used a secret: a raw read or a request with it applied. */
+export interface SecretUseEvent {
+  /** The plugin that used the secret. */
+  readonly plugin: string;
+  readonly name: string;
+  readonly kind: "get" | "fetch";
+  readonly at: number;
+  /** The conversation the use belongs to; absent for agent-level work. */
+  readonly conversationId?: string;
+}
+
 /** The hooks a plugin may provide, run in plugin declaration order. */
 export interface PluginHooks {
   beforeModelRequest?(
@@ -483,6 +494,8 @@ export interface PluginHooks {
   ): Promise<void>;
   /** A model call returned usage: a run's main model or a plugin's named-model call. */
   onModelUsage?(input: ModelUsageEvent, ctx: PluginEventContext): Promise<void>;
+  /** A plugin used a secret: a raw read or a request with it applied. */
+  onSecretUse?(input: SecretUseEvent, ctx: PluginEventContext): Promise<void>;
   /** Before any `ctx.models.complete`; `{ refuse }` makes the call throw `ModelCallRefused`. */
   beforeModelCall?(
     input: ModelCallRequest,
@@ -688,7 +701,7 @@ function buildToolContext(
     signal,
     output: (chunk) => api.output(chunk),
     store: createPluginStore(backend, pluginName, api.conversationId),
-    secrets: makePluginSecrets(pluginName, bindings),
+    secrets: makePluginSecrets(pluginName, bindings, String(api.conversationId)),
     models: makePluginModels(
       pluginName,
       bindings,

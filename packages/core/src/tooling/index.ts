@@ -38,6 +38,7 @@ export type {
   PluginEventContext,
   ModelUsageEvent,
   ModelCallRequest,
+  SecretUseEvent,
   ReeworkPlugin,
   ReeworkTool,
   ToolContext,

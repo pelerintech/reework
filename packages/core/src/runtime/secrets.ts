@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { AgentDefinition, AgentModel, SecretDefinition } from "../agent-definition.ts";
+import type { SecretUseEvent } from "../tooling/facade.ts";
 
 /**
  * The agent's secrets: definitions are validated before the engine opens, and
@@ -10,6 +11,7 @@ export class SecretsRuntime {
   private readonly definitions: Record<string, SecretDefinition>;
   private readonly modelKeySecrets: ReadonlySet<string>;
   private declarations = new Map<string, readonly string[]>();
+  private onUse?: (event: SecretUseEvent) => void;
 
   constructor(
     definitions: Record<string, SecretDefinition>,
@@ -31,6 +33,26 @@ export class SecretsRuntime {
     }
   }
 
+  /** Where secret uses are reported (the agent's event queue). */
+  setOnUse(onUse: (event: SecretUseEvent) => void): void {
+    this.onUse = onUse;
+  }
+
+  private audit(
+    plugin: string,
+    name: string,
+    kind: "get" | "fetch",
+    conversationId?: string,
+  ): void {
+    this.onUse?.({
+      plugin,
+      name,
+      kind,
+      at: Date.now(),
+      ...(conversationId ? { conversationId } : {}),
+    });
+  }
+
   /** Fail startup for a malformed definition or a missing local source. */
   validate(): void {
     for (const [name, definition] of Object.entries(this.definitions)) {
@@ -46,7 +68,11 @@ export class SecretsRuntime {
       if (apply && "header" in apply && "query" in apply) {
         throw new Error(`secret "${name}": apply must set exactly one of header or query`);
       }
-      if (!this.modelKeySecrets.has(name) && (!definition.hosts || definition.hosts.length === 0)) {
+      if (
+        apply &&
+        !this.modelKeySecrets.has(name) &&
+        (!definition.hosts || definition.hosts.length === 0)
+      ) {
         throw new Error(`secret "${name}": hosts is required for a fetchable secret`);
       }
       if (env) {
@@ -94,6 +120,7 @@ export class SecretsRuntime {
     name: string,
     url: string,
     init: RequestInit = {},
+    conversationId?: string,
   ): Promise<Response> {
     this.requireDeclared(plugin, name);
     const definition = this.definitions[name];
@@ -112,13 +139,16 @@ export class SecretsRuntime {
     } else {
       target.searchParams.set(definition.apply.query, value);
     }
+    this.audit(plugin, name, "fetch", conversationId);
     return fetch(target, { ...init, headers });
   }
 
   /** The raw value of a declared secret (local backend). */
-  async get(plugin: string, name: string): Promise<string> {
+  async get(plugin: string, name: string, conversationId?: string): Promise<string> {
     this.requireDeclared(plugin, name);
-    return this.resolve(name);
+    const value = this.resolve(name);
+    this.audit(plugin, name, "get", conversationId);
+    return value;
   }
 }
 
