@@ -105,14 +105,16 @@ A plugin may observe and shape the run. Hooks run in **plugin declaration order*
 `PluginHookContext` (`conversationId`, `models`, `store`, `files`, `case`, and `memo(name, fn)` — a
 value computed once per task attempt and reused on retry).
 
-| Hook                 | It may…                                                                                |
-| -------------------- | -------------------------------------------------------------------------------------- |
-| `beforeTool`         | block the call (`{ block: reason }`) or rewrite its arguments (`{ args }`).            |
-| `afterTool`          | replace a result (`{ output, isError?, details? }`) — e.g. redact text the model sees. |
-| `beforeModelRequest` | rewrite the messages sent to the model (add or redact content).                        |
-| `afterModelResponse` | observe every assistant message and its typed `ModelUsage` token counts.               |
-| `onAnswer`           | observe the answer to an input; return `{ continue }` to keep the run going.           |
-| `beforeCompaction`   | supply `{ summary }` or `{ decline: true }` to skip compaction.                        |
+| Hook                 | It may…                                                                                               |
+| -------------------- | ----------------------------------------------------------------------------------------------------- |
+| `beforeTool`         | block the call (`{ block: reason }`) or rewrite its arguments (`{ args }`).                           |
+| `afterTool`          | replace a result (`{ output, isError?, details? }`) — e.g. redact text the model sees.                |
+| `beforeModelRequest` | rewrite the messages sent to the model (add or redact content), or stop the run (`{ stop: reason }`). |
+| `afterModelResponse` | observe every assistant message and its typed `ModelUsage` token counts.                              |
+| `beforeModelCall`    | refuse a named-model call (`{ refuse: reason }`); see [Refusing model calls](#refusing-model-calls).  |
+| `onModelUsage`       | observe usage of every model call; see [Model usage events](#model-usage-events).                     |
+| `onAnswer`           | observe the answer to an input; return `{ continue }` to keep the run going.                          |
+| `beforeCompaction`   | supply `{ summary }` or `{ decline: true }` to skip compaction.                                       |
 
 **Error rules.** A `beforeTool` that throws **blocks** the call. Any other hook that throws is
 logged and skipped — it never fails the run. pi-durable does not run `afterTool` for a blocked call;
@@ -227,7 +229,9 @@ restart. A plugin that must not miss a closed case therefore **reconciles in `se
 compare them with its own store. Events already queued or running when `agent.stop()` begins are awaited before
 plugins stop; new events are dropped without logging. Errors are logged with the plugin's name and the hook.
 
-Their context is a run hook's without `memo`: `conversationId`, `models`, `store`, `files`, `case`.
+Their context is a run hook's without `memo`: `conversationId`, `models`, `store`, `files`, `case`. The same queue
+also delivers `onModelUsage` (see [Model usage events](#model-usage-events)), whose events for calls outside a
+conversation arrive with an agent-level context.
 
 ```ts
 import { definePlugin } from "@reework/core";
@@ -248,6 +252,82 @@ export const journal = definePlugin("journal", () => ({
     },
     async onCaseReopened({ case: reopened, cause }, ctx) {
       await ctx.store.agent.set(`reopened/${reopened.id}`, cause);
+    },
+  },
+}));
+```
+
+## Stopping a run
+
+A `beforeModelRequest` hook may stop the run instead of rewriting the request: return `{ stop: reason }`. Core makes
+no model request for that round (the current stream is never cut — the hook runs before it), ends the run the way
+`limits.toolRoundsPerRun` ends one, and records a notice naming the plugin and its reason. The conversation's
+snapshot carries it as `stopNotice: { plugin, reason }` (absent when no plugin stopped the run), so a surface can
+show "Run stopped by <plugin>: <reason>".
+
+The first stop wins: hooks run in plugin declaration order and the later ones do not run. Input submitted while
+the stop is applied is kept (the stop ends the run, not the conversation) and starts a fresh run once the stop
+completes. A gate opened before the stop stays open and a decision settles it normally. A hook that throws is
+logged and ignored, exactly like any other model-request hook.
+
+```ts
+import { definePlugin } from "@reework/core";
+
+export const limiter = definePlugin("limiter", () => ({
+  hooks: {
+    async beforeModelRequest(_input, ctx) {
+      const used = await ctx.store.case.get<number>("tokens");
+      if ((used ?? 0) > 200_000) return { stop: "daily token budget reached" };
+    },
+  },
+}));
+```
+
+## Model usage events
+
+`onModelUsage` observes every model call that returned usage. A run's main-model response arrives as
+`{ source: "run", model: "main", conversationId, usage, at }`; a plugin's named-model call arrives as
+`{ source: "plugin", plugin, model, conversationId?, usage, at }`. Named-model events cover calls from a tool, a
+hook, a gated action, `setup` and a route. The event carries reework's typed `ModelUsage` token counts (no cost).
+
+Events go through the same per-agent FIFO queue as the other event hooks, after the call's commit, in order with
+the conversation-bound events. A call outside a conversation (from `setup` or a route) arrives with an
+**agent-level context**: `conversationId`, `files` and `case` are absent, and `store.case` is absent too;
+`store.agent` still works. Because delivery is asynchronous, usage totals a plugin keeps are slightly behind a
+call made right after — budget plugins document soft limits.
+
+```ts
+import { definePlugin } from "@reework/core";
+
+export const meter = definePlugin("meter", () => ({
+  hooks: {
+    async onModelUsage({ model, conversationId, usage }, ctx) {
+      await ctx.store.agent.update(`spent/${model}`, (total) => {
+        const spent = (total as number | undefined) ?? 0;
+        return spent + usage.totalTokens;
+      });
+      if (conversationId) await ctx.store.case.set("last-model", model);
+    },
+  },
+}));
+```
+
+## Refusing model calls
+
+`beforeModelCall` runs before every `ctx.models.complete` — from a tool, hook, gated action, `setup` or a route —
+in plugin declaration order. The first `{ refuse: reason }` wins and makes the call throw `ModelCallRefused` with
+that reason; no request reaches the model. Its context is agent-level: `conversationId`, `files` and `case` are
+absent when the call belongs to no conversation, and `store.case` is absent too. A hook that throws is logged and
+ignored, so it never turns into a refusal.
+
+```ts
+import { definePlugin } from "@reework/core";
+
+export const budget = definePlugin("budget", () => ({
+  hooks: {
+    async beforeModelCall({ model }, ctx) {
+      const spent = (await ctx.store.agent.get<number>(`spent/${model}`)) ?? 0;
+      if (spent > 100_000) return { refuse: "budget" };
     },
   },
 }));
