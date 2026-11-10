@@ -27,7 +27,7 @@ export function validateModelKeys(agent: AgentDefinition): void {
       }
     }
   };
-  check("main", agent.model);
+  if (agent.model) check("main", agent.model);
   for (const [name, model] of Object.entries(agent.models ?? {})) check(name, model);
 }
 
@@ -46,12 +46,12 @@ const STREAMS = {
  * engine opens.
  */
 export function customModels(
-  model: AgentModel,
+  model: AgentModel | undefined,
   named: Record<string, AgentModel> = {},
   secrets?: SecretsRuntime,
 ): MutableModels {
   const models = createModels();
-  models.setProvider(agentModelProvider(MODEL_PROVIDER_ID, model, secrets));
+  if (model) models.setProvider(agentModelProvider(MODEL_PROVIDER_ID, model, secrets));
   for (const [name, def] of Object.entries(named)) {
     if (name === "main") {
       throw new Error(`model name "main" is reserved; it names the conversation model`);

@@ -935,6 +935,8 @@ export interface PluginFilesAccess {
  *  plugin's lent names, and its host-backed case and file access. */
 export interface PluginBindings {
   catalog?: Models;
+  /** The agent has no model: it refuses runs and does not resume one after a gate. */
+  headless?: boolean;
   /** The agent's secrets: fetch applies one, get returns it. */
   secrets?: SecretsAccess;
   readonly lent: ReadonlyMap<string, readonly string[]>;

@@ -110,6 +110,8 @@ export class AgentHost {
   private readonly events: EventDispatcher | undefined;
   /** In-process listeners for case writes, for surfaces watching the conversation. */
   private readonly caseListeners = new Set<(c: Case) => void>();
+  /** A headless agent has no model and refuses input that would start a run. */
+  private readonly headless: boolean;
 
   constructor(
     engine: Engine,
@@ -117,6 +119,7 @@ export class AgentHost {
     workspace?: WorkspaceProvider,
     files: { maxBytes?: number } = {},
     events?: EventDispatcher,
+    options: { headless?: boolean } = {},
   ) {
     this.engine = engine;
     this.agent = agent;
@@ -124,6 +127,7 @@ export class AgentHost {
     this.fileStore = new FileStore(engine.path);
     this.filesMaxBytes = files.maxBytes ?? 10 * 1024 * 1024;
     this.events = events;
+    this.headless = options.headless === true;
   }
 
   async createConversation(options: CreateConversationOptions = {}): Promise<ConversationInfo> {
@@ -363,6 +367,7 @@ export class AgentHost {
     content: string,
     options: SubmitOptions = {},
   ): Promise<SubmitResult> {
+    if (this.headless) throw new Error("cannot start a run: no model configured");
     const from = options.from === undefined ? undefined : requireAuthor(options.from);
     if (options.files?.length) {
       const lines: string[] = [];

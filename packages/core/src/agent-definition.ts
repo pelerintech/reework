@@ -92,7 +92,8 @@ export interface SecretDefinition {
 
 export interface AgentDefinition {
   name: string;
-  model: AgentModel;
+  /** The conversation model; absent for a headless agent that refuses runs. */
+  model?: AgentModel;
   /** Named secrets and how they are applied; validated at startup. */
   secrets?: Record<string, SecretDefinition>;
   /** How the model may write a case. */

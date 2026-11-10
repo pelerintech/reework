@@ -135,6 +135,7 @@ export async function startAgent(
     // names, plus the host-backed case/file access filled in once the host exists.
     const bindings: PluginBindings = {
       catalog: models,
+      headless: agent.model === undefined,
       secrets,
       lent: new Map(built.map((p) => [p.name, p.models])),
       lentCases: new Set(built.filter((p) => p.cases).map((p) => p.name)),
@@ -240,7 +241,9 @@ async function boot(
     workspaces: true,
   });
   const agentChange: AgentChange = {
-    model: { provider: MODEL_PROVIDER_ID, modelId: agent.model.modelId },
+    ...(agent.model
+      ? { model: { provider: MODEL_PROVIDER_ID, modelId: agent.model.modelId } }
+      : {}),
     ...(modelTools ? { modelTools } : {}),
   };
   const workspace = built.find((plugin) => plugin.built.workspace)?.built.workspace;
@@ -268,6 +271,7 @@ async function boot(
     workspace,
     { maxBytes: agent.files?.maxBytes },
     events,
+    { headless: agent.model === undefined },
   );
   opened.engine = engine;
   opened.host = host;
