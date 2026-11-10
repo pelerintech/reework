@@ -142,4 +142,31 @@ describe("conversation kinds at creation", () => {
     expect((await test.host.getCase(legacy)).kind).toBe("case");
     expect((await test.host.listCases()).find((c) => c.id === legacy)?.kind).toBe("case");
   });
+  it("moves a waiting desk exactly as it moves a waiting case on input", async () => {
+    const test = await startTestAgent(testDefinition());
+    const desk = await test.host.createConversation({ key: "waiting-desk", kind: "desk" });
+    const ordinary = await test.host.createConversation({ key: "waiting-case" });
+    await test.host.updateCase(desk.id, { status: "waiting" });
+    await test.host.updateCase(ordinary.id, { status: "waiting" });
+    const deskBefore = await test.host.getCase(desk.id);
+    const caseBefore = await test.host.getCase(ordinary.id);
+
+    const app = authedApp(test);
+    const deskRes = await app.request(`/conversations/${desk.id}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: "desk input" }),
+    });
+    expect(deskRes.status).toBe(202);
+    expect(((await deskRes.json()) as { submissionId: string }).submissionId).toBeTruthy();
+    const caseSubmitted = await test.host.submitInput(ordinary.id, "case input");
+    expect(caseSubmitted.submissionId).toBeTruthy();
+
+    const deskAfter = await test.host.getCase(desk.id);
+    const caseAfter = await test.host.getCase(ordinary.id);
+    expect(deskAfter.status).toBe(caseAfter.status);
+    expect(deskAfter.status).toBe("waiting");
+    expect(deskAfter.updatedAt).toBeGreaterThan(deskBefore.updatedAt);
+    expect(caseAfter.updatedAt).toBeGreaterThan(caseBefore.updatedAt);
+  });
 });
