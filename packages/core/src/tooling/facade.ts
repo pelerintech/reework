@@ -1035,20 +1035,11 @@ function buildHooks(
   const hookCtx = (api: HookApi, context: Context): PluginHookContext =>
     makeHookContext(name, api, context, bindings);
 
-  if (hooks.afterModelResponse || hooks.onAnswer || hooks.onModelUsage) {
+  if (hooks.afterModelResponse || hooks.onAnswer) {
     registration.push(
       hook(GenerationTask, {
         afterResponse(message, api, context) {
           const usage = usageOf(message);
-          if (hooks.onModelUsage && usage) {
-            bindings?.modelUsage?.({
-              source: "run",
-              model: "main",
-              conversationId: String(api.conversationId),
-              usage,
-              at: Date.now(),
-            });
-          }
           if (!hooks.afterModelResponse) return undefined;
           return Promise.resolve(
             hooks.afterModelResponse(
@@ -1303,6 +1294,33 @@ export function buildModelCallHooks(
     }
     return undefined;
   };
+}
+
+// ---------------------------------------------------------------------------
+// The run-usage coordinator: one GenerationTask hook that emits one `onModelUsage`
+// event per main-model response, however many plugins declare the event hook.
+// ---------------------------------------------------------------------------
+
+/** Build the single afterResponse hook that reports a run's model usage. */
+export function buildUsageHooks(
+  plugins: readonly { readonly name: string; readonly hooks?: PluginHooks }[],
+  bindings?: PluginBindings,
+): HookRegistration | undefined {
+  if (!plugins.some((p) => typeof p.hooks?.onModelUsage === "function")) return undefined;
+  return hook(GenerationTask, {
+    afterResponse(message, api) {
+      const usage = usageOf(message);
+      if (!usage) return undefined;
+      bindings?.modelUsage?.({
+        source: "run",
+        model: "main",
+        conversationId: String(api.conversationId),
+        usage,
+        at: Date.now(),
+      });
+      return undefined;
+    },
+  });
 }
 
 /** A named-model call a plugin refused; the caller receives it as an error. */

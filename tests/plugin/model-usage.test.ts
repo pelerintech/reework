@@ -120,4 +120,48 @@ describe("model usage events", () => {
       expect(typeof ctx.store.agent.get).toBe("function");
     }
   });
+
+  it("delivers one run event and one named-model event to each observer", async () => {
+    const seen: Record<string, Seen[]> = { "observer-a": [], "observer-b": [] };
+    const observer = (name: string) =>
+      definePlugin(name, () => ({
+        hooks: {
+          async onModelUsage(event, ctx) {
+            seen[name]!.push({ event, ctx });
+          },
+        },
+      }));
+    const helper = definePlugin(
+      "helper",
+      () => ({
+        async setup(ctx) {
+          await ctx.models.complete("helper", { messages: "setup" });
+        },
+      }),
+      { models: ["helper"] },
+    );
+    const test = await startTestAgent(
+      definition([
+        { plugin: observer("observer-a"), config: {} },
+        { plugin: observer("observer-b"), config: {} },
+        { plugin: helper, config: {} },
+      ]),
+    );
+    running.push(test);
+    test.model.respond([text("one response")]);
+    const { id } = await test.agent.host.createConversation();
+
+    await test.agent.host.submitInput(id, "go", { wait: true });
+    await eventually(() => seen["observer-a"]!.length >= 2 && seen["observer-b"]!.length >= 2);
+
+    for (const name of ["observer-a", "observer-b"]) {
+      const events = seen[name]!;
+      expect(events.filter((s) => s.event.source === "run").map((s) => s.event.model)).toEqual([
+        "main",
+      ]);
+      expect(events.filter((s) => s.event.source === "plugin").map((s) => s.event.model)).toEqual([
+        "helper",
+      ]);
+    }
+  });
 });

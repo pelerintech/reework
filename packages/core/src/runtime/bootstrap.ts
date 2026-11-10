@@ -23,6 +23,7 @@ import {
   buildModelCallHooks,
   buildModelHooks,
   buildToolHooks,
+  buildUsageHooks,
   makeEventContext,
   makePluginModels,
   toDurableTool,
@@ -158,6 +159,12 @@ export async function startAgent(
     );
     if (modelHooks)
       registry.install(defineExtension({ name: "reework.modelHooks", hooks: [modelHooks] }));
+    const usageHooks = buildUsageHooks(
+      built.map((p) => ({ name: p.name, hooks: p.built.hooks })),
+      bindings,
+    );
+    if (usageHooks)
+      registry.install(defineExtension({ name: "reework.usageHooks", hooks: [usageHooks] }));
     // The engine and host exist only once boot opens them (before any run resumes).
     const budget = budgetExtension(
       agent.limits,
