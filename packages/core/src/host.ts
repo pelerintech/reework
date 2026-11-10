@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { configure } from "@earendil-works/pi-durable";
-import type { AgentChange, ConversationId, EntryRecord } from "@earendil-works/pi-durable";
+import type { AgentChange, ConversationId, EntryRecord, TaskId } from "@earendil-works/pi-durable";
 import type { JsonValue } from "@earendil-works/chord";
 import type {
   Author,
@@ -27,7 +27,7 @@ import type { GateDecision } from "@reework/types";
 import type { ConversationRecord } from "./protocol/conversations.ts";
 import type { WorkspaceProvider } from "./tooling/facade.ts";
 import type { EventDispatcher } from "./runtime/events.ts";
-import { readStopNotice } from "./runtime/stop-notice.ts";
+import { readStopNotice, recordStopNotice } from "./runtime/stop-notice.ts";
 
 /** A conversation as the protocol sees it. Ids are strings on the wire. */
 export interface ConversationInfo {
@@ -458,6 +458,35 @@ export class AgentHost {
   async abort(id: string): Promise<void> {
     const conversation = await this.conversation(id);
     await conversation.abort(CONTEXT);
+  }
+
+  /**
+   * A plugin stopped the run `taskId`: record the notice, abort only that run (not
+   * the conversation, so input submitted meanwhile is kept), and once the run is
+   * idle admit queued input again so it starts a fresh run.
+   */
+  async stopRun(id: string, taskId: string, notice: RunStopNotice): Promise<void> {
+    const conversation = await this.conversation(id);
+    const idle = conversation.waitForIdle(CONTEXT);
+    await recordStopNotice(this.engine, id, notice);
+    void this.engine.harness.abortTask(taskId as unknown as TaskId, CONTEXT).catch(() => {});
+    void idle.then(() => this.admitQueuedInput(id)).catch(() => {});
+  }
+
+  /**
+   * Place queued input after a stopped run. A run that ends without a boundary
+   * leaves its inbox for the next input; an empty submission (aborted while still
+   * queued) runs the boundary and starts the queued input, then leaves nothing.
+   */
+  private async admitQueuedInput(id: string): Promise<void> {
+    const inspect = await this.engine.harness.inspect(CONTEXT);
+    const queued = inspect.submissions.some(
+      (s) => String(s.conversationId) === id && s.status === "queued" && s.type === "input",
+    );
+    if (!queued) return;
+    const conversation = await this.conversation(id);
+    const kick = await conversation.submit({ type: "input", content: "" }, CONTEXT);
+    await kick.abort(CONTEXT).catch(() => {});
   }
 
   async readConversation(id: string): Promise<ConversationRead> {

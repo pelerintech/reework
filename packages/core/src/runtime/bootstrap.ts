@@ -8,7 +8,6 @@ import type {
   AgentChange,
   ConversationId,
   HarnessSettings,
-  TaskId,
   ToolRegistration,
 } from "@earendil-works/pi-durable";
 import type { Models } from "@earendil-works/pi-ai/models";
@@ -42,7 +41,6 @@ import { EventDispatcher } from "./events.ts";
 import { onProposalOpen, onProposalSettled } from "../protocol/proposals.ts";
 
 import { budgetExtension } from "./budget.ts";
-import { recordStopNotice } from "./stop-notice.ts";
 import { lockStorage } from "./lock.ts";
 import type { LockOptions } from "./lock.ts";
 import { customModels, MODEL_PROVIDER_ID } from "./models.ts";
@@ -237,9 +235,6 @@ async function boot(
     lifecycle.signal,
   );
   bindings.modelUsage = (event) => events.enqueue("onModelUsage", event.conversationId, event);
-  bindings.abortRun = (taskId) => engine.harness.abortTask(taskId as unknown as TaskId, CONTEXT);
-  bindings.recordStop = (conversationId, notice) =>
-    recordStopNotice(engine, conversationId, notice);
   onProposalOpen(engine, (proposal) => {
     events.enqueue("onProposalOpened", proposal.conversationId, { proposal });
   });
@@ -256,6 +251,7 @@ async function boot(
   );
   opened.engine = engine;
   opened.host = host;
+  bindings.stopRun = (id, taskId, notice) => host.stopRun(id, taskId, notice);
   bindings.case = {
     get: (id) => host.getCase(id),
     update: (id, patch) => host.updateCase(id, patch),

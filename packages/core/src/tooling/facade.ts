@@ -837,9 +837,7 @@ export interface PluginBindings {
   /** The engine's storage, for the plugin store run hooks get. Filled once the engine exists. */
   storage?: StoreBackend;
   /** Stop the run whose generation task is `taskId`; filled once the engine exists. */
-  abortRun?: (taskId: string) => Promise<unknown>;
-  /** Record a plugin's stop of a conversation's run; filled once the engine exists. */
-  recordStop?: (conversationId: string, notice: RunStopNotice) => Promise<void>;
+  stopRun?: (conversationId: string, taskId: string, notice: RunStopNotice) => Promise<void>;
   /** Queue an `onModelUsage` event; filled once the agent's event queue exists. */
   modelUsage?: (event: ModelUsageEvent) => void;
   /**
@@ -1261,17 +1259,14 @@ export function buildModelHooks(
         if (!next) continue;
         if ("stop" in next) {
           const notice: RunStopNotice = { plugin: p.name, reason: next.stop };
+          // End the run the way the tool-round budget does: abort it and wait for
+          // its generation. The run-scoped abort is not awaited (we run inside that task).
           try {
-            await bindings?.recordStop?.(String(api.conversationId), notice);
+            await bindings?.stopRun?.(String(api.conversationId), String(api.taskId), notice);
           } catch (err) {
             logHookError(p.name, "beforeModelRequest", err);
           }
-          // End the run the way the tool-round budget does: abort it and wait for
-          // its generation. `abortRun` is not awaited (we run inside that task).
-          await endRun(
-            () => bindings?.abortRun?.(String(api.taskId)) ?? Promise.resolve(),
-            (api as { signal?: AbortSignal }).signal,
-          );
+          await endRun(() => Promise.resolve(), (api as { signal?: AbortSignal }).signal);
           return undefined;
         }
         current = next.messages.map(hookMessageTo);
