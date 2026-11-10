@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.3](https://github.com/pelerintech/reework/compare/core-v1.2.2...core-v1.2.3) (2026-11-10)
+
+
+### Bug Fixes
+
+* **core:** give event hooks a working case store ([4b666a1](https://github.com/pelerintech/reework/commit/4b666a156792736d4b1c27f21c7e3d48564b3e9a))
+* **core:** give event hooks a working case store ([db1f7f4](https://github.com/pelerintech/reework/commit/db1f7f49977eb3639fb4f1a8a769d7f00effa4e0))
+
 ## [1.2.2](https://github.com/pelerintech/reework/compare/core-v1.2.1...core-v1.2.2) (2026-11-09)
 
 
