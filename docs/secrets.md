@@ -77,8 +77,8 @@ the same check on every hop (up to five), and a hop outside `hosts` is refused w
 With the gateway backend the gateway checks the token, the secret and the host.
 
 For a query secret, core redacts the value in the response URL (`[redacted]`) so `response.url` does not expose
-it. An allowed host that echoes the secret in its response body is inside the trust boundary — the host already
-has the secret, and core does not inspect bodies.
+it. An allowed host that echoes the secret — in its response body, response headers, or a redirect `Location` —
+is inside the trust boundary: the host already has the secret, and core does not scan what it sends back.
 
 `get(name)` returns the raw value for a library that cannot take a request; it is audited and should be used
 only where unavoidable. Both `get` and `fetch` fire the `onSecretUse` event:
@@ -136,6 +136,10 @@ secretsBackend: {
 
 **Local** reads `env:` and `file:` itself. A declared secret whose env variable or file is missing fails at
 startup naming the secret. Model keys come from the same source (`apiKeyEnv` or the secret).
+
+The local backend is not a sandbox: plugin code runs in the agent's process and can read `process.env` (or the
+secret file) directly, bypassing `ctx.secrets` and its audit. The gateway backend is the isolation: values live
+outside the agent, and the box holds only its own token.
 
 **Gateway** keeps values outside the agent; the box holds only its own token. A missing `tokenEnv` fails at
 startup naming the variable. `fetch` and `get` go to the gateway, and model calls use the gateway's upstream
