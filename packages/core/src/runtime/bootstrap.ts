@@ -46,7 +46,7 @@ import { onProposalOpen, onProposalSettled } from "../protocol/proposals.ts";
 import { budgetExtension } from "./budget.ts";
 import { lockStorage } from "./lock.ts";
 import type { LockOptions } from "./lock.ts";
-import { customModels, MODEL_PROVIDER_ID } from "./models.ts";
+import { customModels, MODEL_PROVIDER_ID, validateModelKeys } from "./models.ts";
 import { modelSecretNames, SecretsRuntime } from "./secrets.ts";
 
 export { MODEL_PROVIDER_ID };
@@ -101,6 +101,7 @@ export async function startAgent(
   if (!token) throw new Error(`API token variable ${tokenEnv} is not set`);
   const secrets = new SecretsRuntime(agent.secrets ?? {}, modelSecretNames(agent));
   secrets.validate();
+  validateModelKeys(agent);
   const models = options.models ?? customModels(agent.model, agent.models, secrets);
   const lifecycle = new AbortController();
   const built: Built[] = [];

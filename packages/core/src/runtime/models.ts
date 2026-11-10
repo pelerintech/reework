@@ -5,8 +5,31 @@ import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import type { MutableModels } from "@earendil-works/pi-ai/models";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import type { ProviderStreams } from "@earendil-works/pi-ai";
-import type { AgentModel, AgentModelApi } from "../agent-definition.ts";
+import type { AgentDefinition, AgentModel, AgentModelApi } from "../agent-definition.ts";
 import type { SecretsRuntime } from "./secrets.ts";
+
+/** Exactly one of `apiKeyEnv` / `apiKey` per model, and every named secret declared. */
+export function validateModelKeys(agent: AgentDefinition): void {
+  const check = (label: string, model: AgentModel): void => {
+    const { apiKeyEnv, apiKey } = model.provider;
+    const hasEnv = apiKeyEnv !== undefined;
+    const hasSecret = apiKey !== undefined;
+    if (hasEnv === hasSecret) {
+      throw new Error(`model "${label}" must set exactly one of apiKeyEnv or apiKey`);
+    }
+    if (apiKey !== undefined) {
+      const name = apiKey.secret;
+      if (!name) throw new Error(`model "${label}" must name a secret in apiKey`);
+      if (!agent.secrets || !Object.hasOwn(agent.secrets, name)) {
+        throw new Error(
+          `model "${label}" names secret "${name}", which the agent does not declare`,
+        );
+      }
+    }
+  };
+  check("main", agent.model);
+  for (const [name, model] of Object.entries(agent.models ?? {})) check(name, model);
+}
 
 /** Provider id under which the agent's model is registered and selected. */
 export const MODEL_PROVIDER_ID = "reework.custom";
