@@ -221,6 +221,8 @@ export interface ToolResult {
   readonly output: string;
   readonly isError?: boolean;
   readonly details?: JsonValue;
+  /** This result is outside content, even when the tool itself is not flagged. */
+  readonly external?: boolean;
 }
 
 /** The reework context a tool receives. */
@@ -254,6 +256,8 @@ export interface ReeworkTool<TParameters extends TSchema = TSchema> {
   readonly description: string;
   readonly parameters: TParameters;
   readonly replay?: "safe" | "unsafe";
+  /** This tool's output is outside content (fetched pages, MCP replies, documents). */
+  readonly external?: boolean;
   execute(args: Static<TParameters>, ctx: ToolContext): Promise<string | ToolResult>;
 }
 
@@ -264,6 +268,8 @@ export interface DefineToolInput<TParameters extends TSchema = TSchema> {
   readonly parameters: TParameters;
   /** Whether an interrupted call may rerun on recovery. Default `unsafe`. */
   readonly replay?: "safe" | "unsafe";
+  /** This tool's output is outside content; hooks and later requests see it. */
+  readonly external?: boolean;
   execute(args: Static<TParameters>, ctx: ToolContext): Promise<string | ToolResult>;
 }
 
@@ -286,6 +292,7 @@ export function defineTool<TParameters extends TSchema>(
     description: def.description,
     parameters: def.parameters,
     ...(def.replay === undefined ? {} : { replay: def.replay }),
+    ...(def.external === true ? { external: true } : {}),
     execute: (args, ctx) => def.execute(args, ctx),
   };
 }
@@ -354,11 +361,11 @@ export interface PluginHooks {
     ctx: PluginHookContext,
   ): Promise<void>;
   beforeTool?(
-    input: { name: string; args: Record<string, unknown>; callId: string },
+    input: { name: string; args: Record<string, unknown>; callId: string; external?: boolean },
     ctx: PluginHookContext,
   ): Promise<{ block: string } | { args: Record<string, unknown> } | void>;
   afterTool?(
-    call: { name: string; args: Record<string, unknown>; callId: string },
+    call: { name: string; args: Record<string, unknown>; callId: string; external?: boolean },
     result: ToolResult,
     ctx: PluginHookContext,
   ): Promise<ToolResult | void>;
@@ -991,21 +998,34 @@ function makeHookContext(
 
 /** Build the single ToolTask hook registration that coordinates all plugins. */
 export function buildToolHooks(
-  plugins: readonly { readonly name: string; readonly hooks: PluginHooks }[],
+  plugins: readonly {
+    readonly name: string;
+    readonly hooks?: PluginHooks;
+    readonly tools?: readonly ReeworkTool[];
+  }[],
   bindings?: PluginBindings,
 ): HookRegistration | undefined {
   const any = plugins.filter(
-    (p) => typeof p.hooks.beforeTool === "function" || typeof p.hooks.afterTool === "function",
+    (p) => typeof p.hooks?.beforeTool === "function" || typeof p.hooks?.afterTool === "function",
   );
   if (any.length === 0) return undefined;
+  // A tool's own flag marks every result it produces; a plugin cannot remove it.
+  const externalTools = new Set<string>();
+  for (const p of plugins) {
+    for (const tool of p.tools ?? []) {
+      if (tool.external === true) externalTools.add(tool.name);
+    }
+  }
+  const toolIsExternal = (name: string): boolean => externalTools.has(name);
   return hook(ToolTask, {
     async beforeTool(call, api, context) {
       let args = call.arguments as Record<string, unknown>;
+      const external = toolIsExternal(call.name);
       for (let i = 0; i < plugins.length; i++) {
         const p = plugins[i];
-        if (!p.hooks.beforeTool) continue;
+        if (!p.hooks?.beforeTool) continue;
         const res = await p.hooks.beforeTool(
-          { name: call.name, args, callId: call.id },
+          { name: call.name, args, callId: call.id, external },
           makeHookContext(p.name, api, context, bindings),
         );
         if (res && "block" in res) {
@@ -1013,9 +1033,9 @@ export function buildToolHooks(
           const blocked: ToolResult = { output: res.block, isError: true };
           for (let j = i + 1; j < plugins.length; j++) {
             const q = plugins[j];
-            if (q.hooks.afterTool) {
+            if (q.hooks?.afterTool) {
               await q.hooks.afterTool(
-                { name: call.name, args, callId: call.id },
+                { name: call.name, args, callId: call.id, external },
                 blocked,
                 makeHookContext(q.name, api, context, bindings),
               );
@@ -1029,11 +1049,18 @@ export function buildToolHooks(
     },
     async afterTool(call, result, api, context) {
       let current = durableResultToRework(result);
+      const external = toolIsExternal(call.name);
+      if (external) current = { ...current, external: true };
       for (let i = 0; i < plugins.length; i++) {
         const p = plugins[i];
-        if (!p.hooks.afterTool) continue;
+        if (!p.hooks?.afterTool) continue;
         const next = await p.hooks.afterTool(
-          { name: call.name, args: call.arguments as Record<string, unknown>, callId: call.id },
+          {
+            name: call.name,
+            args: call.arguments as Record<string, unknown>,
+            callId: call.id,
+            external,
+          },
           current,
           makeHookContext(p.name, api, context, bindings),
         );

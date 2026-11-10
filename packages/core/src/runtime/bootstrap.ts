@@ -137,9 +137,7 @@ export async function startAgent(
     }
     for (const plugin of built) registry.install(toExtension(plugin.name, plugin.built, bindings));
     const toolHooks = buildToolHooks(
-      built
-        .map((p) => ({ name: p.name, hooks: p.built.hooks }))
-        .filter((p): p is { name: string; hooks: PluginHooks } => p.hooks !== undefined),
+      built.map((p) => ({ name: p.name, hooks: p.built.hooks, tools: p.built.tools })),
       bindings,
     );
     if (toolHooks)
