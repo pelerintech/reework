@@ -9,6 +9,7 @@ import type { AgentDefinition, AgentModel, SecretDefinition } from "../agent-def
 export class SecretsRuntime {
   private readonly definitions: Record<string, SecretDefinition>;
   private readonly modelKeySecrets: ReadonlySet<string>;
+  private declarations = new Map<string, readonly string[]>();
 
   constructor(
     definitions: Record<string, SecretDefinition>,
@@ -16,6 +17,18 @@ export class SecretsRuntime {
   ) {
     this.definitions = definitions;
     this.modelKeySecrets = modelKeySecrets;
+  }
+
+  /** Record which secrets each built plugin declared. */
+  setDeclarations(declarations: ReadonlyMap<string, readonly string[]>): void {
+    this.declarations = new Map(declarations);
+  }
+
+  private requireDeclared(plugin: string, name: string): void {
+    const declared = this.declarations.get(plugin) ?? [];
+    if (!declared.includes(name)) {
+      throw new Error(`plugin "${plugin}" did not declare secret "${name}"`);
+    }
   }
 
   /** Fail startup for a malformed definition or a missing local source. */
@@ -77,11 +90,12 @@ export class SecretsRuntime {
 
   /** Send a request with a declared secret applied; the value is never returned. */
   async fetch(
-    _plugin: string,
+    plugin: string,
     name: string,
     url: string,
     init: RequestInit = {},
   ): Promise<Response> {
+    this.requireDeclared(plugin, name);
     const definition = this.definitions[name];
     if (!definition) throw new Error(`secret "${name}" is not declared`);
     const value = this.resolve(name);
@@ -102,8 +116,9 @@ export class SecretsRuntime {
   }
 
   /** The raw value of a declared secret (local backend). */
-  get(_plugin: string, name: string): Promise<string> {
-    return Promise.resolve(this.resolve(name));
+  async get(plugin: string, name: string): Promise<string> {
+    this.requireDeclared(plugin, name);
+    return this.resolve(name);
   }
 }
 

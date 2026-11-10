@@ -27,21 +27,25 @@ describe("ctx.secrets.fetch: applying a secret", () => {
     process.env[BRAVE_ENV] = "brave-secret";
     const target = await startFakeHttp();
     const seen: { status?: number; body?: string } = {};
-    const caller = definePlugin("caller", () => ({
-      tools: [
-        defineTool({
-          name: "call_brave",
-          description: "Call the target with the brave secret",
-          parameters: Type.Object({}),
-          async execute(_args, ctx) {
-            const response = await ctx.secrets.fetch("brave", `${target.url}/x`);
-            seen.status = response.status;
-            seen.body = await response.text();
-            return "called";
-          },
-        }),
-      ],
-    }));
+    const caller = definePlugin(
+      "caller",
+      () => ({
+        tools: [
+          defineTool({
+            name: "call_brave",
+            description: "Call the target with the brave secret",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              const response = await ctx.secrets.fetch("brave", `${target.url}/x`);
+              seen.status = response.status;
+              seen.body = await response.text();
+              return "called";
+            },
+          }),
+        ],
+      }),
+      { secrets: ["brave"] },
+    );
     const faux = fauxModels("m1");
     faux.respond([toolCall("call_brave"), text("done")]);
     const agent = await startTestAgent(
@@ -69,19 +73,23 @@ describe("ctx.secrets.fetch: applying a secret", () => {
   it("applies a query secret beside existing query parameters", async () => {
     process.env[QUERY_ENV] = "query-secret";
     const target = await startFakeHttp();
-    const caller = definePlugin("caller", () => ({
-      tools: [
-        defineTool({
-          name: "call_query",
-          description: "Call the target with a query secret",
-          parameters: Type.Object({}),
-          async execute(_args, ctx) {
-            await ctx.secrets.fetch("query", `${target.url}/x?existing=1`);
-            return "called";
-          },
-        }),
-      ],
-    }));
+    const caller = definePlugin(
+      "caller",
+      () => ({
+        tools: [
+          defineTool({
+            name: "call_query",
+            description: "Call the target with a query secret",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              await ctx.secrets.fetch("query", `${target.url}/x?existing=1`);
+              return "called";
+            },
+          }),
+        ],
+      }),
+      { secrets: ["query"] },
+    );
     const faux = fauxModels("m1");
     faux.respond([toolCall("call_query"), text("done")]);
     const agent = await startTestAgent(
@@ -111,22 +119,26 @@ describe("ctx.secrets.fetch: applying a secret", () => {
     const target = await startFakeHttp();
     const localhost = target.url.replace("127.0.0.1", "localhost");
     let error: unknown;
-    const caller = definePlugin("caller", () => ({
-      tools: [
-        defineTool({
-          name: "call_elsewhere",
-          description: "Call a host the secret does not allow",
-          parameters: Type.Object({}),
-          async execute(_args, ctx) {
-            error = await ctx.secrets.fetch("brave", `${localhost}/x`).then(
-              () => undefined,
-              (failure: unknown) => failure,
-            );
-            return "called";
-          },
-        }),
-      ],
-    }));
+    const caller = definePlugin(
+      "caller",
+      () => ({
+        tools: [
+          defineTool({
+            name: "call_elsewhere",
+            description: "Call a host the secret does not allow",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              error = await ctx.secrets.fetch("brave", `${localhost}/x`).then(
+                () => undefined,
+                (failure: unknown) => failure,
+              );
+              return "called";
+            },
+          }),
+        ],
+      }),
+      { secrets: ["brave"] },
+    );
     const faux = fauxModels("m1");
     faux.respond([toolCall("call_elsewhere"), text("done")]);
     const agent = await startTestAgent(
@@ -149,6 +161,58 @@ describe("ctx.secrets.fetch: applying a secret", () => {
     const message = error instanceof Error ? error.message : String(error);
     expect(message).toContain("brave");
     expect(message).toContain("localhost");
+  });
+});
+
+describe("undeclared secrets", () => {
+  it("refuses fetch and get for a name the plugin did not declare", async () => {
+    process.env[BRAVE_ENV] = "brave-secret";
+    const target = await startFakeHttp();
+    let fetchError: unknown;
+    let getError: unknown;
+    const sneaky = definePlugin("sneaky", () => ({
+      tools: [
+        defineTool({
+          name: "sneak",
+          description: "Use a secret the plugin did not declare",
+          parameters: Type.Object({}),
+          async execute(_args, ctx) {
+            fetchError = await ctx.secrets.fetch("brave", `${target.url}/x`).then(
+              () => undefined,
+              (failure: unknown) => failure,
+            );
+            getError = await ctx.secrets.get("brave").then(
+              () => undefined,
+              (failure: unknown) => failure,
+            );
+            return "tried";
+          },
+        }),
+      ],
+    }));
+    const faux = fauxModels("m1");
+    faux.respond([toolCall("sneak"), text("done")]);
+    const agent = await startTestAgent(
+      testDefinition({
+        secrets: {
+          brave: {
+            from: `env:${BRAVE_ENV}`,
+            apply: { header: "X-Subscription-Token" },
+            hosts: ["127.0.0.1"],
+          },
+        },
+        plugins: [{ plugin: sneaky, config: {} }],
+      }),
+      { models: faux.models },
+    );
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "go", { wait: true });
+
+    expect(target.requests).toHaveLength(0);
+    expect(fetchError).toBeInstanceOf(Error);
+    expect((fetchError as Error).message).toContain("brave");
+    expect(getError).toBeInstanceOf(Error);
+    expect((getError as Error).message).toContain("brave");
   });
 });
 

@@ -551,6 +551,8 @@ export interface ReeworkPlugin<TConfig = unknown> {
   build(config: TConfig): BuiltPlugin<TConfig> | Promise<BuiltPlugin<TConfig>>;
   /** Named models this plugin may call; each must be declared by the agent. */
   readonly models?: readonly string[];
+  /** Secrets this plugin may use; each must be declared by the agent. */
+  readonly secrets?: readonly string[];
   /** Declare the `ctx.cases` capability to reach other cases. */
   readonly cases?: boolean;
 }
@@ -561,11 +563,16 @@ export function definePlugin<
 >(
   name: string,
   factory: (config: TConfig) => TReturn,
-  options: { readonly models?: readonly string[]; readonly cases?: boolean } = {},
+  options: {
+    readonly models?: readonly string[];
+    readonly secrets?: readonly string[];
+    readonly cases?: boolean;
+  } = {},
 ): {
   readonly kind: "reework.plugin";
   readonly name: string;
   readonly models: readonly string[];
+  readonly secrets: readonly string[];
   readonly cases: boolean;
   /** The factory's own return type: a built plugin, or a promise of one. */
   build(config: TConfig): TReturn;
@@ -575,6 +582,7 @@ export function definePlugin<
     name,
     build: factory,
     models: options.models ?? [],
+    secrets: options.secrets ?? [],
     cases: options.cases === true,
   };
 }

@@ -120,7 +120,9 @@ export async function startAgent(
       built.push(await buildPlugin(declared));
     }
     validateNamedModels(agent, built);
+    validatePluginSecrets(agent, built);
     validatePluginRouteNames(built);
+    secrets.setDeclarations(new Map(built.map((plugin) => [plugin.name, plugin.secrets])));
     if (options.models) {
       for (const name of Object.keys(agent.models ?? {})) {
         if (options.models.getModels(`reework.model.${name}`).length === 0) {
@@ -559,6 +561,7 @@ interface Built {
   readonly config: unknown;
   readonly built: BuiltPlugin;
   readonly models: readonly string[];
+  readonly secrets: readonly string[];
   /** The plugin declared the `ctx.cases` capability. */
   readonly cases: boolean;
 }
@@ -572,6 +575,7 @@ function buildPlugin(declared: DeclaredModule): Promise<Built> {
       config: declared.config,
       built,
       models: declared.plugin.models ?? [],
+      secrets: declared.plugin.secrets ?? [],
       cases: declared.plugin.cases === true,
     }))
     .catch((error) => {
@@ -607,6 +611,19 @@ function validateNamedModels(agent: AgentDefinition, built: readonly Built[]): v
       if (!declared.has(name)) {
         throw new Error(
           `plugin "${plugin.name}" needs model "${name}", which the agent does not declare`,
+        );
+      }
+    }
+  }
+}
+
+/** Each plugin's declared secrets must be defined by the agent. */
+function validatePluginSecrets(agent: AgentDefinition, built: readonly Built[]): void {
+  for (const plugin of built) {
+    for (const name of plugin.secrets) {
+      if (!agent.secrets || !Object.hasOwn(agent.secrets, name)) {
+        throw new Error(
+          `plugin "${plugin.name}" needs secret "${name}", which the agent does not declare`,
         );
       }
     }
