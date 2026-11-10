@@ -224,7 +224,7 @@ async function boot(
           createPluginStore(
             { commit: (fn) => engine.commit(fn) },
             plugin,
-            conversationId as unknown as ConversationId,
+            Number(conversationId) as unknown as ConversationId,
           ),
           conversationId,
           bindings,
