@@ -55,6 +55,25 @@ describe("headless agents", () => {
     expect((failure as Error).message).toContain("cannot start a run: no model configured");
   });
 
+  it("answers a submit to an unknown conversation with 404 before the refusal", async () => {
+    const agent = await startAgent(
+      { name: "headless-unknown", plugins: [], channels: [], mission: { role: "Route work." } },
+      { storagePath: tmpStorage(), auth: { token: TEST_TOKEN } },
+    );
+    running.push(agent);
+    const { port, close } = await agent.listen(0);
+    const client = createClient({ baseUrl: `http://127.0.0.1:${port}`, token: TEST_TOKEN });
+    const failure = await client.submit("99999", "hello").then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    await close();
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as { status?: number }).status).toBe(404);
+    expect((failure as Error).message).toContain("conversation_not_found");
+  });
+
   it("serves routes and setup, refuses runs, and settles gates", async () => {
     const seen = { setup: false, runs: [] as unknown[] };
     const headless = definePlugin("headless", () => ({

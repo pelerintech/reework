@@ -370,6 +370,7 @@ export class AgentHost {
     content: string,
     options: SubmitOptions = {},
   ): Promise<SubmitResult> {
+    if (!(await this.hasConversation(id))) throw new ConversationNotFound(id);
     if (this.headless) throw new HeadlessAgentError();
     const from = options.from === undefined ? undefined : requireAuthor(options.from);
     if (options.files?.length) {
