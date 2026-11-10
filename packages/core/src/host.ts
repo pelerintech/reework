@@ -444,8 +444,8 @@ export class AgentHost {
         settled.reason === "model_error"
       ) {
         const detail = settled.detail;
-        throw new Error(
-          `model error: ${typeof detail === "string" ? detail : JSON.stringify(detail ?? "unknown")}`,
+        throw new ModelRunError(
+          typeof detail === "string" ? detail : JSON.stringify(detail ?? "unknown"),
         );
       }
       return { submissionId };
@@ -606,6 +606,16 @@ export interface ConversationSnapshot {
   readonly case: Case;
   /** The last plugin stop of this conversation's run, when a plugin stopped it. */
   readonly stopNotice?: RunStopNotice;
+}
+
+export class ModelRunError extends Error {
+  readonly detail: string;
+
+  constructor(detail: string) {
+    super(`model error: ${detail}`);
+    this.name = "ModelRunError";
+    this.detail = detail;
+  }
 }
 
 export class HeadlessAgentError extends Error {

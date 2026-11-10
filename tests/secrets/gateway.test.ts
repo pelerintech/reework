@@ -5,10 +5,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Type, definePlugin, defineTool } from "@reework/core";
 import type { AgentDefinition, SecretUseEvent } from "@reework/core";
 import { text, toolCall, waitFor } from "@reework/core/testing";
-import { fauxModels, startTestAgent, testDefinition } from "../support/agent.ts";
+import { fauxModels, startTestAgent, TEST_TOKEN, testDefinition } from "../support/agent.ts";
 import { startFakeGateway } from "../support/fake-gateway.ts";
 import { startFakeHttp, startHangingHttp } from "../support/fake-http.ts";
 import { startFakeLlm } from "../support/fake-llm.ts";
+import { createClient } from "@reework/client";
 
 const BOX_TOKEN = "REEWORK_TEST_BOX_TOKEN";
 
@@ -369,6 +370,38 @@ describe("gateway backend: model failure", () => {
     );
     const { id } = await agent.host.createConversation();
     await expect(agent.host.submitInput(id, "hello", { wait: true })).rejects.toThrow();
+  });
+});
+
+describe("gateway backend: model failure over HTTP", () => {
+  it("returns a 5xx JSON body and the client surfaces the model error", async () => {
+    process.env[BOX_TOKEN] = "box-token";
+    const gateway = await startFakeHttp();
+    gateway.respond({ status: 500, body: JSON.stringify({ error: "gateway down" }) });
+    const agent = await startTestAgent(
+      testDefinition({
+        model: {
+          provider: { baseUrl: "http://127.0.0.1:1", apiKeyEnv: "UNUSED_PROVIDER_KEY" },
+          modelId: "m1",
+        },
+        secretsBackend: { kind: "gateway", url: gateway.url, tokenEnv: BOX_TOKEN },
+      }),
+      { models: undefined, settings: { retry: { enabled: false, maxRetries: 0, baseDelayMs: 1 } } },
+    );
+    const { port, close } = await agent.listen(0);
+    const client = createClient({ baseUrl: `http://127.0.0.1:${port}`, token: TEST_TOKEN });
+    const { id } = await client.createConversation();
+    const failure = await client.submit(id, "hello", { wait: true }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    await close();
+
+    expect(failure).toBeInstanceOf(Error);
+    const status = (failure as { status?: number }).status;
+    expect(status).toBeGreaterThanOrEqual(500);
+    expect(status).toBeLessThan(600);
+    expect((failure as Error).message).toContain("model error");
   });
 });
 

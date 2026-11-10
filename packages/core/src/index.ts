@@ -18,6 +18,7 @@ export {
   ConversationNotFound,
   HeadlessAgentError,
   InvalidAuthor,
+  ModelRunError,
   InvalidProposalStatus,
   ProposalNotFound,
 } from "./host.ts";
