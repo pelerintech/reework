@@ -182,19 +182,25 @@ export const wrapExternal = definePlugin("wrap-external", () => ({
 
 A tool may declare that its output is **outside content** — fetched pages, MCP replies, ingested documents,
 channel messages. `defineTool({ …, external: true })` flags the tool; a single result may also mark itself with
-`{ output, external: true }`, even when the tool is not flagged, so a plugin can mark only the passages its own
-scan flagged. `gatedAction` and `codingTools()` are never external.
+`{ output, external: true }` or, when it already carries details, with `details: { reework: { external: true } }`,
+even when the tool is not flagged, so a plugin can mark only the passages its own scan flagged. `gatedAction` and
+`codingTools()` are never external.
 
 Hooks see the flag as `call.external` (the tool's own flag, in `beforeTool` and `afterTool`) and
-`result.external` (true when the tool is flagged, the result said so, or a hook set it). The flag is **sticky**:
-a hook that returns a fresh result without `external` does not clear it, and a hook that sets `external: true` on
-a plain or blocked result makes it stick for the hooks after it. A blocked call's result starts not external,
-because no outside content was read.
+`result.external` (true when the tool is flagged, the result said so, or a hook set it). Marking is allowed — a
+tool, a result or a hook may set `external: true` — but **clearing is impossible**: the tool's flag, the result's
+flag and every hook's flag are OR-ed, so `external: false` or a dropped field never removes it. A hook that
+returns a fresh result without `external` keeps it, and a hook that sets `external: true` on a plain or blocked
+result makes it stick for the hooks after it. A blocked call's result starts not external, because no outside
+content was read; a hook's flag on a blocked result reaches later hooks, but the stored blocked result carries no
+flag (pi-durable settles blocked calls itself, and a blocked call carries no outside content).
 
 Core stores the flag as documented core metadata, `details.reework.external`, beside model usage
 (`details.reework.modelUsage`). A hook returning its own `details` keeps both. Later `beforeModelRequest` calls
-see `external: true` on the tool-result `ModelMessage` that answers the call, and a conversation snapshot's
-transcript tool item carries `external: true`, so a surface or audit log can record it.
+see `external: true` on the tool-result `ModelMessage` that answers the call; a hook that returns messages keeps
+it for later hooks because core re-derives it from the stored result by call id, so a returned message cannot
+clear it either. A conversation snapshot's transcript tool item carries `external: true`, so a surface or audit
+log can record it.
 
 Guardrails (a Layer-2 plugin) treats a flagged tool or result as external automatically, in addition to its
 `external.tools` config, and wraps/taints it the same way. The flag says the content is untrusted; it does not
