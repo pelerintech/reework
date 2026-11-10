@@ -73,10 +73,15 @@ describe("ctx.secrets.get", () => {
     expect(target.requests[0]!.headers["x-subscription-token"]).toBe("brave-secret");
     await waitFor(() => uses.length >= 2);
     const get = uses.find((use) => use.kind === "get");
-    expect(get).toMatchObject({ plugin: "caller", name: "bot", kind: "get" });
+    expect(get).toMatchObject({ plugin: "caller", name: "bot", kind: "get", outcome: "used" });
     expect(typeof get?.at).toBe("number");
     const fetch = uses.find((use) => use.kind === "fetch");
-    expect(fetch).toMatchObject({ plugin: "caller", name: "brave", kind: "fetch" });
+    expect(fetch).toMatchObject({
+      plugin: "caller",
+      name: "brave",
+      kind: "fetch",
+      outcome: "used",
+    });
     expect(fetch?.conversationId).toBe(id);
   });
 });

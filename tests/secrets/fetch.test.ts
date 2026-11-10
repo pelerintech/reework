@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Type, definePlugin, defineTool, gatedAction } from "@reework/core";
 import type {
   PluginEventContext,
+  SecretUseEvent,
   PluginHookContext,
   PluginRouteContext,
   PluginSetupContext,
@@ -125,6 +126,14 @@ describe("ctx.secrets.fetch: applying a secret", () => {
     process.env[BRAVE_ENV] = "brave-secret";
     const target = await startFakeHttp();
     const localhost = target.url.replace("127.0.0.1", "localhost");
+    const uses: SecretUseEvent[] = [];
+    const observer = definePlugin("audit", () => ({
+      hooks: {
+        async onSecretUse(input) {
+          uses.push(input);
+        },
+      },
+    }));
     let error: unknown;
     const caller = definePlugin(
       "caller",
@@ -157,7 +166,10 @@ describe("ctx.secrets.fetch: applying a secret", () => {
             hosts: ["127.0.0.1"],
           },
         },
-        plugins: [{ plugin: caller, config: {} }],
+        plugins: [
+          { plugin: observer, config: {} },
+          { plugin: caller, config: {} },
+        ],
       }),
       { models: faux.models },
     );
@@ -168,6 +180,13 @@ describe("ctx.secrets.fetch: applying a secret", () => {
     const message = error instanceof Error ? error.message : String(error);
     expect(message).toContain("brave");
     expect(message).toContain("localhost");
+    await waitFor(() => uses.length >= 1);
+    expect(uses.find((use) => use.kind === "fetch")).toMatchObject({
+      plugin: "caller",
+      name: "brave",
+      kind: "fetch",
+      outcome: "refused",
+    });
   });
 });
 
@@ -330,6 +349,14 @@ describe("undeclared secrets", () => {
   it("refuses fetch and get for a name the plugin did not declare", async () => {
     process.env[BRAVE_ENV] = "brave-secret";
     const target = await startFakeHttp();
+    const uses: SecretUseEvent[] = [];
+    const observer = definePlugin("audit", () => ({
+      hooks: {
+        async onSecretUse(input) {
+          uses.push(input);
+        },
+      },
+    }));
     let fetchError: unknown;
     let getError: unknown;
     const sneaky = definePlugin("sneaky", () => ({
@@ -363,7 +390,10 @@ describe("undeclared secrets", () => {
             hosts: ["127.0.0.1"],
           },
         },
-        plugins: [{ plugin: sneaky, config: {} }],
+        plugins: [
+          { plugin: observer, config: {} },
+          { plugin: sneaky, config: {} },
+        ],
       }),
       { models: faux.models },
     );
@@ -375,6 +405,19 @@ describe("undeclared secrets", () => {
     expect((fetchError as Error).message).toContain("brave");
     expect(getError).toBeInstanceOf(Error);
     expect((getError as Error).message).toContain("brave");
+    await waitFor(() => uses.length >= 2);
+    expect(uses.find((use) => use.kind === "fetch")).toMatchObject({
+      plugin: "sneaky",
+      name: "brave",
+      kind: "fetch",
+      outcome: "refused",
+    });
+    expect(uses.find((use) => use.kind === "get")).toMatchObject({
+      plugin: "sneaky",
+      name: "brave",
+      kind: "get",
+      outcome: "refused",
+    });
   });
 });
 

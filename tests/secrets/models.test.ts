@@ -2,7 +2,8 @@
 // variable, and exactly one of the two must be set.
 import { afterEach, describe, expect, it } from "vitest";
 import { Type, definePlugin, defineTool } from "@reework/core";
-import type { AgentDefinition } from "@reework/core";
+import type { AgentDefinition, SecretUseEvent } from "@reework/core";
+import { waitFor } from "@reework/core/testing";
 import { startTestAgent, testDefinition } from "../support/agent.ts";
 import { startFakeLlm } from "../support/fake-llm.ts";
 
@@ -18,6 +19,14 @@ describe("models through a secret", () => {
   it("sends a secret key to the model endpoint", async () => {
     process.env[SECRET_ENV] = "secret-key";
     const llm = await startFakeLlm();
+    const uses: SecretUseEvent[] = [];
+    const observer = definePlugin("audit", () => ({
+      hooks: {
+        async onSecretUse(input) {
+          uses.push(input);
+        },
+      },
+    }));
     const agent = await startTestAgent(
       testDefinition({
         model: {
@@ -25,9 +34,17 @@ describe("models through a secret", () => {
           modelId: "m1",
         },
         secrets: { llm: { from: `env:${SECRET_ENV}` } },
+        plugins: [{ plugin: observer, config: {} }],
       }),
       { models: undefined },
     );
+    await waitFor(() => uses.length >= 1);
+    expect(uses.find((use) => use.kind === "model")).toMatchObject({
+      plugin: "main",
+      name: "llm",
+      kind: "model",
+      outcome: "used",
+    });
     const { id } = await agent.host.createConversation();
     await agent.host.submitInput(id, "hello", { wait: true });
 
@@ -57,6 +74,14 @@ describe("models through a secret", () => {
   it("sends a named model's secret key", async () => {
     process.env[LLM_ENV] = "main-env";
     process.env[SECRET_ENV] = "named-secret";
+    const uses: SecretUseEvent[] = [];
+    const observer = definePlugin("audit", () => ({
+      hooks: {
+        async onSecretUse(input) {
+          uses.push(input);
+        },
+      },
+    }));
     const main = await startFakeLlm();
     const helper = await startFakeLlm();
     const caller = definePlugin(
@@ -90,10 +115,20 @@ describe("models through a secret", () => {
           },
         },
         secrets: { helper: { from: `env:${SECRET_ENV}` } },
-        plugins: [{ plugin: caller, config: {} }],
+        plugins: [
+          { plugin: observer, config: {} },
+          { plugin: caller, config: {} },
+        ],
       }),
       { models: undefined },
     );
+    await waitFor(() => uses.length >= 1);
+    expect(uses.find((use) => use.kind === "model")).toMatchObject({
+      plugin: "helper",
+      name: "helper",
+      kind: "model",
+      outcome: "used",
+    });
     const { id } = await agent.host.createConversation();
     await agent.host.submitInput(id, "go", { wait: true });
 

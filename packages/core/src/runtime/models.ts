@@ -77,7 +77,7 @@ function agentModelProvider(
         name: "secrets gateway token",
         resolve: async () => ({ auth: { apiKey: secrets!.gatewayToken() }, source: "gateway" }),
       }
-    : modelApiKeyAuth(model, secrets);
+    : modelApiKeyAuth(model, secrets, upstream);
   return createProvider({
     id: providerId,
     name: providerId,
@@ -102,7 +102,7 @@ function agentModelProvider(
 }
 
 /** How the provider authenticates: an env variable or a declared secret. */
-function modelApiKeyAuth(model: AgentModel, secrets?: SecretsRuntime) {
+function modelApiKeyAuth(model: AgentModel, secrets: SecretsRuntime | undefined, upstream: string) {
   const { apiKeyEnv, apiKey } = model.provider;
   if (apiKeyEnv !== undefined) {
     if (!process.env[apiKeyEnv]) {
@@ -118,12 +118,11 @@ function modelApiKeyAuth(model: AgentModel, secrets?: SecretsRuntime) {
   }
   if (apiKey !== undefined) {
     const secret = apiKey.secret;
+    if (!secrets) throw new Error(`secret "${secret}" is not wired in this build`);
+    const value = secrets.modelKey(upstream, secret);
     return {
       name: `API key from secret ${secret}`,
-      resolve: async () => {
-        if (!secrets) throw new Error(`secret "${secret}" is not wired in this build`);
-        return { auth: { apiKey: secrets.resolve(secret) }, source: `secret:${secret}` };
-      },
+      resolve: async () => ({ auth: { apiKey: value }, source: `secret:${secret}` }),
     };
   }
   throw new Error(`model provider ${model.provider.baseUrl} has no API key source`);

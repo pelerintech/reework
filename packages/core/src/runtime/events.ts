@@ -69,6 +69,8 @@ export class EventDispatcher {
     if (this.active) return;
     this.active = this.runLoop().finally(() => {
       this.active = undefined;
+      // An event queued as the loop was ending must not wait for the next one.
+      if (this.queue.length > 0) this.start();
     });
   }
 

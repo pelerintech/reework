@@ -3,8 +3,8 @@
 // upstream path.
 import { afterEach, describe, expect, it } from "vitest";
 import { Type, definePlugin, defineTool } from "@reework/core";
-import type { AgentDefinition } from "@reework/core";
-import { text, toolCall } from "@reework/core/testing";
+import type { AgentDefinition, SecretUseEvent } from "@reework/core";
+import { text, toolCall, waitFor } from "@reework/core/testing";
 import { fauxModels, startTestAgent, testDefinition } from "../support/agent.ts";
 import { startFakeGateway } from "../support/fake-gateway.ts";
 import { startFakeHttp } from "../support/fake-http.ts";
@@ -32,7 +32,16 @@ describe("gateway backend: fetch and raw", () => {
       raw: ["bot"],
       upstreams: {},
     });
+    const uses: SecretUseEvent[] = [];
+    const observer = definePlugin("audit", () => ({
+      hooks: {
+        async onSecretUse(input) {
+          uses.push(input);
+        },
+      },
+    }));
     let fetchStatus: number | undefined;
+    let deniedStatus: number | undefined;
     let got: string | undefined;
     let refused: unknown;
     const caller = definePlugin(
@@ -46,6 +55,8 @@ describe("gateway backend: fetch and raw", () => {
             async execute(_args, ctx) {
               const response = await ctx.secrets.fetch("brave", `${target.url}/x`);
               fetchStatus = response.status;
+              const denied = await ctx.secrets.fetch("denied", `${target.url}/x`);
+              deniedStatus = denied.status;
               got = await ctx.secrets.get("bot");
               refused = await ctx.secrets.get("forbidden").then(
                 () => undefined,
@@ -56,7 +67,7 @@ describe("gateway backend: fetch and raw", () => {
           }),
         ],
       }),
-      { secrets: ["brave", "bot", "forbidden"] },
+      { secrets: ["brave", "denied", "bot", "forbidden"] },
     );
     const faux = fauxModels("m1");
     faux.respond([toolCall("use_gateway"), text("done")]);
@@ -69,10 +80,18 @@ describe("gateway backend: fetch and raw", () => {
             apply: { header: "X-Subscription-Token" },
             hosts: ["127.0.0.1"],
           },
+          denied: {
+            from: "env:DENIED",
+            apply: { header: "X-Denied" },
+            hosts: ["127.0.0.1"],
+          },
           bot: { from: "env:BOT" },
           forbidden: { from: "env:FORBIDDEN" },
         },
-        plugins: [{ plugin: caller, config: {} }],
+        plugins: [
+          { plugin: observer, config: {} },
+          { plugin: caller, config: {} },
+        ],
       }),
       { models: faux.models },
     );
@@ -80,6 +99,7 @@ describe("gateway backend: fetch and raw", () => {
     await agent.host.submitInput(id, "go", { wait: true });
 
     expect(fetchStatus).toBe(200);
+    expect(deniedStatus).toBe(403);
     expect(target.requests[0]!.headers["x-subscription-token"]).toBe("brave-secret");
     const proxy = gateway.requests.find(
       (request) => request.path === "/plugins/secrets-gateway/open/proxy",
@@ -94,6 +114,31 @@ describe("gateway backend: fetch and raw", () => {
     expect(got).toBe("bot-secret");
     expect(refused).toBeInstanceOf(Error);
     expect((refused as Error).message).toContain("forbidden");
+    await waitFor(() => uses.length >= 4);
+    expect(uses.find((use) => use.kind === "fetch" && use.name === "brave")).toMatchObject({
+      plugin: "caller",
+      name: "brave",
+      kind: "fetch",
+      outcome: "used",
+    });
+    expect(uses.find((use) => use.kind === "fetch" && use.name === "denied")).toMatchObject({
+      plugin: "caller",
+      name: "denied",
+      kind: "fetch",
+      outcome: "refused",
+    });
+    expect(uses.find((use) => use.kind === "get" && use.name === "bot")).toMatchObject({
+      plugin: "caller",
+      name: "bot",
+      kind: "get",
+      outcome: "used",
+    });
+    expect(uses.find((use) => use.kind === "get" && use.name === "forbidden")).toMatchObject({
+      plugin: "caller",
+      name: "forbidden",
+      kind: "get",
+      outcome: "refused",
+    });
     expect(process.env[BOX_TOKEN]).toBe("box-token");
     expect(JSON.stringify(process.env)).not.toContain("brave-secret");
   });

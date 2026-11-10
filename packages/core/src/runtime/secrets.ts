@@ -18,6 +18,7 @@ export class SecretsRuntime {
   private readonly backend: SecretsBackend;
   private declarations = new Map<string, readonly string[]>();
   private onUse?: (event: SecretUseEvent) => void;
+  private pendingUses: SecretUseEvent[] = [];
 
   constructor(
     definitions: Record<string, SecretDefinition>,
@@ -59,9 +60,15 @@ export class SecretsRuntime {
     this.declarations = new Map(declarations);
   }
 
-  private requireDeclared(plugin: string, name: string): void {
+  private requireDeclared(
+    plugin: string,
+    name: string,
+    kind: "get" | "fetch",
+    conversationId?: string,
+  ): void {
     const declared = this.declarations.get(plugin) ?? [];
     if (!declared.includes(name)) {
+      this.audit(plugin, name, kind, "refused", conversationId);
       throw new Error(`plugin "${plugin}" did not declare secret "${name}"`);
     }
   }
@@ -69,21 +76,33 @@ export class SecretsRuntime {
   /** Where secret uses are reported (the agent's event queue). */
   setOnUse(onUse: (event: SecretUseEvent) => void): void {
     this.onUse = onUse;
+    for (const event of this.pendingUses.splice(0)) onUse(event);
   }
 
   private audit(
     plugin: string,
     name: string,
-    kind: "get" | "fetch",
+    kind: "get" | "fetch" | "model",
+    outcome: "used" | "refused",
     conversationId?: string,
   ): void {
-    this.onUse?.({
+    const event: SecretUseEvent = {
       plugin,
       name,
       kind,
+      outcome,
       at: Date.now(),
       ...(conversationId ? { conversationId } : {}),
-    });
+    };
+    if (!this.onUse) this.pendingUses.push(event);
+    else this.onUse(event);
+  }
+
+  /** Resolve a model's API key secret once at startup and report its use. */
+  modelKey(label: string, name: string): string {
+    const value = this.resolve(name);
+    this.audit(label, name, "model", "used");
+    return value;
   }
 
   /** Fail startup for a malformed definition or a missing local source. */
@@ -189,15 +208,17 @@ export class SecretsRuntime {
     init: RequestInit = {},
     conversationId?: string,
   ): Promise<Response> {
-    this.requireDeclared(plugin, name);
+    this.requireDeclared(plugin, name, "fetch", conversationId);
     const definition = this.definitions[name];
-    if (!definition) throw new Error(`secret "${name}" is not declared`);
+    if (!definition) {
+      this.audit(plugin, name, "fetch", "refused", conversationId);
+      throw new Error(`secret "${name}" is not declared`);
+    }
     if (this.backend.kind === "gateway") {
       const headers = new Headers(init.headers);
       const targetHeaders: Record<string, string> = {};
       for (const [key, value] of headers) targetHeaders[key] = value;
-      this.audit(plugin, name, "fetch", conversationId);
-      return fetch(this.gatewayUrl("/plugins/secrets-gateway/open/proxy"), {
+      const response = await fetch(this.gatewayUrl("/plugins/secrets-gateway/open/proxy"), {
         method: "POST",
         headers: {
           authorization: `Bearer ${this.gatewayToken()}`,
@@ -211,17 +232,29 @@ export class SecretsRuntime {
           ...(typeof init.body === "string" ? { body: init.body } : {}),
         }),
       });
+      this.audit(
+        plugin,
+        name,
+        "fetch",
+        response.status === 403 ? "refused" : "used",
+        conversationId,
+      );
+      return response;
     }
     const value = this.resolve(name);
     const allowed = definition.hosts ?? [];
     const headers = new Headers(init.headers);
-    if (!definition.apply) throw new Error(`secret "${name}" has no apply rule`);
+    if (!definition.apply) {
+      this.audit(plugin, name, "fetch", "refused", conversationId);
+      throw new Error(`secret "${name}" has no apply rule`);
+    }
     let method = init.method ?? "GET";
     let body = init.body;
     let target = new URL(url);
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
       const host = target.hostname;
       if (!allowed.some((entry) => entry.toLowerCase() === host.toLowerCase())) {
+        this.audit(plugin, name, "fetch", "refused", conversationId);
         throw new Error(`secret "${name}" may not be sent to host "${host}"`);
       }
       const request = new URL(target);
@@ -239,15 +272,16 @@ export class SecretsRuntime {
         redirect: "manual",
       });
       if (!REDIRECT_STATUSES.has(response.status)) {
-        this.audit(plugin, name, "fetch", conversationId);
+        this.audit(plugin, name, "fetch", "used", conversationId);
         return "query" in definition.apply ? redactResponseUrl(response, value) : response;
       }
       const location = response.headers.get("location");
       if (!location) {
-        this.audit(plugin, name, "fetch", conversationId);
+        this.audit(plugin, name, "fetch", "used", conversationId);
         return "query" in definition.apply ? redactResponseUrl(response, value) : response;
       }
       if (hop === MAX_REDIRECTS) {
+        this.audit(plugin, name, "fetch", "refused", conversationId);
         throw new Error(`secret "${name}" redirect limit exceeded at host "${host}"`);
       }
       if (
@@ -267,7 +301,7 @@ export class SecretsRuntime {
 
   /** The raw value of a declared secret (local backend). */
   async get(plugin: string, name: string, conversationId?: string): Promise<string> {
-    this.requireDeclared(plugin, name);
+    this.requireDeclared(plugin, name, "get", conversationId);
     if (this.backend.kind === "gateway") {
       const response = await fetch(this.gatewayUrl("/plugins/secrets-gateway/open/raw"), {
         method: "POST",
@@ -278,17 +312,25 @@ export class SecretsRuntime {
         body: JSON.stringify({ secret: name }),
       });
       if (!response.ok) {
+        this.audit(plugin, name, "get", "refused", conversationId);
         throw new Error(`secret "${name}" raw access refused (${response.status})`);
       }
-      const body = (await response.json()) as { value?: unknown };
+      let body: { value?: unknown };
+      try {
+        body = (await response.json()) as { value?: unknown };
+      } catch {
+        this.audit(plugin, name, "get", "refused", conversationId);
+        throw new Error(`secret "${name}" raw access returned invalid JSON`);
+      }
       if (typeof body.value !== "string") {
+        this.audit(plugin, name, "get", "refused", conversationId);
         throw new Error(`secret "${name}" raw access returned no value`);
       }
-      this.audit(plugin, name, "get", conversationId);
+      this.audit(plugin, name, "get", "used", conversationId);
       return body.value;
     }
     const value = this.resolve(name);
-    this.audit(plugin, name, "get", conversationId);
+    this.audit(plugin, name, "get", "used", conversationId);
     return value;
   }
 }
