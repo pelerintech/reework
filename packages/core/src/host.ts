@@ -112,6 +112,8 @@ export class AgentHost {
   private readonly caseListeners = new Set<(c: Case) => void>();
   /** A headless agent has no model and refuses input that would start a run. */
   private readonly headless: boolean;
+  /** A gateway-backed model surfaces its failures as errors. */
+  private readonly gatewayModel: boolean;
 
   constructor(
     engine: Engine,
@@ -119,7 +121,7 @@ export class AgentHost {
     workspace?: WorkspaceProvider,
     files: { maxBytes?: number } = {},
     events?: EventDispatcher,
-    options: { headless?: boolean } = {},
+    options: { headless?: boolean; gatewayModel?: boolean } = {},
   ) {
     this.engine = engine;
     this.agent = agent;
@@ -128,6 +130,7 @@ export class AgentHost {
     this.filesMaxBytes = files.maxBytes ?? 10 * 1024 * 1024;
     this.events = events;
     this.headless = options.headless === true;
+    this.gatewayModel = options.gatewayModel === true;
   }
 
   async createConversation(options: CreateConversationOptions = {}): Promise<ConversationInfo> {
@@ -434,7 +437,11 @@ export class AgentHost {
     if (!options.wait) return { submissionId };
     const settled = await submission.wait(CONTEXT);
     if (settled.status !== "done" || settled.type !== "input") {
-      if (settled.status === "unanswered" && settled.reason === "model_error") {
+      if (
+        this.gatewayModel &&
+        settled.status === "unanswered" &&
+        settled.reason === "model_error"
+      ) {
         const detail = settled.detail;
         throw new Error(
           `model error: ${typeof detail === "string" ? detail : JSON.stringify(detail ?? "unknown")}`,

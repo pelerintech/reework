@@ -276,7 +276,7 @@ async function boot(
     workspace,
     { maxBytes: agent.files?.maxBytes },
     events,
-    { headless: agent.model === undefined },
+    { headless: agent.model === undefined, gatewayModel: secrets.isGateway() },
   );
   opened.engine = engine;
   opened.host = host;
