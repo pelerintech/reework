@@ -501,7 +501,7 @@ export const ROUTES = {
     method: "GET",
     path: "/conversations/:id/proposals",
     auth: "token",
-    summary: "Open proposals of one conversation",
+    summary: "Proposals of one conversation; `?status=settled` for decided ones",
   },
   "conversations.decide": {
     method: "POST",
@@ -519,7 +519,7 @@ export const ROUTES = {
     method: "GET",
     path: "/proposals",
     auth: "token",
-    summary: "Open proposals across every conversation (the inbox)",
+    summary: "Proposals across every conversation (the inbox); `?status=settled` for decided ones",
   },
   "proposals.decide": {
     method: "POST",

@@ -250,13 +250,22 @@ export function createClient(options: ClientOptions) {
       await call("conversations.abort", { params: { id } });
     },
 
-    /** Open proposals: every conversation's (the inbox), or one conversation's. */
-    async listProposals(conversationId?: string): Promise<Proposal[]> {
+    /**
+     * Proposals across every conversation (the inbox) or one conversation's.
+     * Open by default; `status: "settled"` returns settled ones with their
+     * decision and decider. A bare string is a conversation id (legacy form).
+     */
+    async listProposals(
+      options?: string | { conversationId?: string; status?: "open" | "settled" },
+    ): Promise<Proposal[]> {
+      const opts = typeof options === "string" ? { conversationId: options } : (options ?? {});
+      const query = opts.status === "settled" ? { status: "settled" } : undefined;
       const res =
-        conversationId === undefined
-          ? await call<{ proposals: Proposal[] }>("proposals.list")
+        opts.conversationId === undefined
+          ? await call<{ proposals: Proposal[] }>("proposals.list", { query })
           : await call<{ proposals: Proposal[] }>("conversations.proposals", {
-              params: { id: conversationId },
+              params: { id: opts.conversationId },
+              query,
             });
       return res.body.proposals;
     },

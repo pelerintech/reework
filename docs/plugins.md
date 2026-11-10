@@ -410,8 +410,9 @@ memory, budget, audit and scheduler can treat it correctly. `listCases()` return
 `listCases({ kind: ["desk"] })` returns desks and `listCases({ kind: ["case", "desk"] })` returns
 both. The HTTP list route takes `?kind=` (comma-separated) and the client takes `listCases({ kind })`.
 Closing a desk is refused with `cannot close a desk` (HTTP 400; the model's `update_case` tool gets it
-as an error result), so `onCaseClosed` never fires for a desk. Input to a desk is accepted like any
-conversation, and updates or reopens it the same way.
+as an error result), so `onCaseClosed` never fires for a desk. Input moves a desk exactly as it moves
+an ordinary case: `updatedAt` moves, a closed record reopens to `open`, and a waiting desk stays
+waiting. A desk differs from a case only in that it cannot be closed.
 
 **Owners.** `owner` is the principal that receives the case's notifications. A principal spans
 identities, so its ownership is one stable author — `{ kind, id: "principal:<name>" }` — not each
@@ -491,9 +492,10 @@ result as a new message. `gate` may be a function of the arguments (and may be a
 a diff); it gets `{ conversationId, models, files, store, case }` (plus `cases` when the plugin
 declared it). Gates survive restarts.
 
-Settled proposals stay readable: `host.listProposals({ status: "settled" })` returns decided
-proposals with `decidedBy` and the `decision` that settled them, while the default
-`listProposals()` still returns open proposals only.
+Settled proposals stay readable: `host.listProposals({ status: "settled" })`, HTTP
+`GET /proposals?status=settled` (and `GET /conversations/:id/proposals?status=settled`), and the
+client's `listProposals({ status: "settled" })` return decided proposals with `decidedBy` and the
+`decision` that settled them, while the default `listProposals()` still returns open proposals only.
 
 ## Workspaces
 

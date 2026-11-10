@@ -244,7 +244,14 @@ export function createServer(host: AgentHost, options: ServerOptions) {
     "conversations.proposals": async (c) => {
       const id = c.req.param("id") ?? "";
       if (!(await host.hasConversation(id))) throw new ConversationNotFound(id);
-      return c.json({ id, proposals: await host.listProposals({ conversationId: id }) });
+      const status = c.req.query("status") === "settled" ? "settled" : undefined;
+      return c.json({
+        id,
+        proposals: await host.listProposals({
+          conversationId: id,
+          ...(status === undefined ? {} : { status }),
+        }),
+      });
     },
 
     "conversations.decide": async (c) => {
@@ -313,7 +320,12 @@ export function createServer(host: AgentHost, options: ServerOptions) {
       };
     }),
 
-    "proposals.list": async (c) => c.json({ proposals: await host.listProposals() }),
+    "proposals.list": async (c) => {
+      const status = c.req.query("status") === "settled" ? "settled" : undefined;
+      return c.json({
+        proposals: await host.listProposals(status === undefined ? {} : { status }),
+      });
+    },
 
     // Any open proposal by id, including gates the agent opened on its own root conversation.
     "proposals.decide": async (c) => {
