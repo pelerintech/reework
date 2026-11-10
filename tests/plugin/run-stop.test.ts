@@ -1,10 +1,12 @@
 // A plugin can stop a run cleanly before a model request: the run ends the way the
 // tool-round budget ends it, no request is made, and the snapshot carries the notice.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { Type, definePlugin, defineTool } from "@reework/core";
+import { Type, definePlugin, defineTool, gatedAction } from "@reework/core";
 import type { AgentDefinition, DeclaredModule } from "@reework/core";
+import { waitForProposal } from "@reework/core/testing";
 import { startTestAgent } from "../support/agent.ts";
 import { startFakeLlm } from "../support/fake-llm.ts";
+import { eventually } from "../support/wait.ts";
 
 const KEY_ENV = "REEWORK_TEST_LLM_KEY";
 beforeEach(() => {
@@ -148,5 +150,57 @@ describe("stopping a run", () => {
       plugin: "limiter",
       reason: "daily budget reached",
     });
+  });
+
+  it("leaves a gate opened before the stop open, and a decision settles it", async () => {
+    const llm = await startFakeLlm();
+    let requests = 0;
+    let ran = false;
+    const limiter = definePlugin("limiter", () => ({
+      tools: [stepTool()],
+      hooks: {
+        async beforeModelRequest() {
+          requests += 1;
+          if (requests === 2) return { stop: "daily budget reached" };
+        },
+      },
+    }));
+    const ops = definePlugin("ops", () => ({
+      tools: [
+        gatedAction({
+          name: "deploy",
+          gate: { title: "Deploy?", options: [{ id: "go", label: "Deploy" }] },
+          run: async () => {
+            ran = true;
+            return "deployed";
+          },
+        }),
+      ],
+    }));
+    llm.script({ toolCall: { name: "deploy" } });
+    const agent = await startTestAgent(
+      definition(llm.url, [
+        { plugin: limiter, config: {} },
+        { plugin: ops, config: {} },
+      ]),
+      { models: undefined },
+    );
+    const { id } = await agent.host.createConversation();
+
+    await agent.host.submitInput(id, "work");
+    await eventually(async () => (await agent.host.snapshot(id)).stopNotice);
+    const proposal = await waitForProposal(agent.host, id);
+
+    llm.script({ text: "decided" });
+    await agent.host.submitDecision({
+      proposalId: proposal.id,
+      selectedOption: "go",
+      instruction: null,
+    });
+
+    await eventually(() => ran);
+    await eventually(
+      async () => (await agent.host.listProposals({ conversationId: id })).length === 0,
+    );
   });
 });
