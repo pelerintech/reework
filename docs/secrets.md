@@ -87,8 +87,8 @@ only where unavoidable. Both `get` and `fetch` fire the `onSecretUse` event:
 definePlugin("audit", () => ({
   hooks: {
     async onSecretUse(use) {
-      // { plugin, name, kind: "get" | "fetch" | "model", outcome: "used" | "refused",
-      //   at, conversationId? }
+      // { plugin, name, kind: "get" | "fetch" | "model",
+      //   outcome: "used" | "refused" | "failed", at, conversationId? }
     },
   },
 }));
@@ -96,7 +96,8 @@ definePlugin("audit", () => ({
 
 The event travels through the same per-agent queue as other event hooks; `plugin` is the plugin that used the
 secret. A refused use (a host outside `hosts`, an undeclared name, a gateway refusal, a refused raw read) fires
-with `outcome: "refused"`; a successful use fires `outcome: "used"`. A gateway `fetch` is audited after the
+with `outcome: "refused"`; a local use that fails (an invalid URL, a value missing after startup, a network
+error, an abort) fires `outcome: "failed"`; a successful use fires `outcome: "used"`. A gateway `fetch` is audited after the
 gateway answers, so its outcome reflects the gateway response. Each model key resolved from a secret fires one
 `kind: "model"` event at startup, with the model name as `plugin`.
 

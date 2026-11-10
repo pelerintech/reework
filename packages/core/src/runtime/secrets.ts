@@ -115,7 +115,7 @@ export class SecretsRuntime {
     plugin: string,
     name: string,
     kind: "get" | "fetch" | "model",
-    outcome: "used" | "refused",
+    outcome: "used" | "refused" | "failed",
     conversationId?: string,
   ): void {
     const event: SecretUseEvent = {
@@ -304,7 +304,13 @@ export class SecretsRuntime {
       );
       return response;
     }
-    const value = this.resolve(name);
+    let value: string;
+    try {
+      value = this.resolve(name);
+    } catch (error) {
+      this.audit(plugin, name, "fetch", "failed", conversationId);
+      throw error;
+    }
     const allowed = definition.hosts ?? [];
     const headers = new Headers(init.headers);
     if (!definition.apply) {
@@ -313,7 +319,13 @@ export class SecretsRuntime {
     }
     let method = init.method ?? "GET";
     let body = init.body;
-    let target = new URL(url);
+    let target: URL;
+    try {
+      target = new URL(url);
+    } catch (error) {
+      this.audit(plugin, name, "fetch", "failed", conversationId);
+      throw error;
+    }
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
       if (!allowed.some((entry) => hostAllowed(entry, target))) {
         this.audit(plugin, name, "fetch", "refused", conversationId);
@@ -326,13 +338,19 @@ export class SecretsRuntime {
       } else {
         request.searchParams.set(definition.apply.query, value);
       }
-      const response = await fetch(request, {
-        ...init,
-        method,
-        body,
-        headers,
-        redirect: "manual",
-      });
+      let response: Response;
+      try {
+        response = await fetch(request, {
+          ...init,
+          method,
+          body,
+          headers,
+          redirect: "manual",
+        });
+      } catch (error) {
+        this.audit(plugin, name, "fetch", "failed", conversationId);
+        throw error;
+      }
       if (!REDIRECT_STATUSES.has(response.status)) {
         this.audit(plugin, name, "fetch", "used", conversationId);
         return "query" in definition.apply ? redactResponseUrl(response, value) : response;
@@ -356,7 +374,12 @@ export class SecretsRuntime {
         body = undefined;
         headers.delete("content-length");
       }
-      target = new URL(location, request);
+      try {
+        target = new URL(location, request);
+      } catch (error) {
+        this.audit(plugin, name, "fetch", "failed", conversationId);
+        throw error;
+      }
     }
     throw new Error(`secret "${name}" redirect limit exceeded`);
   }
@@ -400,7 +423,13 @@ export class SecretsRuntime {
       this.audit(plugin, name, "get", "used", conversationId);
       return body.value;
     }
-    const value = this.resolve(name);
+    let value: string;
+    try {
+      value = this.resolve(name);
+    } catch (error) {
+      this.audit(plugin, name, "get", "failed", conversationId);
+      throw error;
+    }
     this.audit(plugin, name, "get", "used", conversationId);
     return value;
   }

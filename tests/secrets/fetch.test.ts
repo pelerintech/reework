@@ -432,6 +432,95 @@ describe("ctx.secrets.fetch: host entries", () => {
   });
 });
 
+describe("ctx.secrets.fetch: failed uses", () => {
+  it("audits invalid URL, network error, abort and a missing value as failed", async () => {
+    process.env[BRAVE_ENV] = "brave-secret";
+    const uses: SecretUseEvent[] = [];
+    const observer = definePlugin("audit", () => ({
+      hooks: {
+        async onSecretUse(input) {
+          uses.push(input);
+        },
+      },
+    }));
+    const errors: unknown[] = [];
+    const caller = definePlugin(
+      "caller",
+      () => ({
+        tools: [
+          defineTool({
+            name: "fail_calls",
+            description: "Make calls that fail after startup",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              errors.push(
+                await ctx.secrets.fetch("brave", "not a url").then(
+                  () => undefined,
+                  (failure: unknown) => failure,
+                ),
+              );
+              errors.push(
+                await ctx.secrets.fetch("brave", "http://127.0.0.1:1/x").then(
+                  () => undefined,
+                  (failure: unknown) => failure,
+                ),
+              );
+              const controller = new AbortController();
+              controller.abort();
+              errors.push(
+                await ctx.secrets
+                  .fetch("brave", "http://127.0.0.1:1/x", {
+                    signal: controller.signal,
+                  })
+                  .then(
+                    () => undefined,
+                    (failure: unknown) => failure,
+                  ),
+              );
+              delete process.env[BRAVE_ENV];
+              errors.push(
+                await ctx.secrets.get("brave").then(
+                  () => undefined,
+                  (failure: unknown) => failure,
+                ),
+              );
+              return "tried";
+            },
+          }),
+        ],
+      }),
+      { secrets: ["brave"] },
+    );
+    const faux = fauxModels("m1");
+    faux.respond([toolCall("fail_calls"), text("done")]);
+    const agent = await startTestAgent(
+      testDefinition({
+        secrets: {
+          brave: {
+            from: `env:${BRAVE_ENV}`,
+            apply: { header: "X-Key" },
+            hosts: ["127.0.0.1"],
+          },
+        },
+        plugins: [
+          { plugin: observer, config: {} },
+          { plugin: caller, config: {} },
+        ],
+      }),
+      { models: faux.models },
+    );
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "go", { wait: true });
+
+    expect(errors.every((error) => error instanceof Error)).toBe(true);
+    await waitFor(() => uses.length >= 4);
+    const failed = uses.filter((use) => use.outcome === "failed");
+    expect(failed).toHaveLength(4);
+    expect(failed.map((use) => use.kind)).toEqual(["fetch", "fetch", "fetch", "get"]);
+    expect(failed.every((use) => use.name === "brave")).toBe(true);
+  });
+});
+
 describe("undeclared secrets", () => {
   it("refuses fetch and get for a name the plugin did not declare", async () => {
     process.env[BRAVE_ENV] = "brave-secret";

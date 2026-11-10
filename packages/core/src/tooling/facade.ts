@@ -441,8 +441,8 @@ export interface SecretUseEvent {
   readonly plugin: string;
   readonly name: string;
   readonly kind: "get" | "fetch" | "model";
-  /** Whether the secret was used or the use was refused. */
-  readonly outcome: "used" | "refused";
+  /** Whether the secret was used, refused, or the use failed. */
+  readonly outcome: "used" | "refused" | "failed";
   readonly at: number;
   /** The conversation the use belongs to; absent for agent-level work. */
   readonly conversationId?: string;
