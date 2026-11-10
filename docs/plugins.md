@@ -496,6 +496,8 @@ Settled proposals stay readable: `host.listProposals({ status: "settled" })`, HT
 `GET /proposals?status=settled` (and `GET /conversations/:id/proposals?status=settled`), and the
 client's `listProposals({ status: "settled" })` return decided proposals with `decidedBy` and the
 `decision` that settled them, while the default `listProposals()` still returns open proposals only.
+Any other listing status is refused with a 400 naming `open` and `settled`; the host and client throw
+the same error rather than falling back to the open listing.
 
 ## Workspaces
 

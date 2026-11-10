@@ -11,7 +11,13 @@ export type {
   RunLimits,
 } from "./agent-definition.ts";
 
-export { AgentHost, ConversationNotFound, InvalidAuthor, ProposalNotFound } from "./host.ts";
+export {
+  AgentHost,
+  ConversationNotFound,
+  InvalidAuthor,
+  InvalidProposalStatus,
+  ProposalNotFound,
+} from "./host.ts";
 export type { ConversationRecord } from "./protocol/conversations.ts";
 export type {
   ConversationInfo,

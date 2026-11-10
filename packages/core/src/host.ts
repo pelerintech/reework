@@ -441,8 +441,12 @@ export class AgentHost {
   async listProposals(
     options: { conversationId?: string; status?: "open" | "settled" } = {},
   ): Promise<Proposal[]> {
+    const status: unknown = options.status;
+    if (status !== undefined && status !== "open" && status !== "settled") {
+      throw new InvalidProposalStatus(typeof status === "string" ? status : JSON.stringify(status));
+    }
     const proposals =
-      options.status === "settled"
+      status === "settled"
         ? await listSettledProposals(this.engine)
         : await listOpenProposals(this.engine);
     return options.conversationId === undefined
@@ -589,6 +593,16 @@ export class ConversationNotFound extends Error {
   constructor(conversationId: string) {
     super(`conversation not found: ${conversationId}`);
     this.conversationId = conversationId;
+  }
+}
+
+/** A proposal listing asked for a status other than `open` or `settled`. */
+export class InvalidProposalStatus extends Error {
+  readonly status: string;
+
+  constructor(status: string) {
+    super(`invalid proposal status: ${status} (allowed: open, settled)`);
+    this.status = status;
   }
 }
 

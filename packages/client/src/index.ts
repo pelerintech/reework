@@ -259,7 +259,7 @@ export function createClient(options: ClientOptions) {
       options?: string | { conversationId?: string; status?: "open" | "settled" },
     ): Promise<Proposal[]> {
       const opts = typeof options === "string" ? { conversationId: options } : (options ?? {});
-      const query = opts.status === "settled" ? { status: "settled" } : undefined;
+      const query = opts.status === undefined ? undefined : { status: opts.status };
       const res =
         opts.conversationId === undefined
           ? await call<{ proposals: Proposal[] }>("proposals.list", { query })

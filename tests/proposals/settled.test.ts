@@ -135,4 +135,37 @@ describe("settled proposals", () => {
       (await client.listProposals({ conversationId: id, status: "settled" })).map((p) => p.id),
     ).toContain(proposal.id);
   });
+  it("refuses an unknown proposal listing status instead of falling back to open", async () => {
+    const test = await startTestAgent(testDefinition());
+    running.push(test);
+    const { id } = await test.agent.host.createConversation();
+    const app = {
+      request(path: string, init: RequestInit = {}) {
+        const headers = new Headers(init.headers);
+        headers.set("authorization", `Bearer ${test.token}`);
+        return test.agent.app.request(path, { ...init, headers });
+      },
+    };
+
+    await expect(test.agent.host.listProposals({ status: "bogus" as never })).rejects.toThrow(
+      /invalid proposal status.*bogus.*open.*settled/i,
+    );
+
+    const all = await app.request("/proposals?status=bogus");
+    expect(all.status).toBe(400);
+    expect(((await all.json()) as { error: string }).error).toMatch(
+      /invalid proposal status.*bogus.*open.*settled/i,
+    );
+    const perConversation = await app.request(`/conversations/${id}/proposals?status=bogus`);
+    expect(perConversation.status).toBe(400);
+    expect(((await perConversation.json()) as { error: string }).error).toMatch(
+      /invalid proposal status.*bogus.*open.*settled/i,
+    );
+
+    const { port } = await test.agent.listen(0);
+    const client = createClient({ baseUrl: `http://127.0.0.1:${port}`, token: test.token });
+    await expect(client.listProposals({ status: "bogus" as never })).rejects.toThrow(
+      /invalid proposal status.*bogus.*open.*settled/i,
+    );
+  });
 });

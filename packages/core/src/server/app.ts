@@ -21,6 +21,7 @@ import {
   FileNotFound,
   FileTooLarge,
   InvalidAuthor,
+  InvalidProposalStatus,
   ProposalNotFound,
 } from "../host.ts";
 import type { AgentHost } from "../host.ts";
@@ -60,6 +61,12 @@ export function protocolErrorResponse(error: unknown, c: Context): Response | un
   }
   if (error instanceof InvalidAuthor) {
     return c.json({ error: "invalid_author" }, 400);
+  }
+  if (error instanceof InvalidProposalStatus) {
+    return c.json(
+      { error: error.message, status: error.status, allowed: ["open", "settled"] },
+      400,
+    );
   }
   return undefined;
 }
@@ -244,7 +251,7 @@ export function createServer(host: AgentHost, options: ServerOptions) {
     "conversations.proposals": async (c) => {
       const id = c.req.param("id") ?? "";
       if (!(await host.hasConversation(id))) throw new ConversationNotFound(id);
-      const status = c.req.query("status") === "settled" ? "settled" : undefined;
+      const status = c.req.query("status") as "open" | "settled" | undefined;
       return c.json({
         id,
         proposals: await host.listProposals({
@@ -321,7 +328,7 @@ export function createServer(host: AgentHost, options: ServerOptions) {
     }),
 
     "proposals.list": async (c) => {
-      const status = c.req.query("status") === "settled" ? "settled" : undefined;
+      const status = c.req.query("status") as "open" | "settled" | undefined;
       return c.json({
         proposals: await host.listProposals(status === undefined ? {} : { status }),
       });
