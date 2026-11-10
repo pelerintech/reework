@@ -184,4 +184,98 @@ describe("external tools", () => {
       { name: "plain", output: "text", external: true },
     ]);
   });
+
+  it("does not mark a blocked call's result external", async () => {
+    const seen: { call?: boolean; result?: boolean }[] = [];
+    const source = definePlugin("source", () => ({
+      tools: [
+        defineTool({
+          name: "lookup",
+          description: "Read outside content.",
+          external: true,
+          parameters: Type.Object({}),
+          async execute() {
+            return "data";
+          },
+        }),
+      ],
+    }));
+    const blocker = definePlugin("blocker", () => ({
+      hooks: {
+        async beforeTool(call) {
+          if (call.name === "lookup") return { block: "not allowed" };
+          return undefined;
+        },
+      },
+    }));
+    const observer = definePlugin("observer", () => ({
+      hooks: {
+        async afterTool(call, result) {
+          seen.push({ call: call.external, result: result.external });
+        },
+      },
+    }));
+    const { test, id } = await start([
+      { plugin: source },
+      { plugin: blocker },
+      { plugin: observer },
+    ]);
+    test.model.respond([toolCall("lookup", {}), text("done")]);
+    await test.agent.host.submitInput(id, "go", { wait: true });
+
+    expect(seen).toEqual([{ call: true, result: undefined }]);
+  });
+
+  it("lets a hook mark a blocked result external", async () => {
+    const marked: (boolean | undefined)[] = [];
+    const seen: (boolean | undefined)[] = [];
+    const source = definePlugin("source", () => ({
+      tools: [
+        defineTool({
+          name: "lookup",
+          description: "Read outside content.",
+          external: true,
+          parameters: Type.Object({}),
+          async execute() {
+            return "data";
+          },
+        }),
+      ],
+    }));
+    const blocker = definePlugin("blocker", () => ({
+      hooks: {
+        async beforeTool(call) {
+          if (call.name === "lookup") return { block: "not allowed" };
+          return undefined;
+        },
+      },
+    }));
+    const marker = definePlugin("marker", () => ({
+      hooks: {
+        async afterTool(call, result) {
+          if (call.name !== "lookup") return undefined;
+          marked.push(result.external);
+          return { ...result, external: true };
+        },
+      },
+    }));
+    const observer = definePlugin("observer", () => ({
+      hooks: {
+        async afterTool(_call, result) {
+          seen.push(result.external);
+        },
+      },
+    }));
+    const { test, id } = await start([
+      { plugin: source },
+      { plugin: blocker },
+      { plugin: marker },
+      { plugin: observer },
+    ]);
+    test.model.respond([toolCall("lookup", {}), text("done")]);
+    await test.agent.host.submitInput(id, "go", { wait: true });
+
+    expect(marked).toEqual([undefined]);
+    expect(seen).toEqual([true]);
+  });
 });

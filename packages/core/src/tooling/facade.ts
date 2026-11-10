@@ -1087,16 +1087,24 @@ export function buildToolHooks(
           makeHookContext(p.name, api, context, bindings),
         );
         if (res && "block" in res) {
-          // Report the blocked call to the plugins declared after this one.
-          const blocked: ToolResult = { output: res.block, isError: true };
+          // Report the blocked call to the plugins declared after this one. A
+          // blocked result starts not external (no outside content was read); a
+          // hook's flag sticks for the hooks after it, as in the afterTool chain.
+          let blocked: ToolResult = { output: res.block, isError: true };
+          let blockedExternal = false;
           for (let j = i + 1; j < plugins.length; j++) {
             const q = plugins[j];
             if (q.hooks?.afterTool) {
-              await q.hooks.afterTool(
+              const next = await q.hooks.afterTool(
                 { name: call.name, args, callId: call.id, external },
                 blocked,
                 makeHookContext(q.name, api, context, bindings),
               );
+              if (next) {
+                blockedExternal =
+                  blockedExternal || next.external === true || externalOfDetails(next.details);
+                blocked = markExternal(next, blockedExternal, undefined);
+              }
             }
           }
           return { block: res.block };
