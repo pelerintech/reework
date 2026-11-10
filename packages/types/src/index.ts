@@ -144,6 +144,11 @@ export interface ModelMessage {
   /** Present on a `toolResult` message: whether the tool failed. */
   isError?: boolean;
   /**
+   * Present on a `toolResult` message: the result is outside content. Read from
+   * the stored result's `details.reework.external`, so later requests know it.
+   */
+  external?: boolean;
+  /**
    * On a `user` message in a hook's input: who it is from. Absent means
    * unattributed, never a human.
    */

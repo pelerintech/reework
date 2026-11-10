@@ -15,19 +15,29 @@ afterEach(async () => {
       .catch(() => {});
 });
 
-function definition(plugins: AgentDefinition["plugins"]): AgentDefinition {
+function definition(
+  plugins: AgentDefinition["plugins"],
+  models?: AgentDefinition["models"],
+): AgentDefinition {
   return {
     name: "external-agent",
     model: { provider: { baseUrl: "http://127.0.0.1:1", apiKeyEnv: "K" }, modelId: "m1" },
+    ...(models ? { models } : {}),
     plugins,
     channels: [],
     mission: { role: "r" },
   };
 }
 
-async function start(plugins: readonly { plugin: ReeworkPlugin; config?: unknown }[]) {
+async function start(
+  plugins: readonly { plugin: ReeworkPlugin; config?: unknown }[],
+  models?: AgentDefinition["models"],
+) {
   const test = await startTestAgent(
-    definition(plugins.map(({ plugin, config }) => ({ plugin, config }))),
+    definition(
+      plugins.map(({ plugin, config }) => ({ plugin, config })),
+      models,
+    ),
   );
   started.push(test);
   const { id } = await test.agent.host.createConversation();
@@ -277,5 +287,66 @@ describe("external tools", () => {
 
     expect(marked).toEqual([undefined]);
     expect(seen).toEqual([true]);
+  });
+
+  it("carries external to later model requests and the stored result", async () => {
+    const requests: { name?: string; external?: boolean }[][] = [];
+    const source = definePlugin(
+      "source",
+      () => ({
+        tools: [
+          defineTool({
+            name: "lookup",
+            description: "Read outside content.",
+            external: true,
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              await ctx.models.complete("fast", { messages: "summarize" });
+              return "data";
+            },
+          }),
+        ],
+      }),
+      { models: ["fast"] },
+    );
+    const observer = definePlugin("observer", () => ({
+      hooks: {
+        async beforeModelRequest(input) {
+          requests.push(
+            input.messages
+              .filter((message) => message.role === "toolResult")
+              .map((message) => ({ name: message.toolName, external: message.external })),
+          );
+        },
+        async afterTool(_call, result) {
+          // A hook's own details must not drop the framework's spend record.
+          return { output: result.output, details: { note: "hook" } };
+        },
+      },
+    }));
+    const { test, id } = await start([{ plugin: source }, { plugin: observer }], {
+      fast: {
+        provider: { baseUrl: "http://127.0.0.1:1", apiKeyEnv: "K" },
+        modelId: "fast",
+      },
+    });
+    test.models.fast.respond([text("summary")]);
+    test.model.respond([toolCall("lookup", {}), text("done")]);
+    await test.agent.host.submitInput(id, "go", { wait: true });
+
+    expect(requests.at(-1)).toEqual([{ name: "lookup", external: true }]);
+
+    const { entries } = await test.agent.host.readConversation(id);
+    const result = entries
+      .flatMap((entry) => (entry as { model?: readonly unknown[] }).model ?? [])
+      .find(
+        (message) =>
+          (message as { role?: string }).role === "toolResult" &&
+          (message as { toolName?: string }).toolName === "lookup",
+      ) as { details?: { reework?: Record<string, unknown> } };
+    expect(result.details?.reework?.external).toBe(true);
+    expect(result.details?.reework?.modelUsage).toEqual([
+      expect.objectContaining({ model: "fast" }),
+    ]);
   });
 });

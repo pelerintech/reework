@@ -1283,6 +1283,7 @@ function reworkMessageFrom(message: Message): ModelMessage {
     if (message.toolName) m.toolName = message.toolName;
     if (message.timestamp !== undefined) m.timestamp = message.timestamp;
     if (message.isError === true) m.isError = true;
+    if (externalOfDetails((message as { details?: JsonValue }).details)) m.external = true;
     return m;
   }
   if (typeof content === "string") {
