@@ -3,7 +3,9 @@
 // and an agent decider is rejected on a human gate.
 import { afterEach, describe, expect, it } from "vitest";
 import { createRegistry } from "@earendil-works/pi-durable";
-import { definePlugin, gatedAction } from "@reework/core";
+import { createClient } from "@reework/client";
+import type { ProtocolError } from "@reework/client";
+import { definePlugin, defineTool, gatedAction, Type } from "@reework/core";
 import type { OpenProposal } from "@reework/core";
 import { Engine, ProposalsDoc } from "@reework/core/internal";
 import {
@@ -11,6 +13,7 @@ import {
   startTestAgent,
   text,
   toolCall,
+  waitFor,
   waitForProposal,
 } from "@reework/core/testing";
 import type { TestAgent } from "@reework/core/testing";
@@ -90,5 +93,77 @@ describe("gate audiences", () => {
     running.push(test);
     const listed = (await test.agent.host.listProposals()).find((p) => p.id === "legacy-proposal");
     expect(listed?.audience).toBe("human");
+  });
+
+  it("rejects an agent decider on a human gate on every surface and leaves it open", async () => {
+    const agentAuthor = { kind: "agent" as const, id: "agent:orchestrator" };
+    let relayed: string | undefined;
+    const plugin = definePlugin(
+      "ops",
+      () => ({
+        tools: [
+          gatedAction({
+            name: "deploy",
+            gate: { title: "Deploy?", options: [{ id: "yes", label: "Yes" }] },
+            run: async () => "deployed",
+          }),
+          defineTool({
+            name: "relay",
+            description: "Relays a decision to another case.",
+            parameters: Type.Object({ proposalId: Type.String() }),
+            async execute(args, ctx) {
+              relayed = await ctx
+                .cases!.decide({
+                  proposalId: args.proposalId,
+                  decision: { selectedOption: "yes", instruction: null },
+                  decidedBy: agentAuthor,
+                })
+                .then(
+                  () => undefined,
+                  (error: unknown) => (error instanceof Error ? error.message : String(error)),
+                );
+              return "relayed";
+            },
+          }),
+        ],
+      }),
+      { cases: true },
+    );
+    const test = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }));
+    running.push(test);
+    test.model.respond([toolCall("deploy"), text("waiting on you")]);
+    const { id } = await test.agent.host.createConversation();
+    await test.agent.host.submitInput(id, "ship it", { wait: true });
+    const proposal = await waitForProposal(test.agent.host, id);
+
+    const decision = {
+      proposalId: proposal.id,
+      selectedOption: "yes",
+      instruction: null,
+      decidedBy: agentAuthor,
+    };
+    const { port, close } = await test.agent.listen(0);
+    const client = createClient({ baseUrl: `http://127.0.0.1:${port}`, token: test.token });
+    try {
+      const error = (await client
+        .decide(decision, { conversationId: id })
+        .catch((err: ProtocolError) => err)) as ProtocolError;
+      expect(error.status).toBe(400);
+      expect(String(error.message)).toContain("gate audience is human");
+
+      test.model.append([toolCall("relay", { proposalId: proposal.id }), text("relayed")]);
+      await test.agent.host.submitInput(id, "relay it", { wait: true });
+      await waitFor(() => relayed !== undefined);
+      expect(relayed).toContain("gate audience is human");
+
+      await expect(test.agent.host.submitDecision(decision)).rejects.toThrow(
+        /gate audience is human/,
+      );
+      expect(
+        (await test.agent.host.listProposals({ conversationId: id })).map((p) => p.id),
+      ).toEqual([proposal.id]);
+    } finally {
+      await close();
+    }
   });
 });

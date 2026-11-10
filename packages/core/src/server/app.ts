@@ -20,6 +20,7 @@ import {
   ConversationNotFound,
   FileNotFound,
   FileTooLarge,
+  GateAudienceRejected,
   HeadlessAgentError,
   InvalidAuthor,
   ModelRunError,
@@ -54,6 +55,17 @@ export function protocolErrorResponse(error: unknown, c: Context): Response | un
   }
   if (error instanceof ProposalNotFound) {
     return c.json({ error: "proposal_not_found", proposalId: error.proposalId }, 404);
+  }
+  if (error instanceof GateAudienceRejected) {
+    return c.json(
+      {
+        error: "gate_audience_rejected",
+        proposalId: error.proposalId,
+        audience: error.audience,
+        message: error.message,
+      },
+      400,
+    );
   }
   if (error instanceof FileNotFound) {
     return c.json({ error: "file_not_found", fileId: error.fileId }, 404);

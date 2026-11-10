@@ -10,6 +10,7 @@ import type {
   CasePriority,
   CaseStatus,
   FileRecord,
+  GateAudience,
   Message,
   Proposal,
   RunStopNotice,
@@ -494,6 +495,9 @@ export class AgentHost {
     ) {
       throw new ProposalNotFound(decision.proposalId);
     }
+    if (decidedBy?.kind === "agent") {
+      throw new GateAudienceRejected(proposal.id, proposal.audience);
+    }
     await settleGate(this.engine, {
       proposalId: decision.proposalId,
       selectedOption: decision.selectedOption,
@@ -650,6 +654,18 @@ export class ProposalNotFound extends Error {
   constructor(proposalId: string) {
     super(`open proposal not found: ${proposalId}`);
     this.proposalId = proposalId;
+  }
+}
+
+/** A decision was offered by someone the proposal's audience does not admit. */
+export class GateAudienceRejected extends Error {
+  readonly proposalId: string;
+  readonly audience: GateAudience;
+
+  constructor(proposalId: string, audience: GateAudience) {
+    super(`proposal ${proposalId}: gate audience is ${audience}`);
+    this.proposalId = proposalId;
+    this.audience = audience;
   }
 }
 
