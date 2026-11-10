@@ -67,4 +67,86 @@ describe("stopping a run", () => {
     expect(JSON.stringify(message)).toContain("fresh start");
     expect(llm.requests).toHaveLength(2);
   });
+
+  it("names the first stopping plugin and does not run the second's hook", async () => {
+    const llm = await startFakeLlm();
+    let limiterRequests = 0;
+    const limiter = definePlugin("limiter", () => ({
+      tools: [stepTool()],
+      hooks: {
+        async beforeModelRequest() {
+          limiterRequests += 1;
+          if (limiterRequests === 2) return { stop: "daily budget reached" };
+        },
+      },
+    }));
+    let brakeCalls = 0;
+    const brake = definePlugin("brake", () => ({
+      hooks: {
+        async beforeModelRequest() {
+          brakeCalls += 1;
+          if (brakeCalls === 2) return { stop: "brake says no" };
+        },
+      },
+    }));
+    llm.script({ toolCall: { name: "step" } });
+    const agent = await startTestAgent(
+      definition(llm.url, [
+        { plugin: limiter, config: {} },
+        { plugin: brake, config: {} },
+      ]),
+      { models: undefined },
+    );
+    const { id } = await agent.host.createConversation();
+
+    await agent.host.submitInput(id, "work", { wait: true });
+
+    const snapshot = await agent.host.snapshot(id);
+    expect(snapshot.stopNotice).toEqual({
+      plugin: "limiter",
+      reason: "daily budget reached",
+    });
+    expect(brakeCalls).toBe(1);
+    expect(llm.requests).toHaveLength(1);
+  });
+
+  it("accepts an input submitted while the stop is applied and runs it fresh", async () => {
+    const llm = await startFakeLlm();
+    let requests = 0;
+    let reachedStop!: () => void;
+    const stopReached = new Promise<void>((resolve) => (reachedStop = resolve));
+    let releaseStop!: () => void;
+    const stopReleased = new Promise<void>((resolve) => (releaseStop = resolve));
+    const limiter = definePlugin("limiter", () => ({
+      tools: [stepTool()],
+      hooks: {
+        async beforeModelRequest() {
+          requests += 1;
+          if (requests === 2) {
+            reachedStop();
+            await stopReleased;
+            return { stop: "daily budget reached" };
+          }
+        },
+      },
+    }));
+    llm.script({ toolCall: { name: "step" } });
+    const agent = await startTestAgent(definition(llm.url, [{ plugin: limiter, config: {} }]), {
+      models: undefined,
+    });
+    const { id } = await agent.host.createConversation();
+
+    await agent.host.submitInput(id, "work");
+    await stopReached;
+    const queued = agent.host.submitInput(id, "queued during stop", { wait: true });
+    llm.script({ text: "fresh start" });
+    releaseStop();
+
+    const { message } = await queued;
+    expect(JSON.stringify(message)).toContain("fresh start");
+    expect((await agent.host.snapshot(id)).stopNotice).toEqual({
+      plugin: "limiter",
+      reason: "daily budget reached",
+    });
+  });
 });
