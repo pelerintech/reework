@@ -4,7 +4,6 @@ import type { AgentChange, ConversationId, EntryRecord, TaskId } from "@earendil
 import type { JsonValue } from "@earendil-works/chord";
 import type {
   Author,
-  AuthorKind,
   Case,
   CaseKind,
   CasePatch,
@@ -496,10 +495,9 @@ export class AgentHost {
     ) {
       throw new ProposalNotFound(decision.proposalId);
     }
-    // A human gate admits a human decider; an agent-capable gate admits an agent.
-    const admitted: readonly AuthorKind[] =
-      proposal.audience === "human-or-agent" ? ["agent"] : ["human"];
-    if (decidedBy !== undefined && !admitted.includes(decidedBy.kind)) {
+    // Only an agent decider is refused, and only by a human gate; a human or an
+    // unnamed decider is admitted on both audiences.
+    if (proposal.audience === "human" && decidedBy?.kind === "agent") {
       throw new GateAudienceRejected(proposal.id, proposal.audience);
     }
     await settleGate(this.engine, {

@@ -216,4 +216,49 @@ describe("gate audiences", () => {
     );
     expect(settled.decidedBy).toEqual(agentAuthor);
   });
+
+  it("settles a human decider on both audiences", async () => {
+    const humanAuthor = { kind: "human" as const, name: "Ana" };
+    for (const audience of ["human", "human-or-agent"] as const) {
+      const { test, proposal } = await openGate(
+        { title: "Deploy?", options: [{ id: "yes", label: "Yes" }] },
+        audience,
+      );
+
+      await test.agent.host.submitDecision({
+        proposalId: proposal.id,
+        selectedOption: "yes",
+        instruction: null,
+        decidedBy: humanAuthor,
+      });
+      const settled = await waitFor(async () =>
+        (await test.agent.host.listProposals({ status: "settled" })).find(
+          (p) => p.id === proposal.id,
+        ),
+      );
+      expect(settled.audience).toBe(audience);
+      expect(settled.decidedBy).toEqual(humanAuthor);
+    }
+  });
+
+  it("settles a decision that names no decider on both audiences", async () => {
+    for (const audience of ["human", "human-or-agent"] as const) {
+      const { test, proposal } = await openGate(
+        { title: "Deploy?", options: [{ id: "yes", label: "Yes" }] },
+        audience,
+      );
+
+      await test.agent.host.submitDecision({
+        proposalId: proposal.id,
+        selectedOption: "yes",
+        instruction: null,
+      });
+      const settled = await waitFor(async () =>
+        (await test.agent.host.listProposals({ status: "settled" })).find(
+          (p) => p.id === proposal.id,
+        ),
+      );
+      expect(settled.decidedBy).toBeUndefined();
+    }
+  });
 });
