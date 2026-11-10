@@ -376,4 +376,96 @@ describe("external tools", () => {
     );
     expect(item?.external).toBe(true);
   });
+
+  it("keeps external when an earlier hook returns messages unchanged", async () => {
+    const seen: (boolean | undefined)[] = [];
+    const source = definePlugin("source", () => ({
+      tools: [
+        defineTool({
+          name: "lookup",
+          description: "Read outside content.",
+          external: true,
+          parameters: Type.Object({}),
+          async execute() {
+            return "data";
+          },
+        }),
+      ],
+    }));
+    const rewriter = definePlugin("rewriter", () => ({
+      hooks: {
+        async beforeModelRequest(input) {
+          return { messages: input.messages };
+        },
+      },
+    }));
+    const observer = definePlugin("observer", () => ({
+      hooks: {
+        async beforeModelRequest(input) {
+          seen.push(
+            ...input.messages
+              .filter((message) => message.role === "toolResult")
+              .map((message) => message.external),
+          );
+        },
+      },
+    }));
+    const { test, id } = await start([
+      { plugin: source },
+      { plugin: rewriter },
+      { plugin: observer },
+    ]);
+    test.model.respond([toolCall("lookup", {}), text("done")]);
+    await test.agent.host.submitInput(id, "go", { wait: true });
+
+    expect(seen.at(-1)).toBe(true);
+  });
+
+  it("keeps external when an earlier hook clears it on tool-result messages", async () => {
+    const seen: (boolean | undefined)[] = [];
+    const source = definePlugin("source", () => ({
+      tools: [
+        defineTool({
+          name: "lookup",
+          description: "Read outside content.",
+          external: true,
+          parameters: Type.Object({}),
+          async execute() {
+            return "data";
+          },
+        }),
+      ],
+    }));
+    const clearer = definePlugin("clearer", () => ({
+      hooks: {
+        async beforeModelRequest(input) {
+          return {
+            messages: input.messages.map((message) =>
+              message.role === "toolResult" ? { ...message, external: false } : message,
+            ),
+          };
+        },
+      },
+    }));
+    const observer = definePlugin("observer", () => ({
+      hooks: {
+        async beforeModelRequest(input) {
+          seen.push(
+            ...input.messages
+              .filter((message) => message.role === "toolResult")
+              .map((message) => message.external),
+          );
+        },
+      },
+    }));
+    const { test, id } = await start([
+      { plugin: source },
+      { plugin: clearer },
+      { plugin: observer },
+    ]);
+    test.model.respond([toolCall("lookup", {}), text("done")]);
+    await test.agent.host.submitInput(id, "go", { wait: true });
+
+    expect(seen.at(-1)).toBe(true);
+  });
 });

@@ -786,6 +786,13 @@ export interface PluginBindings {
   inputAuthors?: (
     conversationId: string,
   ) => Promise<readonly { timestamp?: number; from?: Author }[]>;
+  /**
+   * The committed tool-result messages' external flags by call id, so a
+   * message-returning hook cannot clear the flag for the hooks after it.
+   */
+  toolResultExternals?: (
+    conversationId: string,
+  ) => Promise<readonly { toolCallId: string; external: boolean }[]>;
   /** The engine's storage, for the plugin store run hooks get. Filled once the engine exists. */
   storage?: StoreBackend;
 }
@@ -1156,8 +1163,13 @@ const pristineInputs = new WeakMap<
   readonly Message[],
   Promise<readonly { timestamp?: number; from?: Author }[]>
 >();
+const pristineToolExternals = new WeakMap<
+  readonly Message[],
+  Promise<ReadonlyMap<string, boolean> | undefined>
+>();
 const hookReturned = new WeakSet<Message>();
 const keptAuthors = new WeakMap<Message, Author>();
+const keptExternals = new WeakMap<Message, true>();
 const handedAuthors = new WeakMap<ModelMessage, Author>();
 
 /** Hand a message to a hook, remembering the author core gave it. */
@@ -1175,15 +1187,50 @@ async function authoredRequestMessages(
   api: HookApi,
   bindings?: PluginBindings,
 ): Promise<ModelMessage[]> {
+  const externals = await toolExternalsOf(name, messages, api, bindings);
   if (messages.some((message) => hookReturned.has(message))) {
-    return messages.map((message) => withKeptAuthor(message));
+    return messages.map((message) => withKeptAuthor(message, externals));
   }
   const inputs = await inputsOf(name, messages, api, bindings);
   const authors = authorsOf(messages, inputs);
   return messages.map((message, index) => {
     const model = reworkMessageFrom(message);
+    applyStoredExternal(model, externals);
     return handed(model, model.role === "user" ? authors[index] : undefined);
   });
+}
+
+/** Read the committed tool-result external flags once per request. */
+function toolExternalsOf(
+  name: string,
+  messages: readonly Message[],
+  api: HookApi,
+  bindings?: PluginBindings,
+): Promise<ReadonlyMap<string, boolean> | undefined> {
+  const cached = pristineToolExternals.get(messages);
+  if (cached) return cached;
+  const reader = bindings?.toolResultExternals;
+  if (!reader) return Promise.resolve(undefined);
+  const pending = reader(String(api.conversationId))
+    .then(
+      (results) => new Map(results.map((result) => [result.toolCallId, result.external] as const)),
+    )
+    .catch((err) => {
+      logHookError(name, "beforeModelRequest", err);
+      return new Map<string, boolean>();
+    });
+  pristineToolExternals.set(messages, pending);
+  return pending;
+}
+
+/** Re-derive a tool-result message's external flag from the stored result. */
+function applyStoredExternal(
+  model: ModelMessage,
+  externals: ReadonlyMap<string, boolean> | undefined,
+): void {
+  if (!externals || model.role !== "toolResult" || !model.toolCallId) return;
+  if (externals.get(model.toolCallId) === true) model.external = true;
+  else delete model.external;
 }
 
 /** Read the committed input authors once per request, shared by every plugin. */
@@ -1266,11 +1313,18 @@ function hookMessageTo(message: ModelMessage): Message {
   hookReturned.add(converted);
   const from = message.role === "user" ? handedAuthors.get(message) : undefined;
   if (from) keptAuthors.set(converted, from);
+  if (message.role === "toolResult" && message.external === true)
+    keptExternals.set(converted, true);
   return converted;
 }
 
-function withKeptAuthor(message: Message): ModelMessage {
+function withKeptAuthor(
+  message: Message,
+  externals: ReadonlyMap<string, boolean> | undefined,
+): ModelMessage {
   const model = reworkMessageFrom(message);
+  applyStoredExternal(model, externals);
+  if (model.role === "toolResult" && keptExternals.get(message) === true) model.external = true;
   return handed(model, model.role === "user" ? keptAuthors.get(message) : undefined);
 }
 
