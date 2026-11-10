@@ -352,6 +352,7 @@ describe("ctx.secrets.fetch: redirects", () => {
     first.respond({ status: 302, headers: { location: `${second.url}/next` } });
     second.respond({ status: 200, body: JSON.stringify({ ok: true }) });
     let status: number | undefined;
+    let redirected: boolean | undefined;
     const caller = definePlugin(
       "caller",
       () => ({
@@ -363,6 +364,7 @@ describe("ctx.secrets.fetch: redirects", () => {
             async execute(_args, ctx) {
               const response = await ctx.secrets.fetch("brave", `${first.url}/start`);
               status = response.status;
+              redirected = response.redirected;
               return "called";
             },
           }),
@@ -389,7 +391,64 @@ describe("ctx.secrets.fetch: redirects", () => {
     await agent.host.submitInput(id, "go", { wait: true });
 
     expect(status).toBe(200);
+    expect(redirected).toBe(true);
     expect(second.requests[0]!.headers["x-subscription-token"]).toBe("brave-secret");
+  });
+});
+
+describe("ctx.secrets.fetch: redirect metadata", () => {
+  it("reports redirected after following a query-secret redirect", async () => {
+    process.env[QUERY_ENV] = "query-secret";
+    const first = await startFakeHttp();
+    const second = await startFakeHttp();
+    first.respond({ status: 302, headers: { location: `${second.url}/next?x=1` } });
+    second.respond({ status: 200, body: JSON.stringify({ ok: true }) });
+    let redirected: boolean | undefined;
+    let responseUrl: string | undefined;
+    const caller = definePlugin(
+      "caller",
+      () => ({
+        tools: [
+          defineTool({
+            name: "redirect_query_allowed",
+            description: "Follow a query-secret redirect to an allowed host",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              const response = await ctx.secrets.fetch("query", `${first.url}/start`);
+              redirected = response.redirected;
+              responseUrl = response.url;
+              return "called";
+            },
+          }),
+        ],
+      }),
+      { secrets: ["query"] },
+    );
+    const faux = fauxModels("m1");
+    faux.respond([toolCall("redirect_query_allowed"), text("done")]);
+    const agent = await startTestAgent(
+      testDefinition({
+        secrets: {
+          query: {
+            from: `env:${QUERY_ENV}`,
+            apply: { query: "key" },
+            hosts: ["127.0.0.1"],
+          },
+        },
+        plugins: [{ plugin: caller, config: {} }],
+      }),
+      { models: faux.models },
+    );
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "go", { wait: true });
+
+    expect(redirected).toBe(true);
+    expect(responseUrl).not.toContain("query-secret");
+    const url = new URL(responseUrl!);
+    expect(url.searchParams.get("x")).toBe("1");
+    expect(url.searchParams.get("key")).toBe("[redacted]");
+    const followed = new URL(`http://127.0.0.1${second.requests[0]!.path}`);
+    expect(followed.searchParams.get("key")).toBe("query-secret");
   });
 });
 

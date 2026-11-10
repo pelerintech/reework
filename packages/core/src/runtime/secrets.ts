@@ -319,6 +319,7 @@ export class SecretsRuntime {
     }
     let method = init.method ?? "GET";
     let body = init.body;
+    let followed = false;
     let target: URL;
     try {
       target = new URL(url);
@@ -353,12 +354,12 @@ export class SecretsRuntime {
       }
       if (!REDIRECT_STATUSES.has(response.status)) {
         this.audit(plugin, name, "fetch", "used", conversationId);
-        return "query" in definition.apply ? redactResponseUrl(response, value) : response;
+        return responseView(response, "query" in definition.apply ? value : undefined, followed);
       }
       const location = response.headers.get("location");
       if (!location) {
         this.audit(plugin, name, "fetch", "used", conversationId);
-        return "query" in definition.apply ? redactResponseUrl(response, value) : response;
+        return responseView(response, "query" in definition.apply ? value : undefined, followed);
       }
       if (hop === MAX_REDIRECTS) {
         this.audit(plugin, name, "fetch", "refused", conversationId);
@@ -374,6 +375,7 @@ export class SecretsRuntime {
         body = undefined;
         headers.delete("content-length");
       }
+      followed = true;
       try {
         target = new URL(location, request);
       } catch (error) {
@@ -486,21 +488,25 @@ function hostAllowed(entry: string, url: URL): boolean {
   return port === undefined || port === effectivePort(url);
 }
 
-/** Replace a query secret value in the response URL the plugin sees. */
-function redactResponseUrl(response: Response, secret: string): Response {
-  let url: URL;
-  try {
-    url = new URL(response.url);
-  } catch {
-    return response;
+/** A response view with the plugin-visible URL and redirect flag. */
+function responseView(response: Response, secret?: string, followed = false): Response {
+  let url = response.url;
+  if (secret !== undefined) {
+    try {
+      const parsed = new URL(url);
+      let changed = false;
+      for (const [key, value] of parsed.searchParams) {
+        if (value !== secret) continue;
+        parsed.searchParams.set(key, "[redacted]");
+        changed = true;
+      }
+      if (changed) url = parsed.toString();
+    } catch {
+      // A URL the response reports but cannot be parsed stays as it is.
+    }
   }
-  let changed = false;
-  for (const [key, value] of url.searchParams) {
-    if (value !== secret) continue;
-    url.searchParams.set(key, "[redacted]");
-    changed = true;
-  }
-  if (!changed) return response;
+  const redirected = followed || response.redirected;
+  if (url === response.url && redirected === response.redirected) return response;
   const headers = new Headers(response.headers);
   headers.delete("content-length");
   headers.delete("content-encoding");
@@ -509,7 +515,8 @@ function redactResponseUrl(response: Response, secret: string): Response {
     statusText: response.statusText,
     headers,
   });
-  Object.defineProperty(copy, "url", { value: url.toString(), configurable: true });
+  Object.defineProperty(copy, "url", { value: url, configurable: true });
+  Object.defineProperty(copy, "redirected", { value: redirected, configurable: true });
   return copy;
 }
 
