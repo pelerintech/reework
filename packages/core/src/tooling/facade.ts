@@ -621,25 +621,61 @@ function attachFrameworkMetadata(
     framework.modelUsage = metadata.modelUsage as unknown as JsonValue;
   }
   if (metadata.external === true) framework.external = true;
-  if (details === undefined) return { reework: framework };
+  return mergeReework(details, framework);
+}
+
+/** Merge core metadata into a details object's `reework` slot, keeping plugin details. */
+function mergeReework(
+  details: JsonValue | undefined,
+  reework: { [key: string]: JsonValue },
+): JsonValue {
+  if (details === undefined) return { reework };
   if (typeof details === "object" && details !== null && !Array.isArray(details)) {
     const existing = details as { [key: string]: JsonValue };
     const current = existing["reework"];
-    const reework =
+    const merged =
       typeof current === "object" && current !== null && !Array.isArray(current)
-        ? { ...(current as { [key: string]: JsonValue }), ...framework }
-        : framework;
-    return { ...existing, reework };
+        ? { ...(current as { [key: string]: JsonValue }), ...reework }
+        : reework;
+    return { ...existing, reework: merged };
   }
-  return { value: details, reework: framework };
+  return { value: details, reework };
+}
+
+/** A details object's `reework` slot, when it carries one. */
+function reeworkOf(details: JsonValue | undefined): { [key: string]: JsonValue } | undefined {
+  if (typeof details !== "object" || details === null || Array.isArray(details)) return undefined;
+  const current = (details as { [key: string]: JsonValue })["reework"];
+  return typeof current === "object" && current !== null && !Array.isArray(current)
+    ? (current as { [key: string]: JsonValue })
+    : undefined;
 }
 
 /** Whether a result's details carry the framework's external flag. */
 function externalOfDetails(details: JsonValue | undefined): boolean {
-  if (typeof details !== "object" || details === null || Array.isArray(details)) return false;
-  const current = (details as { [key: string]: JsonValue })["reework"];
-  if (typeof current !== "object" || current === null || Array.isArray(current)) return false;
-  return (current as { [key: string]: JsonValue })["external"] === true;
+  return reeworkOf(details)?.["external"] === true;
+}
+
+/**
+ * Mark a result external and re-attach the framework's metadata, OR-ing the
+ * sticky flag. A hook's fresh object keeps the flag and the original spend.
+ */
+function markExternal(
+  result: ToolResult,
+  external: boolean,
+  base: { [key: string]: JsonValue } | undefined,
+): ToolResult {
+  const reework: { [key: string]: JsonValue } = { ...reeworkOf(result.details), ...base };
+  if (external) reework.external = true;
+  else delete reework.external;
+  const details =
+    Object.keys(reework).length > 0 ? mergeReework(result.details, reework) : result.details;
+  return {
+    output: result.output,
+    ...(result.isError === true ? { isError: true } : {}),
+    ...(details === undefined ? {} : { details }),
+    ...(external ? { external: true } : {}),
+  };
 }
 
 /** Sum the spend of a tool call's named-model calls into one usage record. */
@@ -1070,9 +1106,10 @@ export function buildToolHooks(
       return { arguments: args as never };
     },
     async afterTool(call, result, api, context) {
-      let current = durableResultToRework(result);
       const external = toolIsExternal(call.name);
-      if (external) current = { ...current, external: true };
+      const base = reeworkOf(result.details);
+      let flag = external || externalOfDetails(result.details);
+      let current = markExternal(durableResultToRework(result), flag, base);
       for (let i = 0; i < plugins.length; i++) {
         const p = plugins[i];
         if (!p.hooks?.afterTool) continue;
@@ -1086,7 +1123,10 @@ export function buildToolHooks(
           current,
           makeHookContext(p.name, api, context, bindings),
         );
-        if (next) current = next;
+        if (next) {
+          flag = flag || next.external === true || externalOfDetails(next.details);
+          current = markExternal(next, flag, base);
+        }
       }
       return toDurableResult(current);
     },

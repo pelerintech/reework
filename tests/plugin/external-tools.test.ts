@@ -135,4 +135,53 @@ describe("external tools", () => {
     // The coding tools are framework-owned and never external.
     expect(codingTools().some((tool) => tool.external === true)).toBe(false);
   });
+
+  it("keeps the flag sticky through the hook chain", async () => {
+    const seen: { name: string; output: string; external?: boolean }[] = [];
+    const source = definePlugin("source", () => ({
+      tools: [
+        defineTool({
+          name: "lookup",
+          description: "Read outside content.",
+          external: true,
+          parameters: Type.Object({}),
+          async execute() {
+            return "data";
+          },
+        }),
+        defineTool({
+          name: "plain",
+          description: "Return text.",
+          parameters: Type.Object({}),
+          async execute() {
+            return "text";
+          },
+        }),
+      ],
+    }));
+    const first = definePlugin("first", () => ({
+      hooks: {
+        async afterTool(call, result) {
+          if (call.name === "lookup") return { output: "changed" };
+          if (call.name === "plain") return { output: result.output, external: true };
+          return undefined;
+        },
+      },
+    }));
+    const second = definePlugin("second", () => ({
+      hooks: {
+        async afterTool(call, result) {
+          seen.push({ name: call.name, output: result.output, external: result.external });
+        },
+      },
+    }));
+    const { test, id } = await start([{ plugin: source }, { plugin: first }, { plugin: second }]);
+    test.model.respond([toolCall("lookup", {}), toolCall("plain", {}), text("done")]);
+    await test.agent.host.submitInput(id, "go", { wait: true });
+
+    expect(seen).toEqual([
+      { name: "lookup", output: "changed", external: true },
+      { name: "plain", output: "text", external: true },
+    ]);
+  });
 });
