@@ -1,5 +1,6 @@
 import { defineDoc } from "@earendil-works/pi-durable";
 import type { Proposal, ProposalAttachment } from "@reework/types";
+import type { GateAudience } from "@reework/types";
 import type { Engine } from "../engine.ts";
 import { CONTEXT } from "../engine.ts";
 import { GateDecisionDoc, notifyProposalOpen } from "../hitl/gate.ts";
@@ -14,6 +15,8 @@ export type OpenProposal = {
   options: { id: string; label: string; description?: string }[];
   attachments?: ProposalAttachment[];
   acceptFreeForm: boolean;
+  /** Who may decide; absent on proposals stored before audiences existed (read as `human`). */
+  audience?: GateAudience;
   createdAt: number;
   status: "open" | "settled";
 };
@@ -79,7 +82,7 @@ export async function listOpenProposals(engine: Engine): Promise<Proposal[]> {
   const doc = await engine.harness.snapshot(ProposalsDoc, CONTEXT);
   return (doc?.proposals ?? [])
     .filter((p) => p.status === "open")
-    .map(({ status: _status, ...rest }) => rest);
+    .map(({ status: _status, ...rest }) => ({ ...rest, audience: rest.audience ?? "human" }));
 }
 
 /**
@@ -95,6 +98,7 @@ export async function listSettledProposals(engine: Engine): Promise<Proposal[]> 
     const decision = (await engine.harness.snapshot(GateDecisionDoc, record.id, CONTEXT))?.decision;
     settled.push({
       ...proposal,
+      audience: proposal.audience ?? "human",
       ...(decision === null || decision === undefined
         ? {}
         : {

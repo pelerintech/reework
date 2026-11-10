@@ -354,10 +354,15 @@ export type ProposalAttachment =
       size?: number;
     };
 
+/** Who may decide a gate: a human only (the default), or a human or an agent. */
+export type GateAudience = "human" | "human-or-agent";
+
 export interface Proposal {
   id: string;
   conversationId: string;
   title: string;
+  /** Who may decide this proposal; stored proposals without one read as `human`. */
+  audience: GateAudience;
   description?: string;
   /** Evidence and proposed changes (diagnosis, logs, a diff, test output). */
   attachments?: ProposalAttachment[];
@@ -379,6 +384,7 @@ export function isProposal(value: unknown): value is Proposal {
     typeof p.id === "string" &&
     typeof p.conversationId === "string" &&
     typeof p.title === "string" &&
+    (p.audience === "human" || p.audience === "human-or-agent") &&
     Array.isArray(p.options) &&
     typeof p.acceptFreeForm === "boolean" &&
     (p.attachments === undefined || Array.isArray(p.attachments))

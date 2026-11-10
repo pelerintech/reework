@@ -38,6 +38,7 @@ describe("shared types contracts", () => {
       id: "p1",
       conversationId: "conv-1",
       title: "Approve refund",
+      audience: "human",
       options: [{ id: "refund", label: "Refund" }],
       acceptFreeForm: true,
       createdAt: 1,

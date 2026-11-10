@@ -8,6 +8,7 @@ import type {
 } from "@earendil-works/pi-durable";
 import type { JsonValue } from "@earendil-works/chord";
 import type { GateDecision, ModelCallUsage, Proposal } from "@reework/types";
+import type { GateAudience } from "@reework/types";
 import type { Engine } from "../engine.ts";
 import { CONTEXT } from "../engine.ts";
 import { markProposalSettled, ProposalsDoc, publishProposal } from "../protocol/proposals.ts";
@@ -33,6 +34,8 @@ export interface GateProposal {
   /** Finite offered choices (may be empty for free-form-only gates). */
   options: ProposalOption[];
   acceptFreeForm: boolean;
+  /** Who may decide; absent means `human`. */
+  audience?: GateAudience;
 }
 
 export interface GateOutcome {
@@ -176,7 +179,7 @@ async function settledProposal(engine: Engine, proposalId: string): Promise<Prop
   const found = doc?.proposals.find((p) => p.id === proposalId);
   if (!found) return undefined;
   const { status: _status, ...proposal } = found;
-  return proposal;
+  return { ...proposal, audience: proposal.audience ?? "human" };
 }
 
 // ---------------------------------------------------------------------------
@@ -302,6 +305,7 @@ function createHitlTasks(state: HitlState) {
         const { proposal, createdAt } = task.input;
         notifyProposalOpen(state, {
           ...proposal,
+          audience: proposal.audience ?? "human",
           conversationId: String(runtime.conversationId),
           createdAt,
         });
@@ -478,6 +482,7 @@ export async function openGatedAction(
     id: proposal.id,
     conversationId: String(root.id),
     title: proposal.title,
+    audience: proposal.audience ?? "human",
     options: proposal.options,
     acceptFreeForm: proposal.acceptFreeForm,
     createdAt: Date.now(),
