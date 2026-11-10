@@ -99,6 +99,19 @@ describe("gateway backend: fetch and raw", () => {
   });
 });
 
+describe("gateway backend: startup validation", () => {
+  it("fails naming an unset gateway token variable", async () => {
+    delete process.env[BOX_TOKEN];
+    await expect(
+      startTestAgent(
+        testDefinition({
+          secretsBackend: { kind: "gateway", url: "http://127.0.0.1:1", tokenEnv: BOX_TOKEN },
+        }),
+      ),
+    ).rejects.toThrow(new RegExp(BOX_TOKEN));
+  });
+});
+
 describe("gateway backend: model calls", () => {
   it("uses the gateway upstream path and lets the gateway add the provider key", async () => {
     process.env[BOX_TOKEN] = "box-token";

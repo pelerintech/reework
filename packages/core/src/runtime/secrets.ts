@@ -123,6 +123,10 @@ export class SecretsRuntime {
         }
       }
     }
+  }
+
+  /** Fail startup when the gateway backend's token variable is unset. */
+  validateGatewayToken(): void {
     if (this.backend.kind === "gateway" && !process.env[this.backend.tokenEnv]) {
       throw new Error(`secret gateway token variable ${this.backend.tokenEnv} is not set`);
     }

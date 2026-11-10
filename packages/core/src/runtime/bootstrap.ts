@@ -105,6 +105,7 @@ export async function startAgent(
     agent.secretsBackend,
   );
   secrets.validate();
+  secrets.validateGatewayToken();
   validateModelKeys(agent);
   const models = options.models ?? customModels(agent.model, agent.models, secrets);
   const lifecycle = new AbortController();
