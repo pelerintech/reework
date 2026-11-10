@@ -593,20 +593,34 @@ function toDurableResult(
           ...(result.isError === true ? { isError: true } : {}),
           ...(result.details === undefined ? {} : { details: result.details }),
         };
-  if (modelCalls.length === 0) return base;
+  const metadata: FrameworkMetadata = {
+    ...(modelCalls.length > 0 ? { modelUsage: modelUsageOf(modelCalls) } : {}),
+    ...(typeof result !== "string" && result.external === true ? { external: true } : {}),
+  };
+  if (metadata.modelUsage === undefined && metadata.external === undefined) return base;
   return {
     ...base,
-    details: attachModelUsage(base.details, modelUsageOf(modelCalls)),
-    usage: sumUsage(modelCalls),
+    details: attachFrameworkMetadata(base.details, metadata),
+    ...(modelCalls.length > 0 ? { usage: sumUsage(modelCalls) } : {}),
   };
 }
 
-/** Add the framework's spend record beside a tool's own details. */
-function attachModelUsage(
+/** Core metadata carried in `details.reework`: model spend and the external flag. */
+interface FrameworkMetadata {
+  readonly modelUsage?: readonly ModelCallUsage[];
+  readonly external?: boolean;
+}
+
+/** Add the framework's metadata beside a tool's own details. */
+function attachFrameworkMetadata(
   details: JsonValue | undefined,
-  modelUsage: readonly ModelCallUsage[],
+  metadata: FrameworkMetadata,
 ): JsonValue {
-  const framework = { modelUsage: modelUsage as unknown as JsonValue };
+  const framework: { [key: string]: JsonValue } = {};
+  if (metadata.modelUsage !== undefined) {
+    framework.modelUsage = metadata.modelUsage as unknown as JsonValue;
+  }
+  if (metadata.external === true) framework.external = true;
   if (details === undefined) return { reework: framework };
   if (typeof details === "object" && details !== null && !Array.isArray(details)) {
     const existing = details as { [key: string]: JsonValue };
@@ -618,6 +632,14 @@ function attachModelUsage(
     return { ...existing, reework };
   }
   return { value: details, reework: framework };
+}
+
+/** Whether a result's details carry the framework's external flag. */
+function externalOfDetails(details: JsonValue | undefined): boolean {
+  if (typeof details !== "object" || details === null || Array.isArray(details)) return false;
+  const current = (details as { [key: string]: JsonValue })["reework"];
+  if (typeof current !== "object" || current === null || Array.isArray(current)) return false;
+  return (current as { [key: string]: JsonValue })["external"] === true;
 }
 
 /** Sum the spend of a tool call's named-model calls into one usage record. */
@@ -1310,5 +1332,6 @@ function durableResultToRework(result: ToolExecutionResult): ToolResult {
     output,
     ...(result.isError === true ? { isError: true } : {}),
     ...(result.details === undefined ? {} : { details: result.details }),
+    ...(externalOfDetails(result.details) ? { external: true } : {}),
   } as ToolResult;
 }

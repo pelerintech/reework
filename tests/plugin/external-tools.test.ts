@@ -1,7 +1,7 @@
 // External tools: a tool declares that its output is outside content, and the
 // result-level flag marks one result; both reach hooks and later model requests.
 import { afterEach, describe, expect, it } from "vitest";
-import { definePlugin, defineTool, Type } from "@reework/core";
+import { codingTools, definePlugin, defineTool, gatedAction, Type } from "@reework/core";
 import type { AgentDefinition, ReeworkPlugin } from "@reework/core";
 import { startTestAgent, text, toolCall } from "@reework/core/testing";
 import type { TestAgent } from "@reework/core/testing";
@@ -62,5 +62,77 @@ describe("external tools", () => {
     await test.agent.host.submitInput(id, "go", { wait: true });
 
     expect(seen).toEqual([{ call: true, result: true }]);
+  });
+
+  it("lets an unflagged tool mark one result external", async () => {
+    const seen: (boolean | undefined)[] = [];
+    const read = definePlugin("reader", () => ({
+      tools: [
+        defineTool({
+          name: "read",
+          description: "Read a source.",
+          parameters: Type.Object({ outside: Type.Boolean() }),
+          async execute(args) {
+            return args.outside ? { output: "x", external: true } : "plain";
+          },
+        }),
+      ],
+    }));
+    const observer = definePlugin("observer", () => ({
+      hooks: {
+        async afterTool(_call, result) {
+          seen.push(result.external);
+        },
+      },
+    }));
+    const { test, id } = await start([{ plugin: read }, { plugin: observer }]);
+    test.model.respond([
+      toolCall("read", { outside: true }),
+      toolCall("read", { outside: false }),
+      text("done"),
+    ]);
+    await test.agent.host.submitInput(id, "go", { wait: true });
+
+    expect(seen).toEqual([true, undefined]);
+  });
+
+  it("leaves plain tools, gated actions and coding tools unflagged", async () => {
+    const seen: { call?: boolean; result?: boolean }[] = [];
+    const source = definePlugin("plain-source", () => ({
+      tools: [
+        defineTool({
+          name: "plain",
+          description: "Return text.",
+          parameters: Type.Object({}),
+          async execute() {
+            return "text";
+          },
+        }),
+        gatedAction({
+          name: "apply",
+          gate: { title: "Apply?" },
+          async run() {
+            return "applied";
+          },
+        }),
+      ],
+    }));
+    const observer = definePlugin("observer", () => ({
+      hooks: {
+        async afterTool(call, result) {
+          seen.push({ call: call.external, result: result.external });
+        },
+      },
+    }));
+    const { test, id } = await start([{ plugin: source }, { plugin: observer }]);
+    test.model.respond([toolCall("plain", {}), toolCall("apply", {}), text("done")]);
+    await test.agent.host.submitInput(id, "go", { wait: true });
+
+    expect(seen).toEqual([
+      { call: false, result: undefined },
+      { call: false, result: undefined },
+    ]);
+    // The coding tools are framework-owned and never external.
+    expect(codingTools().some((tool) => tool.external === true)).toBe(false);
   });
 });
