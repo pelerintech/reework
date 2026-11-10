@@ -11,10 +11,12 @@ import { fauxModels, startTestAgent, testDefinition } from "../support/agent.ts"
 import { startFakeHttp } from "../support/fake-http.ts";
 
 const MISSING_ENV = "REEWORK_TEST_MISSING_SECRET";
+const LLM_ENV = "REEWORK_TEST_LLM_SECRET";
 const dirs: string[] = [];
 
 afterEach(() => {
   delete process.env[MISSING_ENV];
+  delete process.env[LLM_ENV];
   while (dirs.length > 0) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
 
@@ -44,6 +46,59 @@ describe("secret definitions: startup validation", () => {
         }),
       ),
     ).rejects.toThrow(/secret "brave"/);
+  });
+});
+
+describe("secret definitions: malformed definitions", () => {
+  it("fails naming an unknown from form", async () => {
+    await expect(
+      startTestAgent(
+        definition({
+          odd: { from: "vault:key", apply: { header: "X-Key" }, hosts: ["127.0.0.1"] },
+        }),
+      ),
+    ).rejects.toThrow(/secret "odd".*unknown from/);
+  });
+
+  it("fails naming a definition that sets both header and query", async () => {
+    await expect(
+      startTestAgent(
+        definition({
+          both: {
+            from: `env:${MISSING_ENV}`,
+            apply: { header: "X-Key", query: "key" } as never,
+            hosts: ["127.0.0.1"],
+          },
+        }),
+      ),
+    ).rejects.toThrow(/secret "both".*exactly one of header or query/);
+  });
+
+  it("fails naming a fetchable secret without hosts", async () => {
+    await expect(
+      startTestAgent(
+        definition({
+          fetchable: { from: `env:${MISSING_ENV}`, apply: { header: "X-Key" } },
+        }),
+      ),
+    ).rejects.toThrow(/secret "fetchable".*hosts/);
+  });
+
+  it("accepts a model-key secret without hosts", async () => {
+    process.env[LLM_ENV] = "llm-key";
+    const agent = await startTestAgent(
+      testDefinition({
+        model: {
+          provider: {
+            baseUrl: "http://127.0.0.1:1",
+            apiKey: { secret: "llm" },
+          },
+          modelId: "m1",
+        },
+        secrets: { llm: { from: `env:${LLM_ENV}` } },
+      }),
+    );
+    expect(agent.agent.name).toBe("test-agent");
   });
 });
 

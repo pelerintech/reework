@@ -6,6 +6,7 @@ import type { MutableModels } from "@earendil-works/pi-ai/models";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import type { ProviderStreams } from "@earendil-works/pi-ai";
 import type { AgentModel, AgentModelApi } from "../agent-definition.ts";
+import type { SecretsRuntime } from "./secrets.ts";
 
 /** Provider id under which the agent's model is registered and selected. */
 export const MODEL_PROVIDER_ID = "reework.custom";
@@ -24,14 +25,15 @@ const STREAMS = {
 export function customModels(
   model: AgentModel,
   named: Record<string, AgentModel> = {},
+  secrets?: SecretsRuntime,
 ): MutableModels {
   const models = createModels();
-  models.setProvider(agentModelProvider(MODEL_PROVIDER_ID, model));
+  models.setProvider(agentModelProvider(MODEL_PROVIDER_ID, model, secrets));
   for (const [name, def] of Object.entries(named)) {
     if (name === "main") {
       throw new Error(`model name "main" is reserved; it names the conversation model`);
     }
-    models.setProvider(agentModelProvider(`reework.model.${name}`, def));
+    models.setProvider(agentModelProvider(`reework.model.${name}`, def, secrets));
   }
   return models;
 }
@@ -40,26 +42,16 @@ export function customModels(
 function agentModelProvider(
   providerId: string,
   model: AgentModel,
+  secrets?: SecretsRuntime,
 ): ReturnType<typeof createProvider> {
-  const { baseUrl, apiKeyEnv } = model.provider;
+  const { baseUrl } = model.provider;
   const api = model.provider.api ?? "openai-completions";
-  if (!process.env[apiKeyEnv]) {
-    throw new Error(`model API key variable ${apiKeyEnv} is not set`);
-  }
   const { contextWindow, maxTokens } = modelLimits(model);
   return createProvider({
     id: providerId,
     name: providerId,
     baseUrl,
-    auth: {
-      apiKey: {
-        name: `API key from ${apiKeyEnv}`,
-        resolve: async () => {
-          const key = process.env[apiKeyEnv];
-          return key ? { auth: { apiKey: key }, source: apiKeyEnv } : undefined;
-        },
-      },
-    },
+    auth: { apiKey: modelApiKeyAuth(model, secrets) },
     models: [
       {
         id: model.modelId,
@@ -76,6 +68,34 @@ function agentModelProvider(
     ],
     api: { [api]: limitRequests(STREAMS[api](), model.maxConcurrentRequests) },
   });
+}
+
+/** How the provider authenticates: an env variable or a declared secret. */
+function modelApiKeyAuth(model: AgentModel, secrets?: SecretsRuntime) {
+  const { apiKeyEnv, apiKey } = model.provider;
+  if (apiKeyEnv !== undefined) {
+    if (!process.env[apiKeyEnv]) {
+      throw new Error(`model API key variable ${apiKeyEnv} is not set`);
+    }
+    return {
+      name: `API key from ${apiKeyEnv}`,
+      resolve: async () => {
+        const key = process.env[apiKeyEnv];
+        return key ? { auth: { apiKey: key }, source: apiKeyEnv } : undefined;
+      },
+    };
+  }
+  if (apiKey !== undefined) {
+    const secret = apiKey.secret;
+    return {
+      name: `API key from secret ${secret}`,
+      resolve: async () => {
+        if (!secrets) throw new Error(`secret "${secret}" is not wired in this build`);
+        return { auth: { apiKey: secrets.resolve(secret) }, source: `secret:${secret}` };
+      },
+    };
+  }
+  throw new Error(`model provider ${model.provider.baseUrl} has no API key source`);
 }
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;

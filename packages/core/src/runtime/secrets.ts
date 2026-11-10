@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import type { SecretDefinition } from "../agent-definition.ts";
+import type { AgentDefinition, AgentModel, SecretDefinition } from "../agent-definition.ts";
 
 /**
  * The agent's secrets: definitions are validated before the engine opens, and
@@ -8,21 +8,41 @@ import type { SecretDefinition } from "../agent-definition.ts";
  */
 export class SecretsRuntime {
   private readonly definitions: Record<string, SecretDefinition>;
+  private readonly modelKeySecrets: ReadonlySet<string>;
 
-  constructor(definitions: Record<string, SecretDefinition>) {
+  constructor(
+    definitions: Record<string, SecretDefinition>,
+    modelKeySecrets: ReadonlySet<string> = new Set(),
+  ) {
     this.definitions = definitions;
+    this.modelKeySecrets = modelKeySecrets;
   }
 
-  /** Fail startup for a declared secret whose local source is missing. */
+  /** Fail startup for a malformed definition or a missing local source. */
   validate(): void {
     for (const [name, definition] of Object.entries(this.definitions)) {
-      if (definition.from.startsWith("env:")) {
+      const from = definition.from;
+      const env = from.startsWith("env:") && from.length > "env:".length;
+      const file = from.startsWith("file:") && from.length > "file:".length;
+      if (!env && !file) {
+        throw new Error(
+          `secret "${name}": unknown from form "${from}" (expected env:VAR or file:/path)`,
+        );
+      }
+      const apply = definition.apply;
+      if (apply && "header" in apply && "query" in apply) {
+        throw new Error(`secret "${name}": apply must set exactly one of header or query`);
+      }
+      if (!this.modelKeySecrets.has(name) && (!definition.hosts || definition.hosts.length === 0)) {
+        throw new Error(`secret "${name}": hosts is required for a fetchable secret`);
+      }
+      if (env) {
         const variable = definition.from.slice("env:".length);
         if (!process.env[variable]) {
           throw new Error(`secret "${name}" environment variable ${variable} is not set`);
         }
-      } else if (definition.from.startsWith("file:")) {
-        const path = definition.from.slice("file:".length);
+      } else if (file) {
+        const path = from.slice("file:".length);
         try {
           readFileSync(path, "utf8");
         } catch {
@@ -78,6 +98,18 @@ export class SecretsRuntime {
   get(_plugin: string, name: string): Promise<string> {
     return Promise.resolve(this.resolve(name));
   }
+}
+
+/** The secret names a model provider uses as its API key. */
+export function modelSecretNames(agent: AgentDefinition): Set<string> {
+  const names = new Set<string>();
+  const collect = (model: AgentModel | undefined) => {
+    const secret = model?.provider.apiKey?.secret;
+    if (secret) names.add(secret);
+  };
+  collect(agent.model);
+  for (const model of Object.values(agent.models ?? {})) collect(model);
+  return names;
 }
 
 export interface SecretsAccess {

@@ -20,7 +20,9 @@ export interface AgentModelProvider {
    */
   baseUrl: string;
   /** Name of the environment variable holding the API key; checked at startup. */
-  apiKeyEnv: string;
+  apiKeyEnv?: string;
+  /** A declared secret holding the API key, instead of `apiKeyEnv`. */
+  apiKey?: { readonly secret: string };
   /** Wire protocol of the endpoint. Default: `openai-completions`. */
   api?: AgentModelApi;
 }
