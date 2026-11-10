@@ -57,7 +57,7 @@ export async function startHangingHttp(): Promise<{ url: string; close: () => Pr
   return fake;
 }
 
-export async function startFakeHttp(): Promise<FakeHttp> {
+export async function startFakeHttp(host = "127.0.0.1"): Promise<FakeHttp> {
   const requests: RecordedHttpRequest[] = [];
   const queue: FakeHttpReply[] = [];
   const server = createServer((req, res) => {
@@ -78,10 +78,11 @@ export async function startFakeHttp(): Promise<FakeHttp> {
       res.end(reply.body ?? "");
     });
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => server.listen(0, host, resolve));
   const { port } = server.address() as AddressInfo;
+  const authority = host.includes(":") ? `[${host}]` : host;
   const fake: FakeHttp = {
-    url: `http://127.0.0.1:${port}`,
+    url: `http://${authority}:${port}`,
     requests,
     respond: (...replies) => queue.push(...replies),
     close: () => new Promise((resolve) => server.close(() => resolve())),

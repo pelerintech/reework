@@ -23,6 +23,54 @@ afterEach(() => {
   delete process.env[QUERY_ENV];
 });
 
+/** Fetch `url` with a brave secret restricted to `hosts`; returns status or error. */
+async function fetchWithHosts(
+  hosts: string[],
+  url: string,
+): Promise<{ status?: number; error?: unknown }> {
+  process.env[BRAVE_ENV] = "brave-secret";
+  let status: number | undefined;
+  let error: unknown;
+  const caller = definePlugin(
+    "caller",
+    () => ({
+      tools: [
+        defineTool({
+          name: "call_host",
+          description: "Call a target with a restricted secret",
+          parameters: Type.Object({}),
+          async execute(_args, ctx) {
+            await ctx.secrets.fetch("brave", url).then(
+              (response) => {
+                status = response.status;
+              },
+              (failure: unknown) => {
+                error = failure;
+              },
+            );
+            return "done";
+          },
+        }),
+      ],
+    }),
+    { secrets: ["brave"] },
+  );
+  const faux = fauxModels("m1");
+  faux.respond([toolCall("call_host"), text("done")]);
+  const agent = await startTestAgent(
+    testDefinition({
+      secrets: {
+        brave: { from: `env:${BRAVE_ENV}`, apply: { header: "X-Key" }, hosts },
+      },
+      plugins: [{ plugin: caller, config: {} }],
+    }),
+    { models: faux.models },
+  );
+  const { id } = await agent.host.createConversation();
+  await agent.host.submitInput(id, "go", { wait: true });
+  return { status, error };
+}
+
 describe("ctx.secrets.fetch: applying a secret", () => {
   it("applies a header secret and returns a response without the value", async () => {
     process.env[BRAVE_ENV] = "brave-secret";
@@ -342,6 +390,45 @@ describe("ctx.secrets.fetch: redirects", () => {
 
     expect(status).toBe(200);
     expect(second.requests[0]!.headers["x-subscription-token"]).toBe("brave-secret");
+  });
+});
+
+describe("ctx.secrets.fetch: host entries", () => {
+  it("restricts a host:port entry to that port", async () => {
+    const target = await startFakeHttp();
+    const port = new URL(target.url).port;
+    const allowed = await fetchWithHosts([`127.0.0.1:${port}`], `${target.url}/x`);
+    expect(allowed.status).toBe(200);
+    expect(target.requests).toHaveLength(1);
+
+    const wrongPort = await fetchWithHosts([`127.0.0.1:${Number(port) + 1}`], `${target.url}/x`);
+    expect(wrongPort.error).toBeInstanceOf(Error);
+    const message = wrongPort.error instanceof Error ? wrongPort.error.message : "";
+    expect(message).toContain("brave");
+    expect(message).toContain("127.0.0.1");
+    expect(target.requests).toHaveLength(1);
+  });
+
+  it("treats ::1 and [::1] as equivalent hosts", async () => {
+    const target = await startFakeHttp("::1");
+    const bare = await fetchWithHosts(["::1"], `${target.url}/x`);
+    expect(bare.status).toBe(200);
+    expect(target.requests).toHaveLength(1);
+
+    const bracketed = await fetchWithHosts(["[::1]"], `${target.url}/x`);
+    expect(bracketed.status).toBe(200);
+    expect(target.requests).toHaveLength(2);
+  });
+
+  it("allows any port for a plain host", async () => {
+    const first = await startFakeHttp();
+    const second = await startFakeHttp();
+    const a = await fetchWithHosts(["127.0.0.1"], `${first.url}/x`);
+    const b = await fetchWithHosts(["127.0.0.1"], `${second.url}/x`);
+    expect(a.status).toBe(200);
+    expect(b.status).toBe(200);
+    expect(first.requests).toHaveLength(1);
+    expect(second.requests).toHaveLength(1);
   });
 });
 

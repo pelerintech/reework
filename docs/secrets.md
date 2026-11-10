@@ -41,6 +41,8 @@ A definition has three parts:
 | `hosts` | Hostnames that may receive the secret through `fetch`. Required for a fetchable secret.            |
 
 File values are trimmed (leading and trailing whitespace, including a trailing newline) when they are read.
+A `hosts` entry is a plain host (any port) or `host:port` (only that port); IPv6 literals may be written `::1`
+or `[::1]`, and the two forms are equivalent.
 
 A model-key secret (`apiKey: { secret: "llm" }`) needs no `hosts`, and neither does a secret used only through
 `get` (it has no `apply` rule). A secret with `apply` is fetchable and needs a non-empty `hosts`. Startup rejects

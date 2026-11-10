@@ -302,10 +302,9 @@ export class SecretsRuntime {
     let body = init.body;
     let target = new URL(url);
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-      const host = target.hostname;
-      if (!allowed.some((entry) => entry.toLowerCase() === host.toLowerCase())) {
+      if (!allowed.some((entry) => hostAllowed(entry, target))) {
         this.audit(plugin, name, "fetch", "refused", conversationId);
-        throw new Error(`secret "${name}" may not be sent to host "${host}"`);
+        throw new Error(`secret "${name}" may not be sent to host "${hostLabel(target)}"`);
       }
       const request = new URL(target);
       if ("header" in definition.apply) {
@@ -332,7 +331,7 @@ export class SecretsRuntime {
       }
       if (hop === MAX_REDIRECTS) {
         this.audit(plugin, name, "fetch", "refused", conversationId);
-        throw new Error(`secret "${name}" redirect limit exceeded at host "${host}"`);
+        throw new Error(`secret "${name}" redirect limit exceeded at host "${hostLabel(target)}"`);
       }
       if (
         response.status === 303 ||
@@ -404,6 +403,45 @@ export function modelSecretNames(agent: AgentDefinition): Set<string> {
   collect(agent.model);
   for (const model of Object.values(agent.models ?? {})) collect(model);
   return names;
+}
+
+/** A host entry's host and optional port: `[::1]:8080`, `example.com:443`, `::1`. */
+function splitHostEntry(entry: string): { host: string; port?: string } {
+  const value = entry.trim();
+  if (value.startsWith("[")) {
+    const match = /^\[(.+)\](?::(\d+))?$/.exec(value);
+    if (match) return { host: match[1]!, port: match[2] };
+  }
+  const colon = value.lastIndexOf(":");
+  if (colon > 0 && value.indexOf(":") === colon) {
+    const port = value.slice(colon + 1);
+    if (/^\d+$/.test(port)) return { host: value.slice(0, colon), port };
+  }
+  return { host: value };
+}
+
+function normalizedHost(host: string): string {
+  return host.replace(/^\[|\]$/g, "").toLowerCase();
+}
+
+/** The URL's effective port, including the protocol default. */
+function effectivePort(url: URL): string {
+  if (url.port) return url.port;
+  if (url.protocol === "http:") return "80";
+  if (url.protocol === "https:") return "443";
+  return "";
+}
+
+/** The host and port a refusal names. */
+function hostLabel(url: URL): string {
+  return url.port ? `${url.hostname}:${url.port}` : url.hostname;
+}
+
+/** Whether `url` matches a host entry; a plain host allows any port. */
+function hostAllowed(entry: string, url: URL): boolean {
+  const { host, port } = splitHostEntry(entry);
+  if (normalizedHost(host) !== normalizedHost(url.hostname)) return false;
+  return port === undefined || port === effectivePort(url);
 }
 
 /** Replace a query secret value in the response URL the plugin sees. */
