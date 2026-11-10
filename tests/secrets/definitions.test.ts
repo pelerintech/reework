@@ -106,20 +106,24 @@ describe("secret definitions: file-backed secrets", () => {
   it("resolves a file secret and sends it as the configured header", async () => {
     const target = await startFakeHttp();
     let status: number | undefined;
-    const caller = definePlugin("caller", () => ({
-      tools: [
-        defineTool({
-          name: "call_target",
-          description: "Call the target with a file-backed secret",
-          parameters: Type.Object({}),
-          async execute(_args, ctx) {
-            const response = await ctx.secrets.fetch("filekey", `${target.url}/x`);
-            status = response.status;
-            return "called";
-          },
-        }),
-      ],
-    }));
+    const caller = definePlugin(
+      "caller",
+      () => ({
+        tools: [
+          defineTool({
+            name: "call_target",
+            description: "Call the target with a file-backed secret",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              const response = await ctx.secrets.fetch("filekey", `${target.url}/x`);
+              status = response.status;
+              return "called";
+            },
+          }),
+        ],
+      }),
+      { secrets: ["filekey"] },
+    );
     const faux = fauxModels("m1");
     faux.respond([toolCall("call_target"), text("done")]);
     const agent = await startTestAgent(
