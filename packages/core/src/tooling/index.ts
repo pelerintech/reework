@@ -48,6 +48,8 @@ export type {
   PluginStoreItem,
   CaseFiles,
   CaseContext,
+  PluginCases,
+  PluginDecision,
   WorkspaceProvider,
   WorkspaceTarget,
 } from "./facade.ts";

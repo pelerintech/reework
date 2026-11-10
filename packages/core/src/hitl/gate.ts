@@ -53,6 +53,8 @@ export interface GatedActionRunContext {
   files: ToolContext["files"];
   store: ToolContext["store"];
   case: ToolContext["case"];
+  /** Other cases, when the plugin declared `{ cases: true }`. */
+  cases?: ToolContext["cases"];
 }
 
 export interface GatedToolResult {
@@ -327,6 +329,7 @@ function createHitlTasks(state: HitlState) {
             state.bindings,
             registered.plugin,
             (call) => modelCalls.push(call),
+            true,
           ),
         };
         const branch = decision.selectedOption ?? (decision.instruction ? "instruction" : "abort");

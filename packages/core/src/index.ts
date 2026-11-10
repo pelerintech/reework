@@ -18,6 +18,7 @@ export type {
   ConversationRead,
   ConversationSnapshot,
   CreateConversationOptions,
+  ListCasesFilter,
   SubmitOptions,
   SubmitResult,
 } from "./host.ts";
@@ -57,6 +58,8 @@ export type {
   PluginModels,
   CaseFiles,
   CaseContext,
+  PluginCases,
+  PluginDecision,
   ReeworkPlugin,
   ReeworkTool,
   ToolContext,

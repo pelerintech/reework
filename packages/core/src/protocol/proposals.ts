@@ -2,7 +2,7 @@ import { defineDoc } from "@earendil-works/pi-durable";
 import type { Proposal, ProposalAttachment } from "@reework/types";
 import type { Engine } from "../engine.ts";
 import { CONTEXT } from "../engine.ts";
-import { notifyProposalOpen } from "../hitl/gate.ts";
+import { GateDecisionDoc, notifyProposalOpen } from "../hitl/gate.ts";
 import type { SettledProposal } from "../hitl/gate.ts";
 
 /** A proposal as recorded durably, with its open/settled status. */
@@ -80,4 +80,28 @@ export async function listOpenProposals(engine: Engine): Promise<Proposal[]> {
   return (doc?.proposals ?? [])
     .filter((p) => p.status === "open")
     .map(({ status: _status, ...rest }) => rest);
+}
+
+/**
+ * Return the settled proposals, each carrying the decision that settled it and
+ * who decided (read from the durable decision store).
+ */
+export async function listSettledProposals(engine: Engine): Promise<Proposal[]> {
+  const doc = await engine.harness.snapshot(ProposalsDoc, CONTEXT);
+  const settled: Proposal[] = [];
+  for (const record of doc?.proposals ?? []) {
+    if (record.status !== "settled") continue;
+    const { status: _status, ...proposal } = record;
+    const decision = (await engine.harness.snapshot(GateDecisionDoc, record.id, CONTEXT))?.decision;
+    settled.push({
+      ...proposal,
+      ...(decision === null || decision === undefined
+        ? {}
+        : {
+            decision,
+            ...(decision.decidedBy === undefined ? {} : { decidedBy: decision.decidedBy }),
+          }),
+    });
+  }
+  return settled;
 }
