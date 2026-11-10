@@ -72,6 +72,12 @@ export interface ModelUsage {
   readonly totalTokens: number;
 }
 
+/** A plugin stopped a run before its next model request, with its reason. */
+export interface RunStopNotice {
+  readonly plugin: string;
+  readonly reason: string;
+}
+
 /** A single conversation message in the shared reework vocabulary. */
 export interface Message {
   role: MessageRole;
@@ -296,6 +302,8 @@ export interface SnapshotEvent extends AgentEventBase {
   transcript?: TranscriptItem[];
   /** The conversation's case at snapshot time. */
   case?: Case;
+  /** The last plugin stop of this conversation's run, when a plugin stopped it. */
+  stopNotice?: RunStopNotice;
 }
 
 export type AgentEvent =

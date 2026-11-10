@@ -11,6 +11,7 @@ import type {
   FileRecord,
   Message,
   Proposal,
+  RunStopNotice,
   TranscriptItem,
 } from "@reework/types";
 import { isAuthor, normalizeAuthor } from "@reework/types";
@@ -26,6 +27,7 @@ import type { GateDecision } from "@reework/types";
 import type { ConversationRecord } from "./protocol/conversations.ts";
 import type { WorkspaceProvider } from "./tooling/facade.ts";
 import type { EventDispatcher } from "./runtime/events.ts";
+import { readStopNotice } from "./runtime/stop-notice.ts";
 
 /** A conversation as the protocol sees it. Ids are strings on the wire. */
 export interface ConversationInfo {
@@ -440,7 +442,16 @@ export class AgentHost {
     );
     const transcript = toTranscript(entries, running);
     const caseInfo = await this.getCase(id);
-    return { conversationId: id, messages, proposals, running, transcript, case: caseInfo };
+    const stopNotice = await readStopNotice(this.engine, id);
+    return {
+      conversationId: id,
+      messages,
+      proposals,
+      running,
+      transcript,
+      case: caseInfo,
+      ...(stopNotice ? { stopNotice } : {}),
+    };
   }
 
   /** Stop the conversation's current run. Background work such as open gates is untouched. */
@@ -491,6 +502,8 @@ export interface ConversationSnapshot {
   readonly transcript: readonly TranscriptItem[];
   /** The conversation's case at snapshot time. */
   readonly case: Case;
+  /** The last plugin stop of this conversation's run, when a plugin stopped it. */
+  readonly stopNotice?: RunStopNotice;
 }
 
 export class ConversationNotFound extends Error {

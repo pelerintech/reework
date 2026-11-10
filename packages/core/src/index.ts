@@ -37,6 +37,7 @@ export {
   isReeworkPlugin,
   isReeworkTool,
   markGatedTool,
+  ModelCallRefused,
   section,
   Type,
 } from "./tooling/index.ts";
@@ -48,6 +49,8 @@ export type {
   PluginHooks,
   PluginHookContext,
   PluginEventContext,
+  ModelUsageEvent,
+  ModelCallRequest,
   PluginStore,
   PluginStoreScope,
   PluginStoreItem,
@@ -64,7 +67,7 @@ export type {
   WorkspaceTarget,
 } from "./tooling/index.ts";
 
-export type { Author, AuthorKind, ModelCallUsage, ModelUsage } from "@reework/types";
+export type { Author, AuthorKind, ModelCallUsage, ModelUsage, RunStopNotice } from "@reework/types";
 export { isAuthor, normalizeAuthor, PLUGIN_ROUTE_PREFIX } from "@reework/types";
 
 export { createServer } from "./server/index.ts";

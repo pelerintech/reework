@@ -8,6 +8,7 @@ import type {
   AgentChange,
   ConversationId,
   HarnessSettings,
+  TaskId,
   ToolRegistration,
 } from "@earendil-works/pi-durable";
 import type { Models } from "@earendil-works/pi-ai/models";
@@ -19,22 +20,29 @@ import { installHITL } from "../hitl/gate.ts";
 import { AgentHost } from "../host.ts";
 import { createServer } from "../server/index.ts";
 import { protocolErrorResponse, requireToken } from "../server/app.ts";
-import { buildToolHooks, makePluginModels, toDurableTool, toExtension } from "../tooling/facade.ts";
+import {
+  buildModelCallHooks,
+  buildModelHooks,
+  buildToolHooks,
+  makeEventContext,
+  makePluginModels,
+  toDurableTool,
+  toExtension,
+} from "../tooling/facade.ts";
 import type {
   BuiltPlugin,
   PluginBindings,
-  PluginEventContext,
   PluginHooks,
   PluginRouteContext,
   ReeworkTool,
 } from "../tooling/facade.ts";
 import { caseExtension } from "../tooling/case-tool.ts";
 import { createPluginStore } from "../tooling/plugin-store.ts";
-import { createPluginContextMembers } from "../tooling/facade.ts";
 import { EventDispatcher } from "./events.ts";
 import { onProposalOpen, onProposalSettled } from "../protocol/proposals.ts";
 
 import { budgetExtension } from "./budget.ts";
+import { recordStopNotice } from "./stop-notice.ts";
 import { lockStorage } from "./lock.ts";
 import type { LockOptions } from "./lock.ts";
 import { customModels, MODEL_PROVIDER_ID } from "./models.ts";
@@ -122,6 +130,10 @@ export async function startAgent(
       catalog: models,
       lent: new Map(built.map((p) => [p.name, p.models])),
     };
+    bindings.beforeModelCall = buildModelCallHooks(
+      built.map((p) => ({ name: p.name, hooks: p.built.hooks })),
+      bindings,
+    );
 
     const registry = createRegistry();
     installHITL(registry, bindings);
@@ -142,6 +154,12 @@ export async function startAgent(
     );
     if (toolHooks)
       registry.install(defineExtension({ name: "reework.pluginHooks", hooks: [toolHooks] }));
+    const modelHooks = buildModelHooks(
+      built.map((p) => ({ name: p.name, hooks: p.built.hooks })),
+      bindings,
+    );
+    if (modelHooks)
+      registry.install(defineExtension({ name: "reework.modelHooks", hooks: [modelHooks] }));
     // The engine and host exist only once boot opens them (before any run resumes).
     const budget = budgetExtension(
       agent.limits,
@@ -215,22 +233,13 @@ async function boot(
       .filter(
         (plugin): plugin is { name: string; hooks: PluginHooks } => plugin.hooks !== undefined,
       ),
-    (plugin, conversationId) =>
-      ({
-        conversationId,
-        ...createPluginContextMembers(
-          createPluginStore(
-            { commit: (fn) => engine.commit(fn) },
-            plugin,
-            Number(conversationId) as unknown as ConversationId,
-          ),
-          conversationId,
-          bindings,
-          plugin,
-        ),
-      }) as PluginEventContext,
+    (plugin, conversationId) => makeEventContext(plugin, bindings, conversationId),
     lifecycle.signal,
   );
+  bindings.modelUsage = (event) => events.enqueue("onModelUsage", event.conversationId, event);
+  bindings.abortRun = (taskId) => engine.harness.abortTask(taskId as unknown as TaskId, CONTEXT);
+  bindings.recordStop = (conversationId, notice) =>
+    recordStopNotice(engine, conversationId, notice);
   onProposalOpen(engine, (proposal) => {
     events.enqueue("onProposalOpened", proposal.conversationId, { proposal });
   });

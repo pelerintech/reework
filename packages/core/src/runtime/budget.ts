@@ -5,6 +5,7 @@ import { defineExtension, GenerationTask, hook, ToolTask } from "@earendil-works
 import type { ConversationId, EntryRecord, Extension } from "@earendil-works/pi-durable";
 import { CONTEXT } from "../engine.ts";
 import type { Engine } from "../engine.ts";
+import { endRun } from "./abort.ts";
 
 export interface RunLimits {
   /** Tool rounds (one assistant reply's calls) allowed per run. Default unlimited. */
@@ -12,22 +13,6 @@ export interface RunLimits {
 }
 
 const PAGE = 100;
-/** How long a generation waits for its run's abort before going on regardless. */
-const ABORT_GRACE_MS = 5_000;
-
-/** Resolve when `signal` aborts (rejecting with its reason) or after `ms`. */
-function abortedOr(signal: AbortSignal | undefined, ms: number): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    if (!signal) return;
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(signal.reason ?? new Error("aborted"));
-    };
-    if (signal.aborted) return onAbort();
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-}
 
 /** An extension enforcing `limits`, or undefined when nothing is limited. */
 export function budgetExtension(
@@ -58,8 +43,7 @@ export function budgetExtension(
           const rounds = await roundsSinceInput(engine(), api.conversationId);
           if (rounds <= budget + 1) return undefined;
           const signal = (api as { signal?: AbortSignal }).signal;
-          void abort(String(api.conversationId)).catch(() => {});
-          await abortedOr(signal, ABORT_GRACE_MS);
+          await endRun(() => abort(String(api.conversationId)), signal);
           return undefined;
         },
       }),
