@@ -79,9 +79,20 @@ export interface AgentCasesConfig {
   modelTool?: false | { readonly fields?: readonly CaseToolField[] };
 }
 
+export interface SecretDefinition {
+  /** Where the value comes from: `env:VAR` or `file:/path`. */
+  from: string;
+  /** How the value is applied to a request: a header or a query parameter. */
+  apply?: { readonly header: string; readonly format?: string } | { readonly query: string };
+  /** Hosts the secret may be sent to; required for a fetchable secret. */
+  hosts?: readonly string[];
+}
+
 export interface AgentDefinition {
   name: string;
   model: AgentModel;
+  /** Named secrets and how they are applied; validated at startup. */
+  secrets?: Record<string, SecretDefinition>;
   /** How the model may write a case. */
   cases?: AgentCasesConfig;
   /** Named models a plugin may call, keyed by name. `main` is reserved. */
