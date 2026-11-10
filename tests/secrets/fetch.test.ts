@@ -164,6 +164,161 @@ describe("ctx.secrets.fetch: applying a secret", () => {
   });
 });
 
+describe("ctx.secrets.fetch: redirects", () => {
+  it("refuses a redirect to a host outside the secret's hosts, sending nothing there", async () => {
+    process.env[BRAVE_ENV] = "brave-secret";
+    const allowed = await startFakeHttp();
+    const disallowed = await startFakeHttp();
+    const localhost = disallowed.url.replace("127.0.0.1", "localhost");
+    allowed.respond({ status: 302, headers: { location: `${localhost}/leak` } });
+    let error: unknown;
+    const caller = definePlugin(
+      "caller",
+      () => ({
+        tools: [
+          defineTool({
+            name: "redirect_out",
+            description: "Follow a redirect to a disallowed host",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              error = await ctx.secrets.fetch("brave", `${allowed.url}/start`).then(
+                () => undefined,
+                (failure: unknown) => failure,
+              );
+              return "tried";
+            },
+          }),
+        ],
+      }),
+      { secrets: ["brave"] },
+    );
+    const faux = fauxModels("m1");
+    faux.respond([toolCall("redirect_out"), text("done")]);
+    const agent = await startTestAgent(
+      testDefinition({
+        secrets: {
+          brave: {
+            from: `env:${BRAVE_ENV}`,
+            apply: { header: "X-Subscription-Token" },
+            hosts: ["127.0.0.1"],
+          },
+        },
+        plugins: [{ plugin: caller, config: {} }],
+      }),
+      { models: faux.models },
+    );
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "go", { wait: true });
+
+    expect(allowed.requests[0]!.headers["x-subscription-token"]).toBe("brave-secret");
+    expect(disallowed.requests).toHaveLength(0);
+    const message = error instanceof Error ? error.message : String(error);
+    expect(message).toContain("brave");
+    expect(message).toContain("localhost");
+  });
+
+  it("refuses a query-secret redirect to a disallowed host", async () => {
+    process.env[QUERY_ENV] = "query-secret";
+    const allowed = await startFakeHttp();
+    const disallowed = await startFakeHttp();
+    const localhost = disallowed.url.replace("127.0.0.1", "localhost");
+    allowed.respond({ status: 302, headers: { location: `${localhost}/leak` } });
+    let error: unknown;
+    const caller = definePlugin(
+      "caller",
+      () => ({
+        tools: [
+          defineTool({
+            name: "redirect_query_out",
+            description: "Follow a query-secret redirect to a disallowed host",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              error = await ctx.secrets.fetch("query", `${allowed.url}/start`).then(
+                () => undefined,
+                (failure: unknown) => failure,
+              );
+              return "tried";
+            },
+          }),
+        ],
+      }),
+      { secrets: ["query"] },
+    );
+    const faux = fauxModels("m1");
+    faux.respond([toolCall("redirect_query_out"), text("done")]);
+    const agent = await startTestAgent(
+      testDefinition({
+        secrets: {
+          query: {
+            from: `env:${QUERY_ENV}`,
+            apply: { query: "key" },
+            hosts: ["127.0.0.1"],
+          },
+        },
+        plugins: [{ plugin: caller, config: {} }],
+      }),
+      { models: faux.models },
+    );
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "go", { wait: true });
+
+    expect(new URL(`http://127.0.0.1${allowed.requests[0]!.path}`).searchParams.get("key")).toBe(
+      "query-secret",
+    );
+    expect(disallowed.requests).toHaveLength(0);
+    const message = error instanceof Error ? error.message : String(error);
+    expect(message).toContain("query");
+    expect(message).toContain("localhost");
+  });
+
+  it("follows a redirect to another allowed host and applies the secret there", async () => {
+    process.env[BRAVE_ENV] = "brave-secret";
+    const first = await startFakeHttp();
+    const second = await startFakeHttp();
+    first.respond({ status: 302, headers: { location: `${second.url}/next` } });
+    second.respond({ status: 200, body: JSON.stringify({ ok: true }) });
+    let status: number | undefined;
+    const caller = definePlugin(
+      "caller",
+      () => ({
+        tools: [
+          defineTool({
+            name: "redirect_allowed",
+            description: "Follow a redirect to another allowed host",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              const response = await ctx.secrets.fetch("brave", `${first.url}/start`);
+              status = response.status;
+              return "called";
+            },
+          }),
+        ],
+      }),
+      { secrets: ["brave"] },
+    );
+    const faux = fauxModels("m1");
+    faux.respond([toolCall("redirect_allowed"), text("done")]);
+    const agent = await startTestAgent(
+      testDefinition({
+        secrets: {
+          brave: {
+            from: `env:${BRAVE_ENV}`,
+            apply: { header: "X-Subscription-Token" },
+            hosts: ["127.0.0.1"],
+          },
+        },
+        plugins: [{ plugin: caller, config: {} }],
+      }),
+      { models: faux.models },
+    );
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "go", { wait: true });
+
+    expect(status).toBe(200);
+    expect(second.requests[0]!.headers["x-subscription-token"]).toBe("brave-secret");
+  });
+});
+
 describe("undeclared secrets", () => {
   it("refuses fetch and get for a name the plugin did not declare", async () => {
     process.env[BRAVE_ENV] = "brave-secret";

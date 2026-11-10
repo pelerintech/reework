@@ -187,21 +187,56 @@ export class SecretsRuntime {
       });
     }
     const value = this.resolve(name);
-    const target = new URL(url);
     const allowed = definition.hosts ?? [];
-    if (!allowed.some((host) => host.toLowerCase() === target.hostname.toLowerCase())) {
-      throw new Error(`secret "${name}" may not be sent to host "${target.hostname}"`);
-    }
     const headers = new Headers(init.headers);
     if (!definition.apply) throw new Error(`secret "${name}" has no apply rule`);
-    if ("header" in definition.apply) {
-      const format = definition.apply.format ?? "{}";
-      headers.set(definition.apply.header, format.replace("{}", value));
-    } else {
-      target.searchParams.set(definition.apply.query, value);
+    let method = init.method ?? "GET";
+    let body = init.body;
+    let target = new URL(url);
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+      const host = target.hostname;
+      if (!allowed.some((entry) => entry.toLowerCase() === host.toLowerCase())) {
+        throw new Error(`secret "${name}" may not be sent to host "${host}"`);
+      }
+      const request = new URL(target);
+      if ("header" in definition.apply) {
+        const format = definition.apply.format ?? "{}";
+        headers.set(definition.apply.header, format.replace("{}", value));
+      } else {
+        request.searchParams.set(definition.apply.query, value);
+      }
+      const response = await fetch(request, {
+        ...init,
+        method,
+        body,
+        headers,
+        redirect: "manual",
+      });
+      if (!REDIRECT_STATUSES.has(response.status)) {
+        this.audit(plugin, name, "fetch", conversationId);
+        return response;
+      }
+      const location = response.headers.get("location");
+      if (!location) {
+        this.audit(plugin, name, "fetch", conversationId);
+        return response;
+      }
+      if (hop === MAX_REDIRECTS) {
+        throw new Error(`secret "${name}" redirect limit exceeded at host "${host}"`);
+      }
+      if (
+        response.status === 303 ||
+        ((response.status === 301 || response.status === 302) &&
+          method !== "GET" &&
+          method !== "HEAD")
+      ) {
+        method = "GET";
+        body = undefined;
+        headers.delete("content-length");
+      }
+      target = new URL(location, request);
     }
-    this.audit(plugin, name, "fetch", conversationId);
-    return fetch(target, { ...init, headers });
+    throw new Error(`secret "${name}" redirect limit exceeded`);
   }
 
   /** The raw value of a declared secret (local backend). */
@@ -243,6 +278,9 @@ export function modelSecretNames(agent: AgentDefinition): Set<string> {
   for (const model of Object.values(agent.models ?? {})) collect(model);
   return names;
 }
+
+const MAX_REDIRECTS = 5;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 export interface SecretsAccess {
   fetch(
