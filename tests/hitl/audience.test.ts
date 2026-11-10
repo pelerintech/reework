@@ -28,13 +28,16 @@ afterEach(async () => {
       .catch(() => {});
 });
 
+type Definition = Parameters<typeof gatedAction>[0];
+
 /** A plugin whose only action is a `deploy` gate built from `gate`. */
-function deployPlugin(gate: Parameters<typeof gatedAction>[0]["gate"]) {
+function deployPlugin(gate: Definition["gate"], audience?: Definition["audience"]) {
   return definePlugin("ops", () => ({
     tools: [
       gatedAction({
         name: "deploy",
         gate,
+        ...(audience === undefined ? {} : { audience }),
         run: async () => "deployed",
       }),
     ],
@@ -42,9 +45,9 @@ function deployPlugin(gate: Parameters<typeof gatedAction>[0]["gate"]) {
 }
 
 /** Start an agent with the `deploy` gate and open it, returning the proposal. */
-async function openGate(gate: Parameters<typeof gatedAction>[0]["gate"]) {
+async function openGate(gate: Definition["gate"], audience?: Definition["audience"]) {
   const test = await startTestAgent(
-    testDefinition({ plugins: [{ plugin: deployPlugin(gate), config: {} }] }),
+    testDefinition({ plugins: [{ plugin: deployPlugin(gate, audience), config: {} }] }),
   );
   running.push(test);
   test.model.respond([toolCall("deploy"), text("waiting on you")]);
@@ -165,5 +168,29 @@ describe("gate audiences", () => {
     } finally {
       await close();
     }
+  });
+
+  it("settles an agent decider on a human-or-agent gate", async () => {
+    const agentAuthor = { kind: "agent" as const, id: "agent:orchestrator" };
+    const { test, proposal } = await openGate(
+      { title: "Deploy?", options: [{ id: "yes", label: "Yes" }] },
+      "human-or-agent",
+    );
+
+    await test.agent.host.submitDecision({
+      proposalId: proposal.id,
+      selectedOption: "yes",
+      instruction: null,
+      decidedBy: agentAuthor,
+    });
+
+    const settled = await waitFor(async () =>
+      (await test.agent.host.listProposals({ status: "settled" })).find(
+        (p) => p.id === proposal.id,
+      ),
+    );
+    expect(settled.audience).toBe("human-or-agent");
+    expect(settled.decidedBy).toEqual(agentAuthor);
+    expect(settled.decision).toMatchObject({ decidedBy: agentAuthor });
   });
 });
