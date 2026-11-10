@@ -1,6 +1,6 @@
 // A plugin can stop a run cleanly before a model request: the run ends the way the
 // tool-round budget ends it, no request is made, and the snapshot carries the notice.
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Type, definePlugin, defineTool, gatedAction } from "@reework/core";
 import type { AgentDefinition, DeclaredModule } from "@reework/core";
 import { waitForProposal } from "@reework/core/testing";
@@ -202,5 +202,31 @@ describe("stopping a run", () => {
     await eventually(
       async () => (await agent.host.listProposals({ conversationId: id })).length === 0,
     );
+  });
+
+  it("logs and ignores a throwing beforeModelRequest", async () => {
+    const llm = await startFakeLlm();
+    const thrower = definePlugin("thrower", () => ({
+      hooks: {
+        async beforeModelRequest() {
+          throw new Error("not my request");
+        },
+      },
+    }));
+    llm.script({ text: "ok" });
+    const errors: unknown[][] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args) => errors.push(args));
+    const agent = await startTestAgent(definition(llm.url, [{ plugin: thrower, config: {} }]), {
+      models: undefined,
+    });
+    const { id } = await agent.host.createConversation();
+
+    const { message } = await agent.host.submitInput(id, "go", { wait: true });
+    spy.mockRestore();
+
+    expect(JSON.stringify(message)).toContain("ok");
+    const logged = errors.map((args) => args.join(" ")).join("\n");
+    expect(logged).toContain('plugin "thrower"');
+    expect(logged).toContain("beforeModelRequest");
   });
 });
