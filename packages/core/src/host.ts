@@ -475,8 +475,9 @@ export class AgentHost {
 
   /**
    * Place queued input after a stopped run. A run that ends without a boundary
-   * leaves its inbox for the next input; an empty submission (aborted while still
-   * queued) runs the boundary and starts the queued input, then leaves nothing.
+   * leaves its inbox for the next input; a bookkeeping write (an entry with no
+   * model messages) runs the boundary and starts the queued input, changing
+   * nothing the model sees.
    */
   private async admitQueuedInput(id: string): Promise<void> {
     const inspect = await this.engine.harness.inspect(CONTEXT);
@@ -485,8 +486,10 @@ export class AgentHost {
     );
     if (!queued) return;
     const conversation = await this.conversation(id);
-    const kick = await conversation.submit({ type: "input", content: "" }, CONTEXT);
-    await kick.abort(CONTEXT).catch(() => {});
+    await conversation.submit(
+      { type: "write", entry: { kind: "reework.kick", model: [] } },
+      CONTEXT,
+    );
   }
 
   async readConversation(id: string): Promise<ConversationRead> {
