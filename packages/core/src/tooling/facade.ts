@@ -1162,6 +1162,7 @@ export function makePluginModels(
       return { text: assistantText(result), usage: mapUsage(result.usage) };
     },
     embed: async (name, texts, options) => {
+      if (texts.length === 0) return { embeddings: [] };
       const { catalog, model } = resolve(name);
       if (model.api !== "openai-completions" && model.api !== "openai-responses") {
         throw new ModelHasNoEmbeddings(name);

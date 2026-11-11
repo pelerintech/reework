@@ -240,6 +240,43 @@ describe("ctx.models.embed", () => {
     expect((seenError as Error).name).toBe("AbortError");
   });
 
+  it("returns no vectors for empty input without a request", async () => {
+    const endpoint = await startFakeEmbeddings();
+    const llm = await startFakeLlm();
+    process.env[LLM_ENV] = "llm-key";
+    process.env[EMBED_ENV] = "embed-key";
+
+    let seen: ModelEmbedResult | undefined;
+    const embedder = definePlugin(
+      "embedder",
+      () => ({
+        tools: [
+          defineTool({
+            name: "embed",
+            description: "embed nothing",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              seen = await ctx.models.embed("embedder", []);
+              return "done";
+            },
+          }),
+        ],
+      }),
+      { models: ["embedder"] },
+    );
+
+    const agent = await startTestAgent(
+      definition(llm.url, endpoint.url, [{ plugin: embedder, config: {} }]),
+      { models: undefined },
+    );
+    llm.script({ toolCall: { name: "embed" } }, { text: "done" });
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "go", { wait: true });
+
+    expect(seen?.embeddings).toEqual([]);
+    expect(endpoint.requests).toHaveLength(0);
+  });
+
   it("names a non-JSON response instead of a raw SyntaxError", async () => {
     const endpoint = await startFakeEmbeddings();
     endpoint.respond({ raw: "not json" });
