@@ -1259,6 +1259,22 @@ export function makePluginModels(
                 `item ${index} has no embedding`,
               );
             }
+            if (item.embedding.length === 0) {
+              throw new EmbeddingResponseInvalid(
+                pluginName,
+                name,
+                `item ${index} vector dimension must be positive`,
+              );
+            }
+            for (const value of item.embedding) {
+              if (typeof value !== "number" || !Number.isFinite(value)) {
+                throw new EmbeddingResponseInvalid(
+                  pluginName,
+                  name,
+                  `item ${index} vector element is not a finite number`,
+                );
+              }
+            }
             if (dimension === undefined) dimension = item.embedding.length;
             else if (item.embedding.length !== dimension) {
               throw new EmbeddingResponseInvalid(
@@ -1279,16 +1295,25 @@ export function makePluginModels(
                 totalTokens: body.usage.total_tokens ?? body.usage.prompt_tokens ?? 0,
               }
             : undefined;
-          return { embeddings: vectors, usage };
+          return { embeddings: vectors, dimension: dimension ?? 0, usage };
         } finally {
           release?.();
         }
       };
 
       const embeddings: number[][] = [];
+      let dimension: number | undefined;
       let usage: ModelUsage | undefined;
       for (let start = 0; start < texts.length; start += EMBED_BATCH_SIZE) {
         const result = await requestBatch(texts.slice(start, start + EMBED_BATCH_SIZE));
+        if (dimension === undefined) dimension = result.dimension;
+        else if (result.dimension !== dimension) {
+          throw new EmbeddingResponseInvalid(
+            pluginName,
+            name,
+            `vectors have inconsistent dimensions across batches (${dimension} and ${result.dimension})`,
+          );
+        }
         embeddings.push(...result.embeddings);
         if (result.usage) {
           usage =

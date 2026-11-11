@@ -14,7 +14,7 @@ export interface RecordedEmbeddingRequest {
 
 export interface EmbeddingItem {
   readonly index?: number;
-  readonly embedding?: number[];
+  readonly embedding?: readonly unknown[];
 }
 
 export interface EmbeddingReply {
