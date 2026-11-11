@@ -221,6 +221,8 @@ export interface ToolResult {
   readonly output: string;
   readonly isError?: boolean;
   readonly details?: JsonValue;
+  /** This result is outside content, even when the tool itself is not flagged. */
+  readonly external?: boolean;
 }
 
 /** The reework context a tool receives. */
@@ -254,6 +256,8 @@ export interface ReeworkTool<TParameters extends TSchema = TSchema> {
   readonly description: string;
   readonly parameters: TParameters;
   readonly replay?: "safe" | "unsafe";
+  /** This tool's output is outside content (fetched pages, MCP replies, documents). */
+  readonly external?: boolean;
   execute(args: Static<TParameters>, ctx: ToolContext): Promise<string | ToolResult>;
 }
 
@@ -264,6 +268,8 @@ export interface DefineToolInput<TParameters extends TSchema = TSchema> {
   readonly parameters: TParameters;
   /** Whether an interrupted call may rerun on recovery. Default `unsafe`. */
   readonly replay?: "safe" | "unsafe";
+  /** This tool's output is outside content; hooks and later requests see it. */
+  readonly external?: boolean;
   execute(args: Static<TParameters>, ctx: ToolContext): Promise<string | ToolResult>;
 }
 
@@ -286,6 +292,7 @@ export function defineTool<TParameters extends TSchema>(
     description: def.description,
     parameters: def.parameters,
     ...(def.replay === undefined ? {} : { replay: def.replay }),
+    ...(def.external === true ? { external: true } : {}),
     execute: (args, ctx) => def.execute(args, ctx),
   };
 }
@@ -354,11 +361,11 @@ export interface PluginHooks {
     ctx: PluginHookContext,
   ): Promise<void>;
   beforeTool?(
-    input: { name: string; args: Record<string, unknown>; callId: string },
+    input: { name: string; args: Record<string, unknown>; callId: string; external?: boolean },
     ctx: PluginHookContext,
   ): Promise<{ block: string } | { args: Record<string, unknown> } | void>;
   afterTool?(
-    call: { name: string; args: Record<string, unknown>; callId: string },
+    call: { name: string; args: Record<string, unknown>; callId: string; external?: boolean },
     result: ToolResult,
     ctx: PluginHookContext,
   ): Promise<ToolResult | void>;
@@ -504,7 +511,7 @@ export function toDurableTool(
     async execute(args, api: ToolExecutionApi, context: Context): Promise<ToolExecutionResult> {
       const { ctx, modelCalls } = buildToolContext(api, context, pluginName, bindings);
       const result = await tool.execute(args, ctx);
-      return toDurableResult(result, modelCalls);
+      return toDurableResult(result, modelCalls, tool.external === true);
     },
   });
   const run = gatedRunOf(tool);
@@ -577,6 +584,7 @@ function buildToolContext(
 function toDurableResult(
   result: string | ToolResult,
   modelCalls: readonly NamedModelCall[] = [],
+  toolExternal = false,
 ): ToolExecutionResult {
   const base: ToolExecutionResult =
     typeof result === "string"
@@ -586,31 +594,91 @@ function toDurableResult(
           ...(result.isError === true ? { isError: true } : {}),
           ...(result.details === undefined ? {} : { details: result.details }),
         };
-  if (modelCalls.length === 0) return base;
+  const metadata: FrameworkMetadata = {
+    ...(modelCalls.length > 0 ? { modelUsage: modelUsageOf(modelCalls) } : {}),
+    ...(toolExternal || (typeof result !== "string" && result.external === true)
+      ? { external: true }
+      : {}),
+  };
+  if (metadata.modelUsage === undefined && metadata.external === undefined) return base;
   return {
     ...base,
-    details: attachModelUsage(base.details, modelUsageOf(modelCalls)),
-    usage: sumUsage(modelCalls),
+    details: attachFrameworkMetadata(base.details, metadata),
+    ...(modelCalls.length > 0 ? { usage: sumUsage(modelCalls) } : {}),
   };
 }
 
-/** Add the framework's spend record beside a tool's own details. */
-function attachModelUsage(
+/** Core metadata carried in `details.reework`: model spend and the external flag. */
+interface FrameworkMetadata {
+  readonly modelUsage?: readonly ModelCallUsage[];
+  readonly external?: boolean;
+}
+
+/** Add the framework's metadata beside a tool's own details. */
+function attachFrameworkMetadata(
   details: JsonValue | undefined,
-  modelUsage: readonly ModelCallUsage[],
+  metadata: FrameworkMetadata,
 ): JsonValue {
-  const framework = { modelUsage: modelUsage as unknown as JsonValue };
-  if (details === undefined) return { reework: framework };
+  const framework: { [key: string]: JsonValue } = {};
+  if (metadata.modelUsage !== undefined) {
+    framework.modelUsage = metadata.modelUsage as unknown as JsonValue;
+  }
+  if (metadata.external === true) framework.external = true;
+  return mergeReework(details, framework);
+}
+
+/** Merge core metadata into a details object's `reework` slot, keeping plugin details. */
+function mergeReework(
+  details: JsonValue | undefined,
+  reework: { [key: string]: JsonValue },
+): JsonValue {
+  if (details === undefined) return { reework };
   if (typeof details === "object" && details !== null && !Array.isArray(details)) {
     const existing = details as { [key: string]: JsonValue };
     const current = existing["reework"];
-    const reework =
+    const merged =
       typeof current === "object" && current !== null && !Array.isArray(current)
-        ? { ...(current as { [key: string]: JsonValue }), ...framework }
-        : framework;
-    return { ...existing, reework };
+        ? { ...(current as { [key: string]: JsonValue }), ...reework }
+        : reework;
+    return { ...existing, reework: merged };
   }
-  return { value: details, reework: framework };
+  return { value: details, reework };
+}
+
+/** A details object's `reework` slot, when it carries one. */
+function reeworkOf(details: JsonValue | undefined): { [key: string]: JsonValue } | undefined {
+  if (typeof details !== "object" || details === null || Array.isArray(details)) return undefined;
+  const current = (details as { [key: string]: JsonValue })["reework"];
+  return typeof current === "object" && current !== null && !Array.isArray(current)
+    ? (current as { [key: string]: JsonValue })
+    : undefined;
+}
+
+/** Whether a result's details carry the framework's external flag. */
+function externalOfDetails(details: JsonValue | undefined): boolean {
+  return reeworkOf(details)?.["external"] === true;
+}
+
+/**
+ * Mark a result external and re-attach the framework's metadata, OR-ing the
+ * sticky flag. A hook's fresh object keeps the flag and the original spend.
+ */
+function markExternal(
+  result: ToolResult,
+  external: boolean,
+  base: { [key: string]: JsonValue } | undefined,
+): ToolResult {
+  const reework: { [key: string]: JsonValue } = { ...reeworkOf(result.details), ...base };
+  if (external) reework.external = true;
+  else delete reework.external;
+  const details =
+    Object.keys(reework).length > 0 ? mergeReework(result.details, reework) : result.details;
+  return {
+    output: result.output,
+    ...(result.isError === true ? { isError: true } : {}),
+    ...(details === undefined ? {} : { details }),
+    ...(external ? { external: true } : {}),
+  };
 }
 
 /** Sum the spend of a tool call's named-model calls into one usage record. */
@@ -718,6 +786,13 @@ export interface PluginBindings {
   inputAuthors?: (
     conversationId: string,
   ) => Promise<readonly { timestamp?: number; from?: Author }[]>;
+  /**
+   * The committed tool-result messages' external flags by call id, so a
+   * message-returning hook cannot clear the flag for the hooks after it.
+   */
+  toolResultExternals?: (
+    conversationId: string,
+  ) => Promise<readonly { toolCallId: string; external: boolean }[]>;
   /** The engine's storage, for the plugin store run hooks get. Filled once the engine exists. */
   storage?: StoreBackend;
 }
@@ -991,34 +1066,55 @@ function makeHookContext(
 
 /** Build the single ToolTask hook registration that coordinates all plugins. */
 export function buildToolHooks(
-  plugins: readonly { readonly name: string; readonly hooks: PluginHooks }[],
+  plugins: readonly {
+    readonly name: string;
+    readonly hooks?: PluginHooks;
+    readonly tools?: readonly ReeworkTool[];
+  }[],
   bindings?: PluginBindings,
 ): HookRegistration | undefined {
   const any = plugins.filter(
-    (p) => typeof p.hooks.beforeTool === "function" || typeof p.hooks.afterTool === "function",
+    (p) => typeof p.hooks?.beforeTool === "function" || typeof p.hooks?.afterTool === "function",
   );
   if (any.length === 0) return undefined;
+  // A tool's own flag marks every result it produces; a plugin cannot remove it.
+  const externalTools = new Set<string>();
+  for (const p of plugins) {
+    for (const tool of p.tools ?? []) {
+      if (tool.external === true) externalTools.add(tool.name);
+    }
+  }
+  const toolIsExternal = (name: string): boolean => externalTools.has(name);
   return hook(ToolTask, {
     async beforeTool(call, api, context) {
       let args = call.arguments as Record<string, unknown>;
+      const external = toolIsExternal(call.name);
       for (let i = 0; i < plugins.length; i++) {
         const p = plugins[i];
-        if (!p.hooks.beforeTool) continue;
+        if (!p.hooks?.beforeTool) continue;
         const res = await p.hooks.beforeTool(
-          { name: call.name, args, callId: call.id },
+          { name: call.name, args, callId: call.id, external },
           makeHookContext(p.name, api, context, bindings),
         );
         if (res && "block" in res) {
-          // Report the blocked call to the plugins declared after this one.
-          const blocked: ToolResult = { output: res.block, isError: true };
+          // Report the blocked call to the plugins declared after this one. A
+          // blocked result starts not external (no outside content was read); a
+          // hook's flag sticks for the hooks after it, as in the afterTool chain.
+          let blocked: ToolResult = { output: res.block, isError: true };
+          let blockedExternal = false;
           for (let j = i + 1; j < plugins.length; j++) {
             const q = plugins[j];
-            if (q.hooks.afterTool) {
-              await q.hooks.afterTool(
-                { name: call.name, args, callId: call.id },
+            if (q.hooks?.afterTool) {
+              const next = await q.hooks.afterTool(
+                { name: call.name, args, callId: call.id, external },
                 blocked,
                 makeHookContext(q.name, api, context, bindings),
               );
+              if (next) {
+                blockedExternal =
+                  blockedExternal || next.external === true || externalOfDetails(next.details);
+                blocked = markExternal(next, blockedExternal, undefined);
+              }
             }
           }
           return { block: res.block };
@@ -1028,16 +1124,27 @@ export function buildToolHooks(
       return { arguments: args as never };
     },
     async afterTool(call, result, api, context) {
-      let current = durableResultToRework(result);
+      const external = toolIsExternal(call.name);
+      const base = reeworkOf(result.details);
+      let flag = external || externalOfDetails(result.details);
+      let current = markExternal(durableResultToRework(result), flag, base);
       for (let i = 0; i < plugins.length; i++) {
         const p = plugins[i];
-        if (!p.hooks.afterTool) continue;
+        if (!p.hooks?.afterTool) continue;
         const next = await p.hooks.afterTool(
-          { name: call.name, args: call.arguments as Record<string, unknown>, callId: call.id },
+          {
+            name: call.name,
+            args: call.arguments as Record<string, unknown>,
+            callId: call.id,
+            external,
+          },
           current,
           makeHookContext(p.name, api, context, bindings),
         );
-        if (next) current = next;
+        if (next) {
+          flag = flag || next.external === true || externalOfDetails(next.details);
+          current = markExternal(next, flag, base);
+        }
       }
       return toDurableResult(current);
     },
@@ -1056,8 +1163,13 @@ const pristineInputs = new WeakMap<
   readonly Message[],
   Promise<readonly { timestamp?: number; from?: Author }[]>
 >();
+const pristineToolExternals = new WeakMap<
+  readonly Message[],
+  Promise<ReadonlyMap<string, boolean> | undefined>
+>();
 const hookReturned = new WeakSet<Message>();
 const keptAuthors = new WeakMap<Message, Author>();
+const keptExternals = new WeakMap<Message, true>();
 const handedAuthors = new WeakMap<ModelMessage, Author>();
 
 /** Hand a message to a hook, remembering the author core gave it. */
@@ -1075,15 +1187,50 @@ async function authoredRequestMessages(
   api: HookApi,
   bindings?: PluginBindings,
 ): Promise<ModelMessage[]> {
+  const externals = await toolExternalsOf(name, messages, api, bindings);
   if (messages.some((message) => hookReturned.has(message))) {
-    return messages.map((message) => withKeptAuthor(message));
+    return messages.map((message) => withKeptAuthor(message, externals));
   }
   const inputs = await inputsOf(name, messages, api, bindings);
   const authors = authorsOf(messages, inputs);
   return messages.map((message, index) => {
     const model = reworkMessageFrom(message);
+    applyStoredExternal(model, externals);
     return handed(model, model.role === "user" ? authors[index] : undefined);
   });
+}
+
+/** Read the committed tool-result external flags once per request. */
+function toolExternalsOf(
+  name: string,
+  messages: readonly Message[],
+  api: HookApi,
+  bindings?: PluginBindings,
+): Promise<ReadonlyMap<string, boolean> | undefined> {
+  const cached = pristineToolExternals.get(messages);
+  if (cached) return cached;
+  const reader = bindings?.toolResultExternals;
+  if (!reader) return Promise.resolve(undefined);
+  const pending = reader(String(api.conversationId))
+    .then(
+      (results) => new Map(results.map((result) => [result.toolCallId, result.external] as const)),
+    )
+    .catch((err) => {
+      logHookError(name, "beforeModelRequest", err);
+      return new Map<string, boolean>();
+    });
+  pristineToolExternals.set(messages, pending);
+  return pending;
+}
+
+/** Re-derive a tool-result message's external flag from the stored result. */
+function applyStoredExternal(
+  model: ModelMessage,
+  externals: ReadonlyMap<string, boolean> | undefined,
+): void {
+  if (!externals || model.role !== "toolResult" || !model.toolCallId) return;
+  if (externals.get(model.toolCallId) === true) model.external = true;
+  else delete model.external;
 }
 
 /** Read the committed input authors once per request, shared by every plugin. */
@@ -1166,11 +1313,18 @@ function hookMessageTo(message: ModelMessage): Message {
   hookReturned.add(converted);
   const from = message.role === "user" ? handedAuthors.get(message) : undefined;
   if (from) keptAuthors.set(converted, from);
+  if (message.role === "toolResult" && message.external === true)
+    keptExternals.set(converted, true);
   return converted;
 }
 
-function withKeptAuthor(message: Message): ModelMessage {
+function withKeptAuthor(
+  message: Message,
+  externals: ReadonlyMap<string, boolean> | undefined,
+): ModelMessage {
   const model = reworkMessageFrom(message);
+  applyStoredExternal(model, externals);
+  if (model.role === "toolResult" && keptExternals.get(message) === true) model.external = true;
   return handed(model, model.role === "user" ? keptAuthors.get(message) : undefined);
 }
 
@@ -1186,6 +1340,7 @@ function reworkMessageFrom(message: Message): ModelMessage {
     if (message.toolName) m.toolName = message.toolName;
     if (message.timestamp !== undefined) m.timestamp = message.timestamp;
     if (message.isError === true) m.isError = true;
+    if (externalOfDetails((message as { details?: JsonValue }).details)) m.external = true;
     return m;
   }
   if (typeof content === "string") {
@@ -1283,5 +1438,6 @@ function durableResultToRework(result: ToolExecutionResult): ToolResult {
     output,
     ...(result.isError === true ? { isError: true } : {}),
     ...(result.details === undefined ? {} : { details: result.details }),
+    ...(externalOfDetails(result.details) ? { external: true } : {}),
   } as ToolResult;
 }

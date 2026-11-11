@@ -137,9 +137,7 @@ export async function startAgent(
     }
     for (const plugin of built) registry.install(toExtension(plugin.name, plugin.built, bindings));
     const toolHooks = buildToolHooks(
-      built
-        .map((p) => ({ name: p.name, hooks: p.built.hooks }))
-        .filter((p): p is { name: string; hooks: PluginHooks } => p.hooks !== undefined),
+      built.map((p) => ({ name: p.name, hooks: p.built.hooks, tools: p.built.tools })),
       bindings,
     );
     if (toolHooks)
@@ -277,6 +275,23 @@ async function boot(
       }
     }
     return inputs;
+  };
+  bindings.toolResultExternals = async (id) => {
+    const conversation = await engine.harness.conversation(
+      Number(id) as unknown as ConversationId,
+      CONTEXT,
+    );
+    if (!conversation) return [];
+    const view = await conversation.context(CONTEXT);
+    const results: { toolCallId: string; external: boolean }[] = [];
+    for (const message of view.messages) {
+      if (message.role !== "toolResult" || !message.toolCallId) continue;
+      const details = (message as { details?: { reework?: { external?: unknown } } }).details;
+      if (details?.reework?.external === true) {
+        results.push({ toolCallId: message.toolCallId, external: true });
+      }
+    }
+    return results;
   };
   for (const plugin of built) {
     if (plugin.built.setup || plugin.built.routes) {

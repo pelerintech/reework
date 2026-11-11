@@ -144,6 +144,11 @@ export interface ModelMessage {
   /** Present on a `toolResult` message: whether the tool failed. */
   isError?: boolean;
   /**
+   * Present on a `toolResult` message: the result is outside content. Read from
+   * the stored result's `details.reework.external`, so later requests know it.
+   */
+  external?: boolean;
+  /**
    * On a `user` message in a hook's input: who it is from. Absent means
    * unattributed, never a human.
    */
@@ -252,6 +257,8 @@ export type TranscriptItem =
       status: "running" | "done" | "error";
       startedAt: number;
       endedAt?: number;
+      /** The stored result is outside content (`details.reework.external`). */
+      external?: boolean;
     };
 
 /** A gated action asked a human; the proposal waits for a decision. */

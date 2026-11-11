@@ -577,6 +577,14 @@ function authorOf(entry: EntryRecord): Author | undefined {
   return isAuthor(data?.from) ? data.from : undefined;
 }
 
+/** Whether a stored result's details carry the framework's external flag. */
+function externalOfDetails(details: unknown): boolean {
+  if (typeof details !== "object" || details === null) return false;
+  const reework = (details as { reework?: unknown }).reework;
+  if (typeof reework !== "object" || reework === null) return false;
+  return (reework as { external?: unknown }).external === true;
+}
+
 /**
  * The transcript of a conversation's entries: user and assistant text, and each tool
  * call with its outcome. A call without a result is `running` while a run is active,
@@ -593,6 +601,7 @@ export function toTranscript(entries: readonly EntryRecord[], running: boolean):
           timestamp?: number;
           toolCallId?: string;
           isError?: boolean;
+          details?: unknown;
         }
       | undefined;
     if (!model) continue;
@@ -602,6 +611,7 @@ export function toTranscript(entries: readonly EntryRecord[], running: boolean):
       if (call) {
         call.status = model.isError ? "error" : "done";
         call.endedAt = timestamp;
+        if (externalOfDetails(model.details)) call.external = true;
       }
       continue;
     }
