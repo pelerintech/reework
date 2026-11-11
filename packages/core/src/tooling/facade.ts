@@ -1105,6 +1105,9 @@ export function makePluginEmit(
   };
 }
 
+/** OpenAI-compatible servers cap one embeddings request's inputs. */
+const EMBED_BATCH_SIZE = 512;
+
 export function makePluginModels(
   pluginName: string,
   bindings?: PluginBindings,
@@ -1184,102 +1187,133 @@ export function makePluginModels(
       }
       if (auth?.auth.apiKey) headers.authorization = `Bearer ${auth.auth.apiKey}`;
       const callSignal = combineSignals(signal, options?.signal);
-      const release = await bindings?.requestLimiter?.(name)?.acquire(callSignal);
-      let body: {
-        data?: { index?: number; embedding?: number[] }[];
-        usage?: { prompt_tokens?: number; total_tokens?: number };
-      };
-      try {
-        const timeoutMs = bindings?.secrets?.modelRequestTimeout?.() ?? 60_000;
-        const requestSignal = combineSignals(callSignal, AbortSignal.timeout(timeoutMs));
-        let response: Response;
+
+      const requestBatch = async (batch: readonly string[]) => {
+        const release = await bindings?.requestLimiter?.(name)?.acquire(callSignal);
         try {
-          response = await fetch(`${baseUrl}/embeddings`, {
-            method: "POST",
-            headers,
-            body: JSON.stringify({ model: model.id, input: texts }),
-            ...(requestSignal === undefined ? {} : { signal: requestSignal }),
-          });
-        } catch (error) {
-          if (callSignal?.aborted) throw error;
-          if ((error as { name?: string }).name === "TimeoutError") {
-            throw new EmbeddingTimeoutError(pluginName, name, timeoutMs);
+          const timeoutMs = bindings?.secrets?.modelRequestTimeout?.() ?? 60_000;
+          const requestSignal = combineSignals(callSignal, AbortSignal.timeout(timeoutMs));
+          let response: Response;
+          try {
+            response = await fetch(`${baseUrl}/embeddings`, {
+              method: "POST",
+              headers,
+              body: JSON.stringify({ model: model.id, input: batch }),
+              ...(requestSignal === undefined ? {} : { signal: requestSignal }),
+            });
+          } catch (error) {
+            if (callSignal?.aborted) throw error;
+            if ((error as { name?: string }).name === "TimeoutError") {
+              throw new EmbeddingTimeoutError(pluginName, name, timeoutMs);
+            }
+            throw error;
           }
-          throw error;
+          if (!response.ok) {
+            throw new Error(
+              `plugin ${pluginName}: model "${name}" embeddings request failed with ${response.status}`,
+            );
+          }
+          const text = await response.text();
+          let body: {
+            data?: { index?: number; embedding?: number[] }[];
+            usage?: { prompt_tokens?: number; total_tokens?: number };
+          };
+          try {
+            body = JSON.parse(text) as typeof body;
+          } catch {
+            throw new EmbeddingResponseInvalid(pluginName, name, "response is not JSON");
+          }
+
+          const data = body.data ?? [];
+          if (data.length !== batch.length) {
+            throw new EmbeddingResponseInvalid(
+              pluginName,
+              name,
+              `expected ${batch.length} vectors, got ${data.length}`,
+            );
+          }
+          const vectors: number[][] = [];
+          const used = new Set<number>();
+          let dimension: number | undefined;
+          for (const item of data) {
+            const index = item.index;
+            if (
+              typeof index !== "number" ||
+              !Number.isInteger(index) ||
+              index < 0 ||
+              index >= batch.length
+            ) {
+              throw new EmbeddingResponseInvalid(
+                pluginName,
+                name,
+                `item index ${String(index)} is not one of 0..${batch.length - 1}`,
+              );
+            }
+            if (used.has(index)) {
+              throw new EmbeddingResponseInvalid(pluginName, name, `duplicate index ${index}`);
+            }
+            if (!Array.isArray(item.embedding)) {
+              throw new EmbeddingResponseInvalid(
+                pluginName,
+                name,
+                `item ${index} has no embedding`,
+              );
+            }
+            if (dimension === undefined) dimension = item.embedding.length;
+            else if (item.embedding.length !== dimension) {
+              throw new EmbeddingResponseInvalid(
+                pluginName,
+                name,
+                `vectors have inconsistent dimensions (${dimension} and ${item.embedding.length})`,
+              );
+            }
+            used.add(index);
+            vectors[index] = item.embedding;
+          }
+          const usage: ModelUsage | undefined = body.usage
+            ? {
+                inputTokens: body.usage.prompt_tokens ?? 0,
+                outputTokens: 0,
+                cacheReadTokens: 0,
+                cacheWriteTokens: 0,
+                totalTokens: body.usage.total_tokens ?? body.usage.prompt_tokens ?? 0,
+              }
+            : undefined;
+          return { embeddings: vectors, usage };
+        } finally {
+          release?.();
         }
-        if (!response.ok) {
-          throw new Error(
-            `plugin ${pluginName}: model "${name}" embeddings request failed with ${response.status}`,
-          );
-        }
-        const text = await response.text();
-        try {
-          body = JSON.parse(text) as typeof body;
-        } catch {
-          throw new EmbeddingResponseInvalid(pluginName, name, "response is not JSON");
-        }
-      } finally {
-        release?.();
-      }
-      const data = body.data ?? [];
-      if (data.length !== texts.length) {
-        throw new EmbeddingResponseInvalid(
-          pluginName,
-          name,
-          `expected ${texts.length} vectors, got ${data.length}`,
-        );
-      }
-      const embeddings: number[][] = [];
-      const used = new Set<number>();
-      let dimension: number | undefined;
-      for (const item of data) {
-        const index = item.index;
-        if (
-          typeof index !== "number" ||
-          !Number.isInteger(index) ||
-          index < 0 ||
-          index >= texts.length
-        ) {
-          throw new EmbeddingResponseInvalid(
-            pluginName,
-            name,
-            `item index ${String(index)} is not one of 0..${texts.length - 1}`,
-          );
-        }
-        if (used.has(index)) {
-          throw new EmbeddingResponseInvalid(pluginName, name, `duplicate index ${index}`);
-        }
-        if (!Array.isArray(item.embedding)) {
-          throw new EmbeddingResponseInvalid(pluginName, name, `item ${index} has no embedding`);
-        }
-        if (dimension === undefined) dimension = item.embedding.length;
-        else if (item.embedding.length !== dimension) {
-          throw new EmbeddingResponseInvalid(
-            pluginName,
-            name,
-            `vectors have inconsistent dimensions (${dimension} and ${item.embedding.length})`,
-          );
-        }
-        used.add(index);
-        embeddings[index] = item.embedding;
-      }
-      if (!body.usage) return { embeddings };
-      const usage: ModelUsage = {
-        inputTokens: body.usage.prompt_tokens ?? 0,
-        outputTokens: 0,
-        cacheReadTokens: 0,
-        cacheWriteTokens: 0,
-        totalTokens: body.usage.total_tokens ?? body.usage.prompt_tokens ?? 0,
       };
-      bindings?.modelUsage?.({
-        source: "plugin",
-        plugin: pluginName,
-        model: name,
-        ...(conversationId === undefined ? {} : { conversationId }),
-        usage,
-        at: Date.now(),
-      });
-      return { embeddings, usage };
+
+      const embeddings: number[][] = [];
+      let usage: ModelUsage | undefined;
+      for (let start = 0; start < texts.length; start += EMBED_BATCH_SIZE) {
+        const result = await requestBatch(texts.slice(start, start + EMBED_BATCH_SIZE));
+        embeddings.push(...result.embeddings);
+        if (result.usage) {
+          usage =
+            usage === undefined
+              ? result.usage
+              : {
+                  inputTokens: usage.inputTokens + result.usage.inputTokens,
+                  outputTokens: 0,
+                  cacheReadTokens: 0,
+                  cacheWriteTokens: 0,
+                  totalTokens: usage.totalTokens + result.usage.totalTokens,
+                };
+        }
+      }
+      if (usage !== undefined) {
+        bindings?.modelUsage?.({
+          source: "plugin",
+          plugin: pluginName,
+          model: name,
+          ...(conversationId === undefined ? {} : { conversationId }),
+          usage,
+          at: Date.now(),
+        });
+      }
+      return { embeddings, ...(usage === undefined ? {} : { usage }) };
     },
   };
 }

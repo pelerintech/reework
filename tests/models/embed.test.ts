@@ -240,6 +240,54 @@ describe("ctx.models.embed", () => {
     expect((seenError as Error).name).toBe("AbortError");
   });
 
+  it("batches inputs in groups of at most 512 and sums their usage", async () => {
+    const endpoint = await startFakeEmbeddings();
+    endpoint.respond(
+      {
+        embeddings: Array.from({ length: 512 }, (_, i) => [i]),
+        usage: { promptTokens: 512, totalTokens: 512 },
+      },
+      { embeddings: [[512]], usage: { promptTokens: 1, totalTokens: 1 } },
+    );
+    const llm = await startFakeLlm();
+    process.env[LLM_ENV] = "llm-key";
+    process.env[EMBED_ENV] = "embed-key";
+
+    const texts = Array.from({ length: 513 }, (_, i) => `text-${i}`);
+    let seen: ModelEmbedResult | undefined;
+    const embedder = definePlugin(
+      "embedder",
+      () => ({
+        tools: [
+          defineTool({
+            name: "embed",
+            description: "embed many passages",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              seen = await ctx.models.embed("embedder", texts);
+              return "done";
+            },
+          }),
+        ],
+      }),
+      { models: ["embedder"] },
+    );
+
+    const agent = await startTestAgent(
+      definition(llm.url, endpoint.url, [{ plugin: embedder, config: {} }]),
+      { models: undefined },
+    );
+    llm.script({ toolCall: { name: "embed" } }, { text: "done" });
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "go", { wait: true });
+
+    expect(endpoint.requests.map((request) => request.input.length)).toEqual([512, 1]);
+    expect(seen?.embeddings).toHaveLength(513);
+    expect(seen?.embeddings[0]).toEqual([0]);
+    expect(seen?.embeddings[512]).toEqual([512]);
+    expect(seen?.usage).toMatchObject({ inputTokens: 513, totalTokens: 513 });
+  });
+
   it("returns no vectors for empty input without a request", async () => {
     const endpoint = await startFakeEmbeddings();
     const llm = await startFakeLlm();
