@@ -235,4 +235,30 @@ describe("plugin events", () => {
 
     await test.dispose();
   });
+
+  it("refuses data that is not JSON, naming the event", async () => {
+    const errors: string[] = [];
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const emitter = definePlugin("a", () => ({
+      setup(ctx) {
+        const emit = (name: string, data: unknown) => {
+          try {
+            ctx.emit(name, data as never);
+          } catch (error) {
+            errors.push(error instanceof Error ? error.message : String(error));
+          }
+        };
+        emit("budget.function", { fn: () => 1 });
+        emit("budget.cycle", circular);
+      },
+    }));
+
+    const test = await startTestAgent(definition([{ plugin: emitter, config: {} }]));
+    expect(errors).toHaveLength(2);
+    expect(errors[0]).toContain("budget.function");
+    expect(errors[1]).toContain("budget.cycle");
+
+    await test.dispose();
+  });
 });

@@ -24,6 +24,7 @@ import type { AssistantMessage, Message, Usage } from "@earendil-works/pi-ai";
 import type { Models } from "@earendil-works/pi-ai/models";
 import type { Hono } from "hono";
 import type { Context, JsonValue } from "@earendil-works/chord";
+import { copyJson } from "@earendil-works/chord";
 import type {
   Author,
   Case,
@@ -1039,9 +1040,18 @@ export function makePluginEmit(
     if (typeof name !== "string" || name.trim() === "") {
       throw new Error(`plugin "${pluginName}" event name must be a non-empty string`);
     }
+    let copied: JsonValue;
+    try {
+      copied = copyJson(data);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`plugin "${pluginName}" event "${name}" data must be JSON: ${message}`, {
+        cause: error,
+      });
+    }
     const event: PluginEvent = {
       name,
-      data,
+      data: copied,
       plugin: pluginName,
       ...(conversationId === undefined ? {} : { conversationId }),
       at: Date.now(),
