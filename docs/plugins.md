@@ -275,7 +275,8 @@ emitting context's conversation (absent from `setup` and routes). Delivery goes 
 queue as the host's event hooks — after the commit, at most once, the caller never waits, consumers in declaration
 order, in emit order. A tool call's emits are held until the round's tools have committed; a round that is aborted or
 rolled back discards them, so a round stopped mid-way loses its emits — delivery is at most once. The emitter never
-receives its own event.
+receives its own event. A reaction chain — a handler emitting in response to an event — is cut at depth 8, and the
+dropped emit logs a warning naming the plugin and event.
 
 `emit` is on every plugin context: tools, hooks, event hooks, gated-action gates and runs, `setup` and routes.
 Events without a conversation reach consumers with an agent-level context: `conversationId`, `files` and `case`

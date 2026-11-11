@@ -267,12 +267,13 @@ async function boot(
       .filter(
         (plugin): plugin is { name: string; hooks: PluginHooks } => plugin.hooks !== undefined,
       ),
-    (plugin, conversationId) => makeEventContext(plugin, bindings, conversationId),
+    (plugin, conversationId, emitDepth) =>
+      makeEventContext(plugin, bindings, conversationId, emitDepth),
     lifecycle.signal,
   );
   bindings.modelUsage = (event) => events.enqueue("onModelUsage", event.conversationId, event);
-  bindings.emit = (plugin, event) =>
-    events.enqueue("onPluginEvent", event.conversationId, event, plugin);
+  bindings.emit = (plugin, event, depth = 0) =>
+    events.enqueue("onPluginEvent", event.conversationId, event, plugin, depth);
   const pendingEmits = new Map<string, Map<string, PluginEvent[]>>();
   bindings.bufferEmit = (taskId, event) => {
     const id = event.conversationId;

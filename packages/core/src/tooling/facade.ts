@@ -1002,7 +1002,7 @@ export interface PluginBindings {
   /** Queue an `onModelUsage` event; filled once the agent's event queue exists. */
   modelUsage?: (event: ModelUsageEvent) => void;
   /** Queue a plugin's emitted event; filled once the agent's event queue exists. */
-  emit?: (plugin: string, event: PluginEvent) => void;
+  emit?: (plugin: string, event: PluginEvent, depth?: number) => void;
   /** Hold a tool task's emitted events until its round's tools have committed. */
   bufferEmit?: (taskId: string, event: PluginEvent) => void;
   /** Queue a round's tool emits, and drop the conversation's stale buffered emits. */
@@ -1038,6 +1038,7 @@ export function makePluginEmit(
   bindings?: PluginBindings,
   conversationId?: string,
   defer?: { readonly taskId: string; readonly signal?: AbortSignal },
+  chainDepth = 0,
 ): (name: string, data: JsonValue) => void {
   return (name, data) => {
     if (typeof name !== "string" || name.trim() === "") {
@@ -1080,7 +1081,7 @@ export function makePluginEmit(
       return;
     }
     if (!bindings?.emit) throw new Error("plugin events are not wired in this build");
-    bindings.emit(pluginName, event);
+    bindings.emit(pluginName, event, chainDepth);
   };
 }
 
@@ -1642,6 +1643,7 @@ export function makeEventContext(
   name: string,
   bindings?: PluginBindings,
   conversationId?: string,
+  emitDepth = 0,
 ): PluginEventContext {
   const conversation =
     conversationId === undefined
@@ -1649,7 +1651,7 @@ export function makeEventContext(
       : (Number(conversationId) as unknown as ConversationId);
   const cases = makePluginCases(name, bindings);
   return {
-    emit: makePluginEmit(name, bindings, conversationId),
+    emit: makePluginEmit(name, bindings, conversationId, undefined, emitDepth),
     models: makePluginModels(name, bindings, undefined, conversationId),
     secrets: makePluginSecrets(name, bindings, conversationId),
     store: bindings?.storage

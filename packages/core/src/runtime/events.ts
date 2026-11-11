@@ -1,7 +1,7 @@
 // The per-agent event-hook dispatcher: host-level moments (input, decisions, case
 // lifecycle) reach plugins through one FIFO queue, one event at a time, in
 // declaration order. The caller never waits; delivery is at most once.
-import type { PluginEventContext, PluginHooks } from "../tooling/facade.ts";
+import type { PluginEvent, PluginEventContext, PluginHooks } from "../tooling/facade.ts";
 
 /** The host-level moments plugins can hook. */
 export type EventHookName =
@@ -27,20 +27,26 @@ interface QueuedEvent {
   readonly input: unknown;
   /** The plugin whose own emit this is; it receives nothing for it. */
   readonly skip?: string;
+  /** How many reaction hops led to this plugin event; 0 for an original emit. */
+  readonly depth?: number;
 }
 
 export class EventDispatcher {
   private readonly queue: QueuedEvent[] = [];
   private readonly plugins: readonly EventHookPlugin[];
   /** Build the context one plugin receives for one conversation (agent-level without one). */
-  private readonly context: (plugin: string, conversationId?: string) => PluginEventContext;
+  private readonly context: (
+    plugin: string,
+    conversationId?: string,
+    emitDepth?: number,
+  ) => PluginEventContext;
   /** Aborted when the agent begins to stop; no new events are queued afterwards. */
   private readonly signal: AbortSignal;
   private active?: Promise<void>;
 
   constructor(
     plugins: readonly EventHookPlugin[],
-    context: (plugin: string, conversationId?: string) => PluginEventContext,
+    context: (plugin: string, conversationId?: string, emitDepth?: number) => PluginEventContext,
     signal: AbortSignal,
   ) {
     this.plugins = plugins;
@@ -54,9 +60,23 @@ export class EventDispatcher {
     conversationId: string | undefined,
     input: unknown,
     skip?: string,
+    depth = 0,
   ): void {
     if (this.signal.aborted) return;
-    this.queue.push({ hook, conversationId, input, ...(skip === undefined ? {} : { skip }) });
+    if (hook === "onPluginEvent" && depth >= 8) {
+      const event = input as PluginEvent;
+      console.warn(
+        `[reework] plugin "${event.plugin}" event "${event.name}" reaction chain cut at depth 8`,
+      );
+      return;
+    }
+    this.queue.push({
+      hook,
+      conversationId,
+      input,
+      ...(skip === undefined ? {} : { skip }),
+      ...(hook === "onPluginEvent" ? { depth } : {}),
+    });
     this.start();
   }
 
@@ -97,7 +117,7 @@ export class EventDispatcher {
       try {
         await (hook as (input: unknown, ctx: PluginEventContext) => Promise<void>)(
           event.input,
-          this.context(plugin.name, event.conversationId),
+          this.context(plugin.name, event.conversationId, (event.depth ?? 0) + 1),
         );
       } catch (error) {
         console.error(`[reework] plugin "${plugin.name}" ${event.hook} hook threw:`, error);

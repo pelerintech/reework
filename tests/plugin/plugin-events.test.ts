@@ -1,7 +1,7 @@
 // Plugin events: one plugin announces its own moment with `ctx.emit`, and every
 // other plugin that provides `onPluginEvent` receives it through the same queued
 // event delivery as the host's event hooks.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { definePlugin, defineTool, Type } from "@reework/core";
 import type { AgentDefinition, PluginEvent, PluginEventContext } from "@reework/core";
 import { startTestAgent, text, toolCall } from "@reework/core/testing";
@@ -418,6 +418,66 @@ describe("plugin events", () => {
     expect(errors[2]).toContain("non-empty");
     expect(errors[3]).toContain("budget.big");
     expect(errors[3]).toContain("256 KB");
+
+    await test.dispose();
+  });
+
+  it("cuts a reaction chain at depth 8 and logs a warning", async () => {
+    const seen: string[] = [];
+    const warnings: string[] = [];
+    const spy = vi.spyOn(console, "warn").mockImplementation((...args) => {
+      warnings.push(args.join(" "));
+    });
+    const react = (n: number) => {
+      if (n < 10) return { n: n + 1 } as const;
+      return undefined;
+    };
+    const emitter = definePlugin("a", () => ({
+      tools: [
+        defineTool({
+          name: "start",
+          description: "Start a chain.",
+          parameters: Type.Object({}),
+          async execute(_args, ctx) {
+            ctx.emit("chain", { n: 0 });
+            return "started";
+          },
+        }),
+      ],
+      hooks: {
+        async onPluginEvent(event, ctx) {
+          seen.push(event.name);
+          const next = react((event.data as { n: number }).n);
+          if (next) ctx.emit("chain", next);
+        },
+      },
+    }));
+    const reactor = definePlugin("b", () => ({
+      hooks: {
+        async onPluginEvent(event, ctx) {
+          seen.push(event.name);
+          const next = react((event.data as { n: number }).n);
+          if (next) ctx.emit("chain", next);
+        },
+      },
+    }));
+
+    const test = await startTestAgent(
+      definition([
+        { plugin: emitter, config: {} },
+        { plugin: reactor, config: {} },
+      ]),
+    );
+    test.model.respond([toolCall("start"), text("done")]);
+    const { id } = await test.agent.host.createConversation();
+    await test.agent.host.submitInput(id, "go");
+    await eventually(() => seen.length >= 8);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    spy.mockRestore();
+
+    expect(seen).toHaveLength(8);
+    expect(warnings.join("\n")).toContain("chain");
+    expect(warnings.join("\n")).toContain("depth 8");
 
     await test.dispose();
   });
