@@ -1211,7 +1211,12 @@ export function makePluginModels(
             `plugin ${pluginName}: model "${name}" embeddings request failed with ${response.status}`,
           );
         }
-        body = (await response.json()) as typeof body;
+        const text = await response.text();
+        try {
+          body = JSON.parse(text) as typeof body;
+        } catch {
+          throw new EmbeddingResponseInvalid(pluginName, name, "response is not JSON");
+        }
       } finally {
         release?.();
       }

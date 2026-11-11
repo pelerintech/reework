@@ -23,6 +23,8 @@ export interface EmbeddingReply {
   readonly usage?: { readonly promptTokens?: number; readonly totalTokens?: number };
   /** Hold the reply for this long, so a test can abort or time out in flight. */
   readonly delayMs?: number;
+  /** Send this body verbatim instead of the JSON shape (a malformed reply). */
+  readonly raw?: string;
 }
 
 export interface FakeEmbeddings {
@@ -65,6 +67,11 @@ export async function startFakeEmbeddings(): Promise<FakeEmbeddings> {
         reply.items ?? (reply.embeddings ?? []).map((embedding, index) => ({ embedding, index }));
       const send = () => {
         load.inFlight -= 1;
+        if (reply.raw !== undefined) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(reply.raw);
+          return;
+        }
         res.writeHead(200, { "content-type": "application/json" });
         res.end(
           JSON.stringify({
