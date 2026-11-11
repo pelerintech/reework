@@ -69,6 +69,7 @@ export type {
   PluginStoreScope,
   PluginStoreItem,
   PluginModels,
+  ModelEmbedResult,
   PluginSecrets,
   CaseFiles,
   CaseContext,

@@ -45,6 +45,7 @@ export type {
   ToolContext,
   ToolResult,
   PluginModels,
+  ModelEmbedResult,
   PluginSecrets,
   PluginStore,
   PluginStoreScope,

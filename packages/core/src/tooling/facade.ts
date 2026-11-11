@@ -172,9 +172,14 @@ export interface ModelCompleteResult {
   readonly usage?: { readonly inputTokens?: number; readonly outputTokens?: number };
 }
 
+export interface ModelEmbedResult {
+  readonly embeddings: number[][];
+}
+
 /** The named models a plugin declared, keyed by name. */
 export interface PluginModels {
   complete(name: string, input: ModelCompleteInput): Promise<ModelCompleteResult>;
+  embed(name: string, texts: readonly string[]): Promise<ModelEmbedResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1092,23 +1097,27 @@ export function makePluginModels(
   conversationId?: string,
 ): PluginModels {
   const lent = bindings?.lent.get(pluginName) ?? [];
+  const resolve = (name: string) => {
+    const catalog = bindings?.catalog;
+    if (!catalog) {
+      throw new Error(`plugin ${pluginName}: named models are not wired in this build`);
+    }
+    if (name === "main") {
+      throw new Error(`plugin ${pluginName}: "main" names the conversation model`);
+    }
+    if (!lent.includes(name)) {
+      throw new Error(`plugin "${pluginName}" did not request model "${name}"`);
+    }
+    const provider = `reework.model.${name}`;
+    const model = catalog.getModels(provider)[0];
+    if (!model) {
+      throw new Error(`plugin ${pluginName}: model "${name}" is not available`);
+    }
+    return { catalog, model };
+  };
   return {
     complete: async (name, input) => {
-      const catalog = bindings?.catalog;
-      if (!catalog) {
-        throw new Error(`plugin ${pluginName}: named models are not wired in this build`);
-      }
-      if (name === "main") {
-        throw new Error(`plugin ${pluginName}: "main" names the conversation model`);
-      }
-      if (!lent.includes(name)) {
-        throw new Error(`plugin "${pluginName}" did not request model "${name}"`);
-      }
-      const provider = `reework.model.${name}`;
-      const model = catalog.getModels(provider)[0];
-      if (!model) {
-        throw new Error(`plugin ${pluginName}: model "${name}" is not available`);
-      }
+      const { catalog, model } = resolve(name);
       if (hasImage(input.messages) && !(model.input as readonly string[]).includes("image")) {
         throw new Error(`model "${name}" does not accept image input`);
       }
@@ -1135,6 +1144,31 @@ export function makePluginModels(
         });
       }
       return { text: assistantText(result), usage: mapUsage(result.usage) };
+    },
+    embed: async (name, texts) => {
+      const { catalog, model } = resolve(name);
+      const auth = await catalog.getAuth(model);
+      const baseUrl = (auth?.auth.baseUrl ?? model.baseUrl ?? "").replace(/\/+$/, "");
+      if (!baseUrl) {
+        throw new Error(`plugin ${pluginName}: model "${name}" has no base URL`);
+      }
+      const headers: Record<string, string> = { "content-type": "application/json" };
+      for (const [key, value] of Object.entries(auth?.auth.headers ?? {})) {
+        if (value !== null) headers[key] = value;
+      }
+      if (auth?.auth.apiKey) headers.authorization = `Bearer ${auth.auth.apiKey}`;
+      const response = await fetch(`${baseUrl}/embeddings`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ model: model.id, input: texts }),
+      });
+      if (!response.ok) {
+        throw new Error(
+          `plugin ${pluginName}: model "${name}" embeddings request failed with ${response.status}`,
+        );
+      }
+      const body = (await response.json()) as { data?: { embedding?: number[] }[] };
+      return { embeddings: (body.data ?? []).map((item) => item.embedding ?? []) };
     },
   };
 }
