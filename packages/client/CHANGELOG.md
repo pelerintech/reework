@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.1.0](https://github.com/pelerintech/reework/compare/client-v1.0.1...client-v1.1.0) (2026-11-11)
+
+
+### Features
+
+* **core:** add conversation kinds, owners and case access ([ad491fa](https://github.com/pelerintech/reework/commit/ad491fa6cb0e8af58e2bb448a773675fe7d99d82))
+* **core:** conversation kinds, owners and case access (v13) ([5c2865a](https://github.com/pelerintech/reework/commit/5c2865ae4f10ce7fec037f971dde76781022a4cd))
+* **core:** gate audience (v15) ([e12ee35](https://github.com/pelerintech/reework/commit/e12ee35602c7ec428da9ea9a94bce9f978e8edc1))
+* **core:** plugin events (v16) ([cd007ba](https://github.com/pelerintech/reework/commit/cd007ba4612d86e7b3cb6dbbd52365681f100d82))
+* **core:** secrets and headless agents (v14) ([c65bf35](https://github.com/pelerintech/reework/commit/c65bf35a9c5dbd953339a8104ac317c21b931aa9))
+* **core:** serve settled proposals over HTTP and the client ([5792633](https://github.com/pelerintech/reework/commit/579263385ca26a2d3467a1b6503df0222f99bec6))
+
+
+### Bug Fixes
+
+* **core:** reject unknown proposal listing statuses ([4c83b3c](https://github.com/pelerintech/reework/commit/4c83b3c9e42bafe13260c87607ca609195af9659))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @reework/types bumped to 1.2.0
+
 ## [1.0.1](https://github.com/pelerintech/reework/compare/client-v1.0.0...client-v1.0.1) (2026-11-04)
 
 

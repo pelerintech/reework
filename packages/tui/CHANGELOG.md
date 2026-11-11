@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.1.0](https://github.com/pelerintech/reework/compare/tui-v1.0.1...tui-v1.1.0) (2026-11-11)
+
+
+### Features
+
+* **core:** gate audience (v15) ([e12ee35](https://github.com/pelerintech/reework/commit/e12ee35602c7ec428da9ea9a94bce9f978e8edc1))
+* **core:** plugin events (v16) ([cd007ba](https://github.com/pelerintech/reework/commit/cd007ba4612d86e7b3cb6dbbd52365681f100d82))
+* **tui:** show a proposal card's audience ([12ecd06](https://github.com/pelerintech/reework/commit/12ecd069f2a08077101509d440baaff166479a23))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @reework/client bumped to 1.1.0
+    * @reework/types bumped to 1.2.0
+
 ## [1.0.1](https://github.com/pelerintech/reework/compare/tui-v1.0.0...tui-v1.0.1) (2026-11-04)
 
 
