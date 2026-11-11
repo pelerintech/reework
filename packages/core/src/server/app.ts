@@ -5,7 +5,14 @@ import { createNodeWebSocket } from "@hono/node-ws";
 import { watchEvents } from "@earendil-works/pi-durable";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { ROUTES } from "@reework/types";
-import type { AgentEvent, Author, CasePatch, GateDecision, RouteId } from "@reework/types";
+import type {
+  AgentEvent,
+  Author,
+  CaseKind,
+  CasePatch,
+  GateDecision,
+  RouteId,
+} from "@reework/types";
 import { createEventMapper } from "../protocol/event-mapper.ts";
 import { onProposalOpen, onProposalSettled } from "../protocol/proposals.ts";
 import { CONTEXT } from "../engine.ts";
@@ -14,6 +21,7 @@ import {
   FileNotFound,
   FileTooLarge,
   InvalidAuthor,
+  InvalidProposalStatus,
   ProposalNotFound,
 } from "../host.ts";
 import type { AgentHost } from "../host.ts";
@@ -54,6 +62,12 @@ export function protocolErrorResponse(error: unknown, c: Context): Response | un
   if (error instanceof InvalidAuthor) {
     return c.json({ error: "invalid_author" }, 400);
   }
+  if (error instanceof InvalidProposalStatus) {
+    return c.json(
+      { error: error.message, status: error.status, allowed: ["open", "settled"] },
+      400,
+    );
+  }
   return undefined;
 }
 
@@ -89,9 +103,27 @@ export function createServer(host: AgentHost, options: ServerOptions) {
       c.json(options.name === undefined ? { ok: true } : { ok: true, name: options.name }),
 
     "conversations.create": async (c) => {
-      const body = await c.req.json<{ key?: unknown }>().catch(() => ({}) as { key?: unknown });
+      const body = await c.req
+        .json<{ key?: unknown; kind?: unknown; case?: { owner?: unknown } }>()
+        .catch(
+          () =>
+            ({}) as {
+              key?: unknown;
+              kind?: unknown;
+              case?: { owner?: unknown };
+            },
+        );
       const key = typeof body.key === "string" ? body.key : undefined;
-      const conversation = await host.createConversation({ key });
+      if (body.kind !== undefined && body.kind !== "case" && body.kind !== "desk") {
+        return c.json({ error: "invalid_conversation_kind" }, 400);
+      }
+      const kind = body.kind;
+      const owner = body.case?.owner as Author | undefined;
+      const conversation = await host.createConversation({
+        ...(key === undefined ? {} : { key }),
+        ...(kind === undefined ? {} : { kind }),
+        ...(owner === undefined ? {} : { case: { owner } }),
+      });
       return c.json(conversation, conversation.created ? 201 : 200);
     },
 
@@ -105,6 +137,14 @@ export function createServer(host: AgentHost, options: ServerOptions) {
       const needsParam = c.req.query("needsHuman");
       const needsHuman = needsParam === "true" ? true : needsParam === "false" ? false : undefined;
       const stage = c.req.query("stage") || undefined;
+      const kindParam = c.req.query("kind");
+      const kind = kindParam ? (kindParam.split(",").filter(Boolean) as CaseKind[]) : undefined;
+      const ownerKind = c.req.query("ownerKind") || undefined;
+      const ownerId = c.req.query("ownerId") || undefined;
+      const owner =
+        ownerKind === undefined
+          ? undefined
+          : ({ kind: ownerKind, ...(ownerId === undefined ? {} : { id: ownerId }) } as Author);
       const sortParam = c.req.query("sort");
       const sort =
         sortParam === "priority" ||
@@ -115,7 +155,7 @@ export function createServer(host: AgentHost, options: ServerOptions) {
           : undefined;
       return c.json({
         conversations: await host.listConversations(),
-        cases: await host.listCases({ status, tag, needsHuman, stage, sort }),
+        cases: await host.listCases({ status, tag, needsHuman, stage, kind, owner, sort }),
       });
     },
 
@@ -132,7 +172,8 @@ export function createServer(host: AgentHost, options: ServerOptions) {
         if (
           error instanceof Error &&
           (error.message.startsWith("invalid case patch:") ||
-            error.message.startsWith("cannot close a case"))
+            error.message.startsWith("cannot close a case") ||
+            error.message.startsWith("cannot close a desk"))
         ) {
           return c.json({ error: error.message }, 400);
         }
@@ -210,7 +251,14 @@ export function createServer(host: AgentHost, options: ServerOptions) {
     "conversations.proposals": async (c) => {
       const id = c.req.param("id") ?? "";
       if (!(await host.hasConversation(id))) throw new ConversationNotFound(id);
-      return c.json({ id, proposals: await host.listProposals({ conversationId: id }) });
+      const status = c.req.query("status") as "open" | "settled" | undefined;
+      return c.json({
+        id,
+        proposals: await host.listProposals({
+          conversationId: id,
+          ...(status === undefined ? {} : { status }),
+        }),
+      });
     },
 
     "conversations.decide": async (c) => {
@@ -279,7 +327,12 @@ export function createServer(host: AgentHost, options: ServerOptions) {
       };
     }),
 
-    "proposals.list": async (c) => c.json({ proposals: await host.listProposals() }),
+    "proposals.list": async (c) => {
+      const status = c.req.query("status") as "open" | "settled" | undefined;
+      return c.json({
+        proposals: await host.listProposals(status === undefined ? {} : { status }),
+      });
+    },
 
     // Any open proposal by id, including gates the agent opened on its own root conversation.
     "proposals.decide": async (c) => {

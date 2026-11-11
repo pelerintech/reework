@@ -6,7 +6,9 @@ import type {
   AgentEvent,
   Author,
   Case,
+  CaseKind,
   CasePatch,
+  CasePriority,
   ConversationCreated,
   FileRecord,
   GateDecision,
@@ -128,7 +130,15 @@ export function createClient(options: ClientOptions) {
       return (await call<{ ok: boolean; name?: string }>("health")).body;
     },
 
-    async createConversation(input: { key?: string } = {}): Promise<ConversationCreated> {
+    async createConversation(
+      input: {
+        key?: string;
+        /** `case` (default) or `desk`. */
+        kind?: CaseKind;
+        /** Initial case fields. */
+        case?: { title?: string; priority?: CasePriority; owner?: Author };
+      } = {},
+    ): Promise<ConversationCreated> {
       return (await call<ConversationCreated>("conversations.create", { body: input })).body;
     },
 
@@ -137,13 +147,15 @@ export function createClient(options: ClientOptions) {
         .conversations;
     },
 
-    /** Every conversation's case, newest first; `status`/`tag`/`needsHuman`/`stage`/`sort` filter. */
+    /** Every conversation's case, newest first; `status`/`tag`/`needsHuman`/`stage`/`kind`/`owner`/`sort` filter. */
     async listCases(
       filter: {
         status?: string[];
         tag?: string[];
         needsHuman?: boolean;
         stage?: string;
+        kind?: CaseKind[];
+        owner?: Author;
         sort?: "priority" | "dueAt" | "createdAt" | "updatedAt";
       } = {},
     ): Promise<Case[]> {
@@ -152,6 +164,11 @@ export function createClient(options: ClientOptions) {
       if (filter.tag?.length) query.tag = filter.tag.join(",");
       if (filter.needsHuman !== undefined) query.needsHuman = String(filter.needsHuman);
       if (filter.stage) query.stage = filter.stage;
+      if (filter.kind?.length) query.kind = filter.kind.join(",");
+      if (filter.owner) {
+        query.ownerKind = filter.owner.kind;
+        if (filter.owner.id) query.ownerId = filter.owner.id;
+      }
       if (filter.sort) query.sort = filter.sort;
       const res = await call<{ cases: Case[] }>("conversations.list", { query });
       return res.body.cases;
@@ -233,13 +250,22 @@ export function createClient(options: ClientOptions) {
       await call("conversations.abort", { params: { id } });
     },
 
-    /** Open proposals: every conversation's (the inbox), or one conversation's. */
-    async listProposals(conversationId?: string): Promise<Proposal[]> {
+    /**
+     * Proposals across every conversation (the inbox) or one conversation's.
+     * Open by default; `status: "settled"` returns settled ones with their
+     * decision and decider. A bare string is a conversation id (legacy form).
+     */
+    async listProposals(
+      options?: string | { conversationId?: string; status?: "open" | "settled" },
+    ): Promise<Proposal[]> {
+      const opts = typeof options === "string" ? { conversationId: options } : (options ?? {});
+      const query = opts.status === undefined ? undefined : { status: opts.status };
       const res =
-        conversationId === undefined
-          ? await call<{ proposals: Proposal[] }>("proposals.list")
+        opts.conversationId === undefined
+          ? await call<{ proposals: Proposal[] }>("proposals.list", { query })
           : await call<{ proposals: Proposal[] }>("conversations.proposals", {
-              params: { id: conversationId },
+              params: { id: opts.conversationId },
+              query,
             });
       return res.body.proposals;
     },

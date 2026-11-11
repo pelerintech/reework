@@ -366,6 +366,10 @@ export interface Proposal {
   /** Whether the gate also accepts a free-form instruction. */
   acceptFreeForm: boolean;
   createdAt: number;
+  /** Set on a settled proposal: who decided. */
+  decidedBy?: Author;
+  /** Set on a settled proposal: the decision that settled it. */
+  decision?: GateDecision;
 }
 
 export function isProposal(value: unknown): value is Proposal {
@@ -497,7 +501,7 @@ export const ROUTES = {
     method: "GET",
     path: "/conversations/:id/proposals",
     auth: "token",
-    summary: "Open proposals of one conversation",
+    summary: "Proposals of one conversation; `?status=settled` for decided ones",
   },
   "conversations.decide": {
     method: "POST",
@@ -515,7 +519,7 @@ export const ROUTES = {
     method: "GET",
     path: "/proposals",
     auth: "token",
-    summary: "Open proposals across every conversation (the inbox)",
+    summary: "Proposals across every conversation (the inbox); `?status=settled` for decided ones",
   },
   "proposals.decide": {
     method: "POST",
@@ -617,11 +621,20 @@ export type CaseStatus = "open" | "waiting" | "closed";
 
 export type CasePriority = "low" | "normal" | "high" | "urgent";
 
+/**
+ * What a conversation is: a case a human works on, or a desk (a principal's
+ * ongoing conversation that routes to many cases). A kind is set at creation
+ * and never changes; a stored case without one reads as `case`.
+ */
+export type CaseKind = "case" | "desk";
+
 /** A conversation's case: what a human sees and works on. */
 export interface Case {
   id: string;
   key?: string;
   createdAt: number;
+  /** `case` or `desk`; default `case`. */
+  kind: CaseKind;
   /** Moves on every case write and on every input submitted to the case. */
   updatedAt: number;
   title?: string;
@@ -633,6 +646,12 @@ export interface Case {
   tags: string[];
   dueAt?: number;
   closedAt?: number;
+  /**
+   * The principal that receives this case's notifications. A principal spans
+   * identities, so it is one stable author (`principal:<name>`), not each
+   * channel identity.
+   */
+  owner?: Author;
   /** Derived from open proposals; never stored. */
   needsHuman: boolean;
   /** Derived from open proposals; never stored. */
@@ -641,7 +660,7 @@ export interface Case {
 
 /** Fields a writer (host, plugin, model tool, HTTP) may change. */
 export type CasePatch = Partial<
-  Pick<Case, "title" | "summary" | "status" | "stage" | "priority" | "tags" | "dueAt">
+  Pick<Case, "title" | "summary" | "status" | "stage" | "priority" | "tags" | "dueAt" | "owner">
 >;
 
 // ---------------------------------------------------------------------------

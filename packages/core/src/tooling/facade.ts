@@ -4,6 +4,7 @@ import {
   defineTool as durableDefineTool,
   GenerationTask,
   hook,
+  LiveDoc,
   section as durableSection,
   ToolTask,
 } from "@earendil-works/pi-durable";
@@ -38,7 +39,7 @@ import type {
 import { isAuthor } from "@reework/types";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static, TSchema } from "@earendil-works/pi-ai";
-import type { AgentHost } from "../host.ts";
+import type { AgentHost, ConversationSnapshot, ListCasesFilter } from "../host.ts";
 import { endRun } from "../runtime/abort.ts";
 import { markGated } from "../hitl/gate.ts";
 import type { GatedActionRunContext } from "../hitl/gate.ts";
@@ -194,6 +195,38 @@ export interface CaseContext {
 }
 
 // ---------------------------------------------------------------------------
+// Cases capability (§4): reach other cases as a given principal, agent-scoped.
+// ---------------------------------------------------------------------------
+
+/** The choice a `ctx.cases.decide` settles a proposal with. */
+export interface PluginDecision {
+  readonly selectedOption: string | null;
+  readonly instruction: string | null;
+}
+
+/**
+ * Other cases of this agent, granted by declaring `{ cases: true }`. A desk
+ * tool or event hook lists, reads, snapshots, submits input to and decides on
+ * cases as a given principal. The declaration is the grant and the audit point.
+ */
+export interface PluginCases {
+  list(filter?: ListCasesFilter): Promise<Case[]>;
+  get(id: string): Promise<Case>;
+  snapshot(id: string): Promise<ConversationSnapshot>;
+  submit(
+    id: string,
+    text: string,
+    options?: { readonly from?: Author },
+  ): Promise<{ readonly submissionId: string }>;
+  decide(input: {
+    readonly proposalId: string;
+    readonly decision: PluginDecision;
+    readonly decidedBy?: Author;
+  }): Promise<void>;
+  update(id: string, patch: CasePatch): Promise<Case>;
+}
+
+// ---------------------------------------------------------------------------
 // Plugin storage (§1 / task 6): the plugin's own store, agent-wide and per case.
 // ---------------------------------------------------------------------------
 
@@ -244,6 +277,8 @@ export interface ToolContext {
   readonly store: PluginStore;
   /** The conversation's case. */
   readonly case: CaseContext;
+  /** Other cases, when the plugin declared `{ cases: true }`. */
+  readonly cases?: PluginCases;
   /** Run `fn` at most once per tool call and key; a replay returns the value. */
   once<T extends JsonValue>(key: string, fn: () => Promise<T>): Promise<T>;
 }
@@ -354,6 +389,8 @@ export interface PluginEventContext {
   readonly files?: CaseFiles;
   /** The conversation's case; absent for agent-level entries. */
   readonly case?: CaseContext;
+  /** Other cases, when the plugin declared `{ cases: true }`. */
+  readonly cases?: PluginCases;
 }
 
 /** One model call that returned usage, for `onModelUsage`. */
@@ -398,7 +435,10 @@ export interface PluginHooks {
     result: ToolResult,
     ctx: PluginHookContext,
   ): Promise<ToolResult | void>;
-  onAnswer?(input: { text: string }, ctx: PluginHookContext): Promise<{ continue: string } | void>;
+  onAnswer?(
+    input: { text: string; submissionId: string; from?: Author },
+    ctx: PluginHookContext,
+  ): Promise<{ continue: string } | void>;
   beforeCompaction?(
     input: { reason: string; messages: ModelMessage[] },
     ctx: PluginHookContext,
@@ -488,6 +528,8 @@ export interface ReeworkPlugin<TConfig = unknown> {
   build(config: TConfig): BuiltPlugin<TConfig> | Promise<BuiltPlugin<TConfig>>;
   /** Named models this plugin may call; each must be declared by the agent. */
   readonly models?: readonly string[];
+  /** Declare the `ctx.cases` capability to reach other cases. */
+  readonly cases?: boolean;
 }
 
 export function definePlugin<
@@ -496,15 +538,22 @@ export function definePlugin<
 >(
   name: string,
   factory: (config: TConfig) => TReturn,
-  options: { readonly models?: readonly string[] } = {},
+  options: { readonly models?: readonly string[]; readonly cases?: boolean } = {},
 ): {
   readonly kind: "reework.plugin";
   readonly name: string;
   readonly models: readonly string[];
+  readonly cases: boolean;
   /** The factory's own return type: a built plugin, or a promise of one. */
   build(config: TConfig): TReturn;
 } {
-  return { kind: "reework.plugin", name, build: factory, models: options.models ?? [] };
+  return {
+    kind: "reework.plugin",
+    name,
+    build: factory,
+    models: options.models ?? [],
+    cases: options.cases === true,
+  };
 }
 
 export function isReeworkPlugin(value: unknown): value is ReeworkPlugin {
@@ -602,6 +651,7 @@ function buildToolContext(
   const signal = context.abortSignal ?? (fallback ??= new AbortController().signal);
   const backend: StoreBackend = { commit: (fn) => api.commit(fn, context) };
   const modelCalls: NamedModelCall[] = [];
+  const cases = makePluginCases(pluginName, bindings);
   const made: ToolContext = {
     conversationId: String(api.conversationId),
     signal,
@@ -615,6 +665,7 @@ function buildToolContext(
     ),
     files: makeFileContext(String(api.conversationId), bindings),
     case: makeCaseContext(String(api.conversationId), bindings),
+    ...(cases === undefined ? {} : { cases }),
     once: (key, fn) => once(api, key, context, fn),
   };
   (made as unknown as { [TOOL_INTERNAL]: ToolInternal })[TOOL_INTERNAL] = { api, context };
@@ -764,12 +815,15 @@ export function createPluginContextMembers(
   bindings?: PluginBindings,
   pluginName = "?",
   collect?: (call: NamedModelCall) => void,
-): Pick<ToolContext, "models" | "files" | "store" | "case"> {
+  includeCases = false,
+): Pick<ToolContext, "models" | "files" | "store" | "case"> & { cases?: PluginCases } {
+  const cases = includeCases ? makePluginCases(pluginName, bindings) : undefined;
   return {
     models: makePluginModels(pluginName, bindings, collect, conversationId),
     files: conversationId ? makeFileContext(conversationId, bindings) : stubFiles(),
     store: store ?? uninitializedStore(),
     case: conversationId ? makeCaseContext(conversationId, bindings) : stubCase(),
+    ...(cases === undefined ? {} : { cases }),
   };
 }
 
@@ -803,6 +857,23 @@ export interface PluginCaseAccess {
   update(conversationId: string, patch: CasePatch): Promise<Case>;
 }
 
+export interface PluginCasesAccess {
+  list(filter: ListCasesFilter): Promise<Case[]>;
+  get(id: string): Promise<Case>;
+  snapshot(id: string): Promise<ConversationSnapshot>;
+  submit(
+    id: string,
+    text: string,
+    options: { readonly from?: Author },
+  ): Promise<{ readonly submissionId: string }>;
+  decide(input: {
+    readonly proposalId: string;
+    readonly decision: PluginDecision;
+    readonly decidedBy?: Author;
+  }): Promise<void>;
+  update(id: string, patch: CasePatch): Promise<Case>;
+}
+
 export interface PluginFilesAccess {
   list(conversationId: string): Promise<FileRecord[]>;
   read(conversationId: string, id: string): Promise<{ record: FileRecord; bytes: Uint8Array }>;
@@ -817,7 +888,10 @@ export interface PluginFilesAccess {
 export interface PluginBindings {
   catalog?: Models;
   readonly lent: ReadonlyMap<string, readonly string[]>;
+  /** The plugins that declared `{ cases: true }`; the declaration is the grant. */
+  readonly lentCases?: ReadonlySet<string>;
   case?: PluginCaseAccess;
+  cases?: PluginCasesAccess;
   files?: PluginFilesAccess;
   /**
    * The committed model context's user messages, oldest first, each with the
@@ -827,6 +901,8 @@ export interface PluginBindings {
   inputAuthors?: (
     conversationId: string,
   ) => Promise<readonly { timestamp?: number; from?: Author }[]>;
+  /** The author of an input submission, so `onAnswer` can name who started the run. */
+  inputFrom?: (conversationId: string, submissionId: string) => Promise<Author | undefined>;
   /**
    * The committed tool-result messages' external flags by call id, so a
    * message-returning hook cannot clear the flag for the hooks after it.
@@ -988,6 +1064,26 @@ function makeFileContext(conversationId: string, bindings?: PluginBindings): Cas
   };
 }
 
+/** Build the cases capability for one plugin, when it declared `{ cases: true }`. */
+export function makePluginCases(
+  pluginName: string,
+  bindings?: PluginBindings,
+): PluginCases | undefined {
+  if (!bindings?.lentCases?.has(pluginName)) return undefined;
+  const required = () => {
+    if (!bindings.cases) throw new Error("plugin cases are not wired in this build");
+    return bindings.cases;
+  };
+  return {
+    list: (filter = {}) => required().list(filter),
+    get: (id) => required().get(id),
+    snapshot: (id) => required().snapshot(id),
+    submit: (id, text, options = {}) => required().submit(id, text, options),
+    decide: (input) => required().decide(input),
+    update: (id, patch) => required().update(id, patch),
+  };
+}
+
 /** Build the rework case context for one conversation. */
 function makeCaseContext(conversationId: string, bindings?: PluginBindings): CaseContext {
   const required = () => {
@@ -1056,8 +1152,22 @@ function buildHooks(
         onYield(answer, api, context) {
           if (!hooks.onAnswer) return undefined;
           const run = async () => {
+            const live = await api.snapshot(LiveDoc, api.conversationId, context);
+            const starting = live?.run?.inputs[0];
+            let from: Author | undefined;
+            if (starting !== undefined) {
+              try {
+                from = await bindings?.inputFrom?.(String(api.conversationId), String(starting));
+              } catch {
+                from = undefined;
+              }
+            }
             const next = await hooks.onAnswer!(
-              { text: messageText(answer) },
+              {
+                text: messageText(answer),
+                submissionId: starting === undefined ? "" : String(starting),
+                ...(from === undefined ? {} : { from }),
+              },
               hookCtx(api, context),
             );
             if (!next?.continue) return undefined;
@@ -1344,6 +1454,7 @@ export function makeEventContext(
     conversationId === undefined
       ? undefined
       : (Number(conversationId) as unknown as ConversationId);
+  const cases = makePluginCases(name, bindings);
   return {
     models: makePluginModels(name, bindings, undefined, conversationId),
     store: bindings?.storage
@@ -1356,6 +1467,7 @@ export function makeEventContext(
           files: makeFileContext(conversationId, bindings),
           case: makeCaseContext(conversationId, bindings),
         }),
+    ...(cases === undefined ? {} : { cases }),
   };
 }
 

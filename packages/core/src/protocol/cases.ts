@@ -1,6 +1,7 @@
 // Case logic: defaults, the stored⇄read normalization, patch validation, and the
 // derived fields that follow open proposals.
-import type { Case, CasePatch, CasePriority, CaseStatus } from "@reework/types";
+import type { Author, Case, CaseKind, CasePatch, CasePriority, CaseStatus } from "@reework/types";
+import { isAuthor, normalizeAuthor } from "@reework/types";
 import type { ConversationRecord } from "./conversations.ts";
 
 /** Read a conversation record's case fields, defaulting v05-shaped records. */
@@ -8,6 +9,7 @@ export function storedCaseOf(
   rec: Pick<
     ConversationRecord,
     | "createdAt"
+    | "kind"
     | "title"
     | "summary"
     | "status"
@@ -16,9 +18,11 @@ export function storedCaseOf(
     | "tags"
     | "dueAt"
     | "closedAt"
+    | "owner"
     | "caseUpdatedAt"
   >,
 ): {
+  kind: CaseKind;
   title?: string;
   summary?: string;
   status: CaseStatus;
@@ -27,9 +31,11 @@ export function storedCaseOf(
   tags: string[];
   dueAt?: number;
   closedAt?: number;
+  owner?: Author;
   updatedAt: number;
 } {
   return {
+    kind: rec.kind ?? "case",
     ...(rec.title === undefined ? {} : { title: rec.title }),
     ...(rec.summary === undefined ? {} : { summary: rec.summary }),
     status: rec.status ?? "open",
@@ -38,6 +44,7 @@ export function storedCaseOf(
     tags: rec.tags ?? [],
     ...(rec.dueAt === undefined ? {} : { dueAt: rec.dueAt }),
     ...(rec.closedAt === undefined ? {} : { closedAt: rec.closedAt }),
+    ...(rec.owner === undefined ? {} : { owner: rec.owner }),
     updatedAt: rec.caseUpdatedAt ?? rec.createdAt,
   };
 }
@@ -49,6 +56,7 @@ export function toCase(rec: ConversationRecord, openProposals: number): Case {
     id: rec.id,
     ...(rec.key === undefined ? {} : { key: rec.key }),
     createdAt: rec.createdAt,
+    kind: stored.kind,
     updatedAt: stored.updatedAt,
     ...(stored.title === undefined ? {} : { title: stored.title }),
     ...(stored.summary === undefined ? {} : { summary: stored.summary }),
@@ -58,6 +66,7 @@ export function toCase(rec: ConversationRecord, openProposals: number): Case {
     tags: stored.tags,
     ...(stored.dueAt === undefined ? {} : { dueAt: stored.dueAt }),
     ...(stored.closedAt === undefined ? {} : { closedAt: stored.closedAt }),
+    ...(stored.owner === undefined ? {} : { owner: stored.owner }),
     needsHuman: openProposals > 0,
     openProposals,
   };
@@ -73,6 +82,7 @@ const CASE_FIELDS = {
   priority: 1,
   tags: 1,
   dueAt: 1,
+  owner: 1,
 } as const;
 
 /** Validate a case patch, returning each field rejected with the reason. */
@@ -124,6 +134,9 @@ export function validateCasePatch(patch: unknown): {
   ) {
     errors.push({ field: "dueAt", reason: `must be a number` });
   }
+  if ("owner" in p && p.owner !== undefined && !isAuthor(p.owner)) {
+    errors.push({ field: "owner", reason: `must be a valid author` });
+  }
   return { ok: errors.length === 0, errors };
 }
 
@@ -140,5 +153,6 @@ export function applyCasePatch(rec: ConversationRecord, patch: CasePatch, now = 
   if (patch.priority !== undefined) rec.priority = patch.priority as CasePriority;
   if (patch.tags !== undefined) rec.tags = patch.tags;
   if (patch.dueAt !== undefined) rec.dueAt = patch.dueAt;
+  if (patch.owner !== undefined) rec.owner = normalizeAuthor(patch.owner);
   rec.caseUpdatedAt = now;
 }

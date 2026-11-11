@@ -8,6 +8,7 @@ import type {
   AgentChange,
   ConversationId,
   HarnessSettings,
+  SubmissionId,
   ToolRegistration,
 } from "@earendil-works/pi-durable";
 import type { Models } from "@earendil-works/pi-ai/models";
@@ -128,6 +129,7 @@ export async function startAgent(
     const bindings: PluginBindings = {
       catalog: models,
       lent: new Map(built.map((p) => [p.name, p.models])),
+      lentCases: new Set(built.filter((p) => p.cases).map((p) => p.name)),
     };
     bindings.beforeModelCall = buildModelCallHooks(
       built.map((p) => ({ name: p.name, hooks: p.built.hooks })),
@@ -259,8 +261,27 @@ async function boot(
   opened.engine = engine;
   opened.host = host;
   bindings.stopRun = (id, taskId, notice) => host.stopRun(id, taskId, notice);
+
   bindings.case = {
     get: (id) => host.getCase(id),
+    update: (id, patch) => host.updateCase(id, patch),
+  };
+  bindings.cases = {
+    list: (filter) => host.listCases(filter),
+    get: (id) => host.getCase(id),
+    snapshot: (id) => host.snapshot(id),
+    submit: async (id, text, options) => {
+      const { submissionId } = await host.submitInput(id, text, options);
+      return { submissionId };
+    },
+    decide: async ({ proposalId, decision, decidedBy }) => {
+      await host.submitDecision({
+        proposalId,
+        selectedOption: decision.selectedOption,
+        instruction: decision.instruction,
+        ...(decidedBy === undefined ? {} : { decidedBy }),
+      });
+    },
     update: (id, patch) => host.updateCase(id, patch),
   };
   bindings.files = {
@@ -287,6 +308,23 @@ async function boot(
       }
     }
     return inputs;
+  };
+  bindings.inputFrom = async (id, submissionId) => {
+    const submission = await engine.harness.submission(
+      submissionId as unknown as SubmissionId,
+      CONTEXT,
+    );
+    const status = await submission?.status(CONTEXT);
+    if (!status || status.type !== "input" || !("entry" in status)) return undefined;
+    const conversation = await engine.harness.conversation(
+      Number(id) as unknown as ConversationId,
+      CONTEXT,
+    );
+    if (!conversation) return undefined;
+    const view = await conversation.context(CONTEXT);
+    const entry = view.entries.find((e) => String(e.id) === String(status.entry));
+    const data = entry?.data as { from?: unknown } | undefined;
+    return isAuthor(data?.from) ? data.from : undefined;
   };
   bindings.toolResultExternals = async (id) => {
     const conversation = await engine.harness.conversation(
@@ -514,6 +552,8 @@ interface Built {
   readonly config: unknown;
   readonly built: BuiltPlugin;
   readonly models: readonly string[];
+  /** The plugin declared the `ctx.cases` capability. */
+  readonly cases: boolean;
 }
 
 function buildPlugin(declared: DeclaredModule): Promise<Built> {
@@ -525,6 +565,7 @@ function buildPlugin(declared: DeclaredModule): Promise<Built> {
       config: declared.config,
       built,
       models: declared.plugin.models ?? [],
+      cases: declared.plugin.cases === true,
     }))
     .catch((error) => {
       const message = error instanceof Error ? error.message : String(error);

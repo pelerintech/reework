@@ -17,6 +17,9 @@ import type { FileRecord, Proposal } from "@reework/types";
 import type { AgentDefinition, AgentModel } from "./agent-definition.ts";
 import type { AgentHost } from "./host.ts";
 import { CONTEXT } from "./engine.ts";
+import type { Engine } from "./engine.ts";
+import { ConversationsDoc } from "./protocol/conversations.ts";
+import type { ConversationRecord } from "./protocol/conversations.ts";
 import { MODEL_PROVIDER_ID, startAgent } from "./runtime/bootstrap.ts";
 import type { RunningAgent, StartAgentOptions } from "./runtime/bootstrap.ts";
 
@@ -193,6 +196,31 @@ export function offeredTools(
     .filter(({ tool }) => tool.callers === undefined || tool.callers.includes("model"))
     .map(({ tool }) => ({ name: tool.name, parameters: tool.parameters }));
   return missionTools ? tools.filter((t) => missionTools.includes(t.name)) : tools;
+}
+
+let legacySeed = 0;
+
+/**
+ * Write a conversation record shaped as it was before `kind` existed (test-only).
+ * The record carries no `kind`, so the read path must default it to `"case"`.
+ * Returns the seeded case id.
+ */
+export async function seedLegacyCase(
+  target: TestAgent | RunningAgent,
+  options: { readonly key?: string } = {},
+): Promise<string> {
+  const running = "dispose" in target ? (target as TestAgent).agent : (target as RunningAgent);
+  const engine = (running as unknown as { engine: Engine }).engine;
+  const id = String(Date.now() + legacySeed++);
+  await engine.commit(async (tx) => {
+    const doc = (await tx.doc(ConversationsDoc)) as { conversations: ConversationRecord[] };
+    doc.conversations.push({
+      id,
+      ...(options.key === undefined ? {} : { key: options.key }),
+      createdAt: Date.now(),
+    });
+  });
+  return id;
 }
 
 /** Upload bytes to a conversation through the host; returns the stored record. */

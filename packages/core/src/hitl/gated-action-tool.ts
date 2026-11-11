@@ -29,6 +29,8 @@ export interface GatedActionGateContext {
   readonly files: ToolContext["files"];
   readonly store: ToolContext["store"];
   readonly case: ToolContext["case"];
+  /** Other cases, when the plugin declared `{ cases: true }`. */
+  readonly cases?: ToolContext["cases"];
 }
 
 /** The reework context a gated action's `run` receives after the human decides. */
@@ -39,6 +41,8 @@ export interface GatedActionRunContext {
   readonly files: ToolContext["files"];
   readonly store: ToolContext["store"];
   readonly case: ToolContext["case"];
+  /** Other cases, when the plugin declared `{ cases: true }`. */
+  readonly cases?: ToolContext["cases"];
 }
 
 export interface GatedActionDefinition<TParameters extends TSchema = TSchema> {
@@ -93,6 +97,7 @@ export function gatedAction<TParameters extends TSchema>(
         files: ctx.files,
         store: ctx.store,
         case: ctx.case,
+        ...(ctx.cases === undefined ? {} : { cases: ctx.cases }),
       });
       // A file attachment must belong to this conversation; a foreign file fails the gate
       // before any proposal opens. Valid attachments carry their record's name/type/size.

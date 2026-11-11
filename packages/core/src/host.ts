@@ -5,6 +5,7 @@ import type { JsonValue } from "@earendil-works/chord";
 import type {
   Author,
   Case,
+  CaseKind,
   CasePatch,
   CasePriority,
   CaseStatus,
@@ -21,7 +22,7 @@ import { ConversationsDoc } from "./protocol/conversations.ts";
 import { FilesDoc } from "./protocol/files.ts";
 import { FileStore } from "./files/store.ts";
 import { applyCasePatch, toCase, validateCasePatch } from "./protocol/cases.ts";
-import { listOpenProposals } from "./protocol/proposals.ts";
+import { listOpenProposals, listSettledProposals } from "./protocol/proposals.ts";
 import { settleGate } from "./hitl/gate.ts";
 import type { GateDecision } from "@reework/types";
 import type { ConversationRecord } from "./protocol/conversations.ts";
@@ -43,14 +44,27 @@ export interface ListCasesFilter {
   readonly needsHuman?: boolean;
   readonly tag?: readonly string[];
   readonly stage?: string;
+  /** Kinds to list; omitted excludes desks (cases only). */
+  readonly kind?: readonly CaseKind[];
+  /** One owner author; matches its `kind` and, when given, its `id`/`name`. */
+  readonly owner?: Author;
   readonly sort?: "priority" | "dueAt" | "createdAt" | "updatedAt";
 }
 
 export interface CreateConversationOptions {
   /** Idempotency key: the same key always returns the same conversation. */
   readonly key?: string;
+  /**
+   * What the conversation is: `case` (default) or `desk`. A desk stays out of
+   * case listings, cannot be closed and is visible to plugins as such.
+   */
+  readonly kind?: CaseKind;
   /** Initial case fields; defaults apply where omitted. */
-  readonly case?: { readonly title?: string; readonly priority?: CasePriority };
+  readonly case?: {
+    readonly title?: string;
+    readonly priority?: CasePriority;
+    readonly owner?: Author;
+  };
 }
 
 export interface SubmitOptions {
@@ -113,7 +127,7 @@ export class AgentHost {
   }
 
   async createConversation(options: CreateConversationOptions = {}): Promise<ConversationInfo> {
-    const info = await this.recordConversation(options.key, options.case);
+    const info = await this.recordConversation(options.key, options.case, options.kind);
     if (this.workspace) await this.ensureWorkspace(info, this.workspace);
     return info;
   }
@@ -141,7 +155,10 @@ export class AgentHost {
   private async recordConversation(
     key: string | undefined,
     initialCase?: CreateConversationOptions["case"],
+    kind?: CaseKind,
   ): Promise<ConversationInfo> {
+    const conversationKind = requireKind(kind);
+    const owner = initialCase?.owner === undefined ? undefined : requireAuthor(initialCase.owner);
     return this.engine.commit(async (tx) => {
       const doc = (await tx.doc(ConversationsDoc)) as { conversations: ConversationRecord[] };
       const existing = key === undefined ? undefined : doc.conversations.find((c) => c.key === key);
@@ -154,10 +171,12 @@ export class AgentHost {
         id,
         ...(key === undefined ? {} : { key }),
         createdAt: now,
+        kind: conversationKind,
         status: "open",
         priority: initialCase?.priority ?? "normal",
         tags: [],
         ...(initialCase?.title === undefined ? {} : { title: initialCase.title }),
+        ...(owner === undefined ? {} : { owner }),
         caseUpdatedAt: now,
       });
       return key === undefined ? { id, created: true } : { id, key, created: true };
@@ -182,7 +201,8 @@ export class AgentHost {
   }
 
   /** Every conversation's case, newest first, optionally filtered.
-   *  `status`/`needsHuman`/`tag`/`stage` filter; `sort` orders (`priority`, `dueAt`, `createdAt`,
+   *  `status`/`needsHuman`/`tag`/`stage`/`kind`/`owner` filter; desks stay out unless
+   *  `kind` includes `"desk"`; `sort` orders (`priority`, `dueAt`, `createdAt`,
    *  `updatedAt`, default newest). */
   async listCases(filter: ListCasesFilter = {}): Promise<Case[]> {
     const doc = await this.engine.harness.snapshot(ConversationsDoc, CONTEXT);
@@ -192,6 +212,16 @@ export class AgentHost {
       byConversation.set(p.conversationId, (byConversation.get(p.conversationId) ?? 0) + 1);
     }
     let cases = (doc?.conversations ?? []).map((c) => toCase(c, byConversation.get(c.id) ?? 0));
+    if (filter.kind && filter.kind.length) {
+      const kinds = new Set(filter.kind);
+      cases = cases.filter((c) => kinds.has(c.kind));
+    } else {
+      cases = cases.filter((c) => c.kind !== "desk");
+    }
+    if (filter.owner !== undefined) {
+      const owner = requireAuthor(filter.owner);
+      cases = cases.filter((c) => ownerMatches(c.owner, owner));
+    }
     if (filter.status && filter.status.length) {
       const statuses = new Set(filter.status);
       cases = cases.filter((c) => statuses.has(c.status));
@@ -237,10 +267,17 @@ export class AgentHost {
 
   /** Update a conversation's case. An invalid patch is refused naming the field. */
   async updateCase(id: string, patch: CasePatch): Promise<Case> {
+    // An owner is an author, validated like input authors before field validation.
+    const owner = (patch as { owner?: unknown }).owner;
+    if (owner !== undefined && !isAuthor(owner)) throw new InvalidAuthor();
     const result = validateCasePatch(patch);
     if (!result.ok) {
       const [first] = result.errors;
       throw new Error(`invalid case patch: field "${first!.field}" ${first!.reason}`);
+    }
+    const beforeRecord = await this.conversationRecord(id);
+    if (patch.status === "closed" && beforeRecord.kind === "desk") {
+      throw new Error("cannot close a desk");
     }
     if (patch.status === "closed") {
       const open = await this.listProposals({ conversationId: id });
@@ -250,7 +287,7 @@ export class AgentHost {
         );
       }
     }
-    const before = (await this.conversationRecord(id)).status ?? "open";
+    const before = beforeRecord.status ?? "open";
     await this.engine.commit(async (tx) => {
       const doc = (await tx.doc(ConversationsDoc)) as { conversations: ConversationRecord[] };
       const rec = doc.conversations.find((c) => c.id === id);
@@ -397,12 +434,24 @@ export class AgentHost {
     return { submissionId, message: answer ? toMessage(answer) : undefined };
   }
 
-  /** Open proposals, across every conversation or for one. */
-  async listProposals(options: { conversationId?: string } = {}): Promise<Proposal[]> {
-    const open = await listOpenProposals(this.engine);
+  /**
+   * Proposals across every conversation or for one. By default the open ones;
+   * `status: "settled"` returns settled ones with their decision and decider.
+   */
+  async listProposals(
+    options: { conversationId?: string; status?: "open" | "settled" } = {},
+  ): Promise<Proposal[]> {
+    const status: unknown = options.status;
+    if (status !== undefined && status !== "open" && status !== "settled") {
+      throw new InvalidProposalStatus(typeof status === "string" ? status : JSON.stringify(status));
+    }
+    const proposals =
+      status === "settled"
+        ? await listSettledProposals(this.engine)
+        : await listOpenProposals(this.engine);
     return options.conversationId === undefined
-      ? open
-      : open.filter((p) => p.conversationId === options.conversationId);
+      ? proposals
+      : proposals.filter((p) => p.conversationId === options.conversationId);
   }
 
   /**
@@ -547,6 +596,16 @@ export class ConversationNotFound extends Error {
   }
 }
 
+/** A proposal listing asked for a status other than `open` or `settled`. */
+export class InvalidProposalStatus extends Error {
+  readonly status: string;
+
+  constructor(status: string) {
+    super(`invalid proposal status: ${status} (allowed: open, settled)`);
+    this.status = status;
+  }
+}
+
 export class ProposalNotFound extends Error {
   readonly proposalId: string;
 
@@ -580,6 +639,22 @@ export class FileTooLarge extends Error {
 function requireAuthor(value: unknown): Author {
   if (!isAuthor(value)) throw new InvalidAuthor();
   return normalizeAuthor(value);
+}
+
+/** Whether a case's stored owner matches the filter's author. */
+function ownerMatches(stored: Author | undefined, filter: Author): boolean {
+  if (!stored || stored.kind !== filter.kind) return false;
+  if (filter.id !== undefined && stored.id !== filter.id) return false;
+  if (filter.name !== undefined && stored.name !== filter.name) return false;
+  return true;
+}
+
+/** A well-formed conversation kind; absent means `case`. */
+function requireKind(value: unknown): CaseKind {
+  if (value === undefined) return "case";
+  if (value !== "case" && value !== "desk")
+    throw new Error(`invalid conversation kind: ${JSON.stringify(value)}`);
+  return value;
 }
 
 /** An input or decision carried an author that is not well-formed. */
