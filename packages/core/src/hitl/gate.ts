@@ -50,6 +50,7 @@ export interface GatedActionRunContext {
   /** Aborted when the agent stops. */
   signal: AbortSignal;
   models: ToolContext["models"];
+  secrets: ToolContext["secrets"];
   files: ToolContext["files"];
   store: ToolContext["store"];
   case: ToolContext["case"];
@@ -345,15 +346,17 @@ function createHitlTasks(state: HitlState) {
         }
         // Resume the agent: the outcome becomes its next input, so it can verify,
         // follow up, or act on a free-form instruction. Keyed so a rerun posts once.
+        // A headless agent cannot run, so it records the outcome without a resume input.
         const conversation = await runtime.conversation(runtime.conversationId, context);
-        await conversation?.submit(
-          {
-            type: "input",
-            content: describeOutcome(task.input.runKey, decision, result),
-            requestId: `reework.gated:${String(task.id)}`,
-          },
-          context,
-        );
+        if (!state.bindings?.headless)
+          await conversation?.submit(
+            {
+              type: "input",
+              content: describeOutcome(task.input.runKey, decision, result),
+              requestId: `reework.gated:${String(task.id)}`,
+            },
+            context,
+          );
         await runtime.commit(
           async () =>
             "error" in result

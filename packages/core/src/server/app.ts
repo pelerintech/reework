@@ -20,7 +20,9 @@ import {
   ConversationNotFound,
   FileNotFound,
   FileTooLarge,
+  HeadlessAgentError,
   InvalidAuthor,
+  ModelRunError,
   InvalidProposalStatus,
   ProposalNotFound,
 } from "../host.ts";
@@ -58,6 +60,12 @@ export function protocolErrorResponse(error: unknown, c: Context): Response | un
   }
   if (error instanceof FileTooLarge) {
     return c.json({ error: "file_too_large", size: error.size, maxBytes: error.maxBytes }, 413);
+  }
+  if (error instanceof HeadlessAgentError) {
+    return c.json({ error: "cannot_start_run", message: error.message }, 409);
+  }
+  if (error instanceof ModelRunError) {
+    return c.json({ error: "model_error", message: error.message }, 500);
   }
   if (error instanceof InvalidAuthor) {
     return c.json({ error: "invalid_author" }, 400);

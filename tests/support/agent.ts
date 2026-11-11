@@ -69,7 +69,12 @@ export async function startTestAgent(
   def: AgentDefinition,
   options: Partial<StartAgentOptions> = {},
 ): Promise<RunningAgent> {
-  const models = "models" in options ? options.models : fauxModels(def.model.modelId).models;
+  const models =
+    "models" in options
+      ? options.models
+      : def.model
+        ? fauxModels(def.model.modelId).models
+        : undefined;
   const agent = await startAgent(def, { storagePath: tmpStorage(), ...options, models });
   running.push(agent);
   return agent;

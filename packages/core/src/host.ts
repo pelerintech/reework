@@ -110,6 +110,10 @@ export class AgentHost {
   private readonly events: EventDispatcher | undefined;
   /** In-process listeners for case writes, for surfaces watching the conversation. */
   private readonly caseListeners = new Set<(c: Case) => void>();
+  /** A headless agent has no model and refuses input that would start a run. */
+  private readonly headless: boolean;
+  /** A gateway-backed model surfaces its failures as errors. */
+  private readonly gatewayModel: boolean;
 
   constructor(
     engine: Engine,
@@ -117,6 +121,7 @@ export class AgentHost {
     workspace?: WorkspaceProvider,
     files: { maxBytes?: number } = {},
     events?: EventDispatcher,
+    options: { headless?: boolean; gatewayModel?: boolean } = {},
   ) {
     this.engine = engine;
     this.agent = agent;
@@ -124,6 +129,8 @@ export class AgentHost {
     this.fileStore = new FileStore(engine.path);
     this.filesMaxBytes = files.maxBytes ?? 10 * 1024 * 1024;
     this.events = events;
+    this.headless = options.headless === true;
+    this.gatewayModel = options.gatewayModel === true;
   }
 
   async createConversation(options: CreateConversationOptions = {}): Promise<ConversationInfo> {
@@ -363,6 +370,8 @@ export class AgentHost {
     content: string,
     options: SubmitOptions = {},
   ): Promise<SubmitResult> {
+    if (!(await this.hasConversation(id))) throw new ConversationNotFound(id);
+    if (this.headless) throw new HeadlessAgentError();
     const from = options.from === undefined ? undefined : requireAuthor(options.from);
     if (options.files?.length) {
       const lines: string[] = [];
@@ -428,7 +437,19 @@ export class AgentHost {
     });
     if (!options.wait) return { submissionId };
     const settled = await submission.wait(CONTEXT);
-    if (settled.status !== "done" || settled.type !== "input") return { submissionId };
+    if (settled.status !== "done" || settled.type !== "input") {
+      if (
+        this.gatewayModel &&
+        settled.status === "unanswered" &&
+        settled.reason === "model_error"
+      ) {
+        const detail = settled.detail;
+        throw new ModelRunError(
+          typeof detail === "string" ? detail : JSON.stringify(detail ?? "unknown"),
+        );
+      }
+      return { submissionId };
+    }
     const recent = await conversation.entries({ order: "descending" }, 50, undefined, CONTEXT);
     const answer = recent.items.find((entry) => entry.id === settled.answer);
     return { submissionId, message: answer ? toMessage(answer) : undefined };
@@ -585,6 +606,23 @@ export interface ConversationSnapshot {
   readonly case: Case;
   /** The last plugin stop of this conversation's run, when a plugin stopped it. */
   readonly stopNotice?: RunStopNotice;
+}
+
+export class ModelRunError extends Error {
+  readonly detail: string;
+
+  constructor(detail: string) {
+    super(`model error: ${detail}`);
+    this.name = "ModelRunError";
+    this.detail = detail;
+  }
+}
+
+export class HeadlessAgentError extends Error {
+  constructor() {
+    super("cannot start a run: no model configured");
+    this.name = "HeadlessAgentError";
+  }
 }
 
 export class ConversationNotFound extends Error {

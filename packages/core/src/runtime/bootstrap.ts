@@ -27,6 +27,7 @@ import {
   buildUsageHooks,
   makeEventContext,
   makePluginModels,
+  makePluginSecrets,
   toDurableTool,
   toExtension,
 } from "../tooling/facade.ts";
@@ -45,7 +46,8 @@ import { onProposalOpen, onProposalSettled } from "../protocol/proposals.ts";
 import { budgetExtension } from "./budget.ts";
 import { lockStorage } from "./lock.ts";
 import type { LockOptions } from "./lock.ts";
-import { customModels, MODEL_PROVIDER_ID } from "./models.ts";
+import { customModels, MODEL_PROVIDER_ID, validateModelKeys } from "./models.ts";
+import { modelSecretNames, SecretsRuntime } from "./secrets.ts";
 
 export { MODEL_PROVIDER_ID };
 
@@ -97,7 +99,15 @@ export async function startAgent(
   const tokenEnv = options.auth?.tokenEnv ?? "REEWORK_API_TOKEN";
   const token = options.auth?.token ?? process.env[tokenEnv];
   if (!token) throw new Error(`API token variable ${tokenEnv} is not set`);
-  const models = options.models ?? customModels(agent.model, agent.models);
+  const secrets = new SecretsRuntime(
+    agent.secrets ?? {},
+    modelSecretNames(agent),
+    agent.secretsBackend,
+  );
+  secrets.validate();
+  secrets.validateGatewayToken();
+  validateModelKeys(agent);
+  const models = options.models ?? customModels(agent.model, agent.models, secrets);
   const lifecycle = new AbortController();
   const built: Built[] = [];
   const opened: Opened = {};
@@ -116,7 +126,9 @@ export async function startAgent(
       built.push(await buildPlugin(declared));
     }
     validateNamedModels(agent, built);
+    validatePluginSecrets(agent, built);
     validatePluginRouteNames(built);
+    secrets.setDeclarations(new Map(built.map((plugin) => [plugin.name, plugin.secrets])));
     if (options.models) {
       for (const name of Object.keys(agent.models ?? {})) {
         if (options.models.getModels(`reework.model.${name}`).length === 0) {
@@ -128,6 +140,8 @@ export async function startAgent(
     // names, plus the host-backed case/file access filled in once the host exists.
     const bindings: PluginBindings = {
       catalog: models,
+      headless: agent.model === undefined,
+      secrets,
       lent: new Map(built.map((p) => [p.name, p.models])),
       lentCases: new Set(built.filter((p) => p.cases).map((p) => p.name)),
     };
@@ -196,6 +210,7 @@ export async function startAgent(
       unlock,
       opened,
       lifecycle,
+      secrets,
     );
   } catch (error) {
     unlock?.();
@@ -217,6 +232,7 @@ async function boot(
   unlock: () => void,
   opened: Opened,
   lifecycle: AbortController,
+  secrets: SecretsRuntime,
 ): Promise<RunningAgent> {
   const settings: HarnessSettings = {
     stream: { ...DEFAULT_SETTINGS.stream, ...options.settings?.stream },
@@ -230,7 +246,9 @@ async function boot(
     workspaces: true,
   });
   const agentChange: AgentChange = {
-    model: { provider: MODEL_PROVIDER_ID, modelId: agent.model.modelId },
+    ...(agent.model
+      ? { model: { provider: MODEL_PROVIDER_ID, modelId: agent.model.modelId } }
+      : {}),
     ...(modelTools ? { modelTools } : {}),
   };
   const workspace = built.find((plugin) => plugin.built.workspace)?.built.workspace;
@@ -244,6 +262,7 @@ async function boot(
     lifecycle.signal,
   );
   bindings.modelUsage = (event) => events.enqueue("onModelUsage", event.conversationId, event);
+  secrets.setOnUse((event) => events.enqueue("onSecretUse", event.conversationId, event));
   onProposalOpen(engine, (proposal) => {
     events.enqueue("onProposalOpened", proposal.conversationId, { proposal });
   });
@@ -257,6 +276,7 @@ async function boot(
     workspace,
     { maxBytes: agent.files?.maxBytes },
     events,
+    { headless: agent.model === undefined, gatewayModel: secrets.isGateway() },
   );
   opened.engine = engine;
   opened.host = host;
@@ -353,6 +373,7 @@ async function boot(
       await plugin.built.setup?.({
         host,
         store: createPluginStore({ commit: (fn) => engine.commit(fn) }, plugin.name),
+        secrets: makePluginSecrets(plugin.name, bindings),
         config: plugin.config,
         signal: lifecycle.signal,
         dataDir: pluginDataDir(options.storagePath, plugin.name),
@@ -477,6 +498,7 @@ function mountPluginRoutes(
     const ctx: PluginRouteContext<unknown> = {
       host,
       store: createPluginStore({ commit: (fn) => engine.commit(fn) }, plugin.name),
+      secrets: makePluginSecrets(plugin.name, bindings),
       config: plugin.config,
       signal,
       dataDir: pluginDataDir(storagePath, plugin.name),
@@ -552,6 +574,7 @@ interface Built {
   readonly config: unknown;
   readonly built: BuiltPlugin;
   readonly models: readonly string[];
+  readonly secrets: readonly string[];
   /** The plugin declared the `ctx.cases` capability. */
   readonly cases: boolean;
 }
@@ -565,6 +588,7 @@ function buildPlugin(declared: DeclaredModule): Promise<Built> {
       config: declared.config,
       built,
       models: declared.plugin.models ?? [],
+      secrets: declared.plugin.secrets ?? [],
       cases: declared.plugin.cases === true,
     }))
     .catch((error) => {
@@ -600,6 +624,19 @@ function validateNamedModels(agent: AgentDefinition, built: readonly Built[]): v
       if (!declared.has(name)) {
         throw new Error(
           `plugin "${plugin.name}" needs model "${name}", which the agent does not declare`,
+        );
+      }
+    }
+  }
+}
+
+/** Each plugin's declared secrets must be defined by the agent. */
+function validatePluginSecrets(agent: AgentDefinition, built: readonly Built[]): void {
+  for (const plugin of built) {
+    for (const name of plugin.secrets) {
+      if (!agent.secrets || !Object.hasOwn(agent.secrets, name)) {
+        throw new Error(
+          `plugin "${plugin.name}" needs secret "${name}", which the agent does not declare`,
         );
       }
     }

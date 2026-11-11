@@ -137,7 +137,7 @@ export async function startTestAgent(
   definition: AgentDefinition,
   options: Partial<StartAgentOptions> = {},
 ): Promise<TestAgent> {
-  const model = scriptedModel(definition.model.modelId);
+  const model = scriptedModel(definition.model?.modelId ?? "m1");
   registerNamedModels(model, definition.models ?? {});
   const token = randomBytes(16).toString("hex");
   const storagePath =

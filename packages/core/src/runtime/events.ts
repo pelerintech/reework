@@ -10,7 +10,8 @@ export type EventHookName =
   | "onDecision"
   | "onCaseClosed"
   | "onCaseReopened"
-  | "onModelUsage";
+  | "onModelUsage"
+  | "onSecretUse";
 
 /** One plugin's event hooks, with its name for logging. */
 export interface EventHookPlugin {
@@ -68,6 +69,8 @@ export class EventDispatcher {
     if (this.active) return;
     this.active = this.runLoop().finally(() => {
       this.active = undefined;
+      // An event queued as the loop was ending must not wait for the next one.
+      if (this.queue.length > 0) this.start();
     });
   }
 

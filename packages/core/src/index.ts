@@ -9,12 +9,16 @@ export type {
   AgentMission,
   DeclaredModule,
   RunLimits,
+  SecretDefinition,
+  SecretsBackend,
 } from "./agent-definition.ts";
 
 export {
   AgentHost,
   ConversationNotFound,
+  HeadlessAgentError,
   InvalidAuthor,
+  ModelRunError,
   InvalidProposalStatus,
   ProposalNotFound,
 } from "./host.ts";
@@ -58,10 +62,12 @@ export type {
   PluginEventContext,
   ModelUsageEvent,
   ModelCallRequest,
+  SecretUseEvent,
   PluginStore,
   PluginStoreScope,
   PluginStoreItem,
   PluginModels,
+  PluginSecrets,
   CaseFiles,
   CaseContext,
   PluginCases,

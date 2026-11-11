@@ -20,7 +20,9 @@ export interface AgentModelProvider {
    */
   baseUrl: string;
   /** Name of the environment variable holding the API key; checked at startup. */
-  apiKeyEnv: string;
+  apiKeyEnv?: string;
+  /** A declared secret holding the API key, instead of `apiKeyEnv`. */
+  apiKey?: { readonly secret: string };
   /** Wire protocol of the endpoint. Default: `openai-completions`. */
   api?: AgentModelApi;
 }
@@ -79,9 +81,33 @@ export interface AgentCasesConfig {
   modelTool?: false | { readonly fields?: readonly CaseToolField[] };
 }
 
+export type SecretsBackend =
+  | { readonly kind: "local" }
+  | {
+      readonly kind: "gateway";
+      readonly url: string;
+      readonly tokenEnv: string;
+      /** Request timeout in ms; default 30000. */
+      readonly timeoutMs?: number;
+    };
+
+export interface SecretDefinition {
+  /** Where the value comes from: `env:VAR` or `file:/path`. */
+  from: string;
+  /** How the value is applied to a request: a header or a query parameter. */
+  apply?: { readonly header: string; readonly format?: string } | { readonly query: string };
+  /** Hosts the secret may be sent to; required for a fetchable secret. */
+  hosts?: readonly string[];
+}
+
 export interface AgentDefinition {
   name: string;
-  model: AgentModel;
+  /** The conversation model; absent for a headless agent that refuses runs. */
+  model?: AgentModel;
+  /** Named secrets and how they are applied; validated at startup. */
+  secrets?: Record<string, SecretDefinition>;
+  /** Where secret values live: locally (default) or at a secrets gateway. */
+  secretsBackend?: SecretsBackend;
   /** How the model may write a case. */
   cases?: AgentCasesConfig;
   /** Named models a plugin may call, keyed by name. `main` is reserved. */
