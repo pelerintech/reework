@@ -417,20 +417,34 @@ records the same list on its outcome.
 
 ## Embeddings
 
-`ctx.models.embed(name, texts)` embeds passages with a named model the plugin declared, from any context that
-has `models` (a tool, hook, gated action, `setup` or a route). It returns `{ embeddings: number[][], usage? }`,
-one vector per input text.
+`ctx.models.embed(name, texts, options?)` embeds passages with a named model the plugin declared, from any
+context that has `models` (a tool, hook, gated action, `setup` or a route). It returns
+`{ embeddings: number[][], usage? }`, one vector per input text in input order. Empty input returns `[]` without
+a request.
 
 Core calls the model's OpenAI-compatible `POST <baseUrl>/embeddings` endpoint directly (pi-ai has no embedding
-operation) with the model's configured key and `{ model: <modelId>, input: texts }`. Only `openai-completions`
-and `openai-responses` providers support embeddings; an `anthropic-messages` provider (or any other `api`)
-throws `ModelHasNoEmbeddings` naming the model and sends no request.
+operation) with the model's configured key and `{ model: <modelId>, input: <batch> }`. Inputs are sent in
+batches of at most 512 per request; their vectors are concatenated in input order and their usage is summed.
+Only `openai-completions` and `openai-responses` providers support embeddings; an `anthropic-messages` provider
+(or any other `api`) throws `ModelHasNoEmbeddings` naming the model and sends no request.
+
+Each response item is placed by its `index`, so a server may return vectors out of order. A response that does
+not fit the request — wrong vector count, missing/duplicate/out-of-range index, missing embedding, inconsistent
+dimensions, or a non-JSON body — throws `EmbeddingResponseInvalid` naming the plugin, the model and the reason;
+no raw parser error escapes.
+
+`options.signal` aborts the call and is combined with the context's own signal where one exists (a tool, hook,
+gated run, `setup` or route context). A request also has a timeout: the gateway backend's `timeoutMs` in gateway
+mode, otherwise 60 seconds; a pending call fails with `EmbeddingTimeoutError` naming the plugin and model. Embed
+requests share the model's `maxConcurrentRequests` limiter with completions, so they queue beside chat calls.
 
 A response's usage is reported through `onModelUsage` like a completion — `source: "plugin"`, the plugin, the
-model, the conversation when the call belongs to one, and the prompt/total token counts. A response without
-usage still returns its vectors and reports no usage. `beforeModelCall` runs before embed calls too, so a
+model, the conversation when the call belongs to one, and the summed prompt/total token counts. A response
+without usage still returns its vectors and reports no usage. Embed usage is also recorded on a tool result's
+`details.reework.modelUsage` ledger like completions. `beforeModelCall` runs before embed calls too, so a
 `{ refuse }` throws `ModelCallRefused` and nothing is sent. A test's fake embedding endpoint receives the
-request's `{ model, input }` and answers the OpenAI shape (`{ data: [{ embedding: [...] }], usage? }`).
+request's `{ model, input }` and answers the OpenAI shape
+(`{ data: [{ index, embedding: [...] }], usage? }`).
 
 ```ts
 import { Type, definePlugin, defineTool } from "@reework/core";
@@ -444,7 +458,9 @@ export const similar = definePlugin(
         description: "Embed the query and report its dimensions",
         parameters: Type.Object({ query: Type.String() }),
         async execute({ query }, ctx) {
-          const { embeddings, usage } = await ctx.models.embed("embedder", [query]);
+          const { embeddings, usage } = await ctx.models.embed("embedder", [query], {
+            signal: ctx.signal,
+          });
           return `${embeddings[0]?.length ?? 0} dimensions; ${usage?.totalTokens ?? 0} tokens`;
         },
       }),
