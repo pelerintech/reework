@@ -83,7 +83,15 @@ const ops = definePlugin(
           ...(args.fileId ? { attachments: [{ kind: "file" as const, fileId: args.fileId }] } : {}),
         }),
         run: async () =>
-          describe({ id: "x", conversationId: "1", title: "done", options: [], acceptFreeForm: false, createdAt: 0 }),
+          describe({
+            id: "x",
+            conversationId: "1",
+            title: "done",
+            audience: "human",
+            options: [],
+            acceptFreeForm: false,
+            createdAt: 0,
+          }),
       }),
     ],
     hooks: {
