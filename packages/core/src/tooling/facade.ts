@@ -1373,6 +1373,7 @@ function makeHookContext(
   api: HookApi,
   context: Context,
   bindings?: PluginBindings,
+  toolRound = false,
 ): PluginHookContext {
   return {
     conversationId: String(api.conversationId),
@@ -1381,6 +1382,17 @@ function makeHookContext(
       String(api.conversationId),
       bindings,
       name,
+    ),
+    emit: makePluginEmit(
+      name,
+      bindings,
+      String(api.conversationId),
+      toolRound
+        ? {
+            taskId: String(api.taskId),
+            ...(context.abortSignal === undefined ? {} : { signal: context.abortSignal }),
+          }
+        : undefined,
     ),
     models: makePluginModels(name, bindings, undefined, String(api.conversationId)),
     files: makeFileContext(String(api.conversationId), bindings),
@@ -1431,7 +1443,7 @@ export function buildToolHooks(
         if (!p.hooks?.beforeTool) continue;
         const res = await p.hooks.beforeTool(
           { name: call.name, args, callId: call.id, external },
-          makeHookContext(p.name, api, context, bindings),
+          makeHookContext(p.name, api, context, bindings, true),
         );
         if (res && "block" in res) {
           // Report the blocked call to the plugins declared after this one. A
@@ -1445,7 +1457,7 @@ export function buildToolHooks(
               const next = await q.hooks.afterTool(
                 { name: call.name, args, callId: call.id, external },
                 blocked,
-                makeHookContext(q.name, api, context, bindings),
+                makeHookContext(q.name, api, context, bindings, true),
               );
               if (next) {
                 blockedExternal =
@@ -1476,7 +1488,7 @@ export function buildToolHooks(
             external,
           },
           current,
-          makeHookContext(p.name, api, context, bindings),
+          makeHookContext(p.name, api, context, bindings, true),
         );
         if (next) {
           flag = flag || next.external === true || externalOfDetails(next.details);

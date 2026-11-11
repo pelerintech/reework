@@ -481,4 +481,117 @@ describe("plugin events", () => {
 
     await test.dispose();
   });
+
+  it("delivers a committed afterTool emit after the commit", async () => {
+    let afterToolReturned = false;
+    const delivered: boolean[] = [];
+    const emitter = definePlugin("a", () => ({
+      tools: [
+        defineTool({
+          name: "emitAfter",
+          description: "Run a tool whose afterTool emits.",
+          parameters: Type.Object({}),
+          async execute() {
+            return "ran";
+          },
+        }),
+      ],
+      hooks: {
+        async afterTool(call, _result, ctx) {
+          if (call.name !== "emitAfter") return;
+          ctx.emit("after.tool", {});
+          await new Promise((resolve) => setTimeout(resolve, 150));
+          afterToolReturned = true;
+        },
+      },
+    }));
+    const consumer = definePlugin("b", () => ({
+      hooks: {
+        async onPluginEvent(event) {
+          if (event.name === "after.tool") delivered.push(afterToolReturned);
+        },
+      },
+    }));
+
+    const test = await startTestAgent(
+      definition([
+        { plugin: emitter, config: {} },
+        { plugin: consumer, config: {} },
+      ]),
+    );
+    test.model.respond([toolCall("emitAfter"), text("done")]);
+    const { id } = await test.agent.host.createConversation();
+    await test.agent.host.submitInput(id, "go");
+
+    await eventually(() => delivered.length > 0);
+    expect(delivered).toEqual([true]);
+
+    await test.dispose();
+  });
+
+  it("discards an afterTool emit from an aborted round", async () => {
+    let afterToolRan = false;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const seen: string[] = [];
+    const emitter = definePlugin("a", () => ({
+      tools: [
+        defineTool({
+          name: "emitAfter",
+          description: "Run a tool whose afterTool emits.",
+          parameters: Type.Object({}),
+          async execute() {
+            return "ran";
+          },
+        }),
+        defineTool({
+          name: "ok",
+          description: "Emit from a committed round.",
+          parameters: Type.Object({}),
+          async execute(_args, ctx) {
+            ctx.emit("ok.emitted", {});
+            return "ok";
+          },
+        }),
+      ],
+      hooks: {
+        async afterTool(call, _result, ctx) {
+          if (call.name !== "emitAfter") return;
+          ctx.emit("after.tool", {});
+          afterToolRan = true;
+          await gate;
+        },
+      },
+    }));
+    const consumer = definePlugin("b", () => ({
+      hooks: {
+        async onPluginEvent(event) {
+          seen.push(event.name);
+        },
+      },
+    }));
+
+    const test = await startTestAgent(
+      definition([
+        { plugin: emitter, config: {} },
+        { plugin: consumer, config: {} },
+      ]),
+    );
+    test.model.respond([toolCall("emitAfter"), toolCall("ok"), text("done")]);
+    const { id } = await test.agent.host.createConversation();
+    await test.agent.host.submitInput(id, "go");
+    await eventually(() => afterToolRan);
+
+    const aborting = test.agent.host.abort(id);
+    release();
+    await aborting;
+    await test.agent.host.submitInput(id, "again");
+    await eventually(() => seen.includes("ok.emitted"));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(seen).toEqual(["ok.emitted"]);
+
+    await test.dispose();
+  });
 });

@@ -273,8 +273,10 @@ function, a cycle, another non-JSON value or an oversized payload throws, naming
 The event is `{ name, data, plugin, conversationId?, at }`: `plugin` is the emitter, and `conversationId` is the
 emitting context's conversation (absent from `setup` and routes). Delivery goes through the same per-agent FIFO
 queue as the host's event hooks — after the commit, at most once, the caller never waits, consumers in declaration
-order, in emit order. A tool call's emits are held until the round's tools have committed; a round that is aborted or
-rolled back discards them, so a round stopped mid-way loses its emits — delivery is at most once. The emitter never
+order, in emit order. A tool call's emits — from its `execute` and from the `beforeTool`/`afterTool` hooks of that
+call — are held until the round's tools have committed; a round that is aborted or rolled back discards them, so a
+round stopped mid-way loses its emits — delivery is at most once. Emits from other hooks (`beforeModelRequest`,
+`afterModelResponse`, `onAnswer`, `beforeCompaction`, and the event hooks) are queued immediately. The emitter never
 receives its own event. A reaction chain — a handler emitting in response to an event — is cut at depth 8, and the
 dropped emit logs a warning naming the plugin and event.
 
