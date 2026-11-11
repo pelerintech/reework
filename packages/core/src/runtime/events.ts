@@ -11,7 +11,8 @@ export type EventHookName =
   | "onCaseClosed"
   | "onCaseReopened"
   | "onModelUsage"
-  | "onSecretUse";
+  | "onSecretUse"
+  | "onPluginEvent";
 
 /** One plugin's event hooks, with its name for logging. */
 export interface EventHookPlugin {

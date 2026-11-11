@@ -34,6 +34,8 @@ export interface GatedActionGateContext {
   readonly case: ToolContext["case"];
   /** Other cases, when the plugin declared `{ cases: true }`. */
   readonly cases?: ToolContext["cases"];
+  /** Announce this plugin's own event to the other plugins' `onPluginEvent` hooks. */
+  readonly emit: ToolContext["emit"];
 }
 
 /** The reework context a gated action's `run` receives after the human decides. */
@@ -47,6 +49,8 @@ export interface GatedActionRunContext {
   readonly case: ToolContext["case"];
   /** Other cases, when the plugin declared `{ cases: true }`. */
   readonly cases?: ToolContext["cases"];
+  /** Announce this plugin's own event to the other plugins' `onPluginEvent` hooks. */
+  readonly emit: ToolContext["emit"];
 }
 
 export interface GatedActionDefinition<TParameters extends TSchema = TSchema> {
@@ -104,6 +108,7 @@ export function gatedAction<TParameters extends TSchema>(
         files: ctx.files,
         store: ctx.store,
         case: ctx.case,
+        emit: ctx.emit,
         ...(ctx.cases === undefined ? {} : { cases: ctx.cases }),
       });
       // A file attachment must belong to this conversation; a foreign file fails the gate

@@ -296,6 +296,8 @@ export interface ToolContext {
   readonly cases?: PluginCases;
   /** Run `fn` at most once per tool call and key; a replay returns the value. */
   once<T extends JsonValue>(key: string, fn: () => Promise<T>): Promise<T>;
+  /** Announce this plugin's own event to the other plugins' `onPluginEvent` hooks. */
+  emit(this: void, name: string, data: JsonValue): void;
 }
 
 /**
@@ -390,6 +392,8 @@ export interface PluginHookContext {
   readonly case: CaseContext;
   /** A value computed once per task attempt and reused on retry. */
   memo<T extends JsonValue>(name: string, compute: () => Promise<T>): Promise<T>;
+  /** Announce this plugin's own event to the other plugins' `onPluginEvent` hooks. */
+  emit(this: void, name: string, data: JsonValue): void;
 }
 
 /** The context an event hook receives: a run hook's bindings without `memo`.
@@ -410,6 +414,21 @@ export interface PluginEventContext {
   readonly case?: CaseContext;
   /** Other cases, when the plugin declared `{ cases: true }`. */
   readonly cases?: PluginCases;
+  /** Announce this plugin's own event to the other plugins' `onPluginEvent` hooks. */
+  emit(this: void, name: string, data: JsonValue): void;
+}
+
+/** An event one plugin emitted for the others to observe. */
+export interface PluginEvent {
+  /** The emitting plugin's own event name, a free-form string (`budget.warning`). */
+  readonly name: string;
+  /** The event payload; strict JSON. */
+  readonly data: JsonValue;
+  /** The plugin that emitted it; it never receives its own event. */
+  readonly plugin: string;
+  /** The emitting context's conversation; absent for `setup` and routes. */
+  readonly conversationId?: string;
+  readonly at: number;
 }
 
 /** One model call that returned usage, for `onModelUsage`. */
@@ -503,6 +522,8 @@ export interface PluginHooks {
     input: ModelCallRequest,
     ctx: PluginEventContext,
   ): Promise<{ refuse: string } | void>;
+  /** Another plugin emitted an event with `ctx.emit`; the emitter never receives its own. */
+  onPluginEvent?(input: PluginEvent, ctx: PluginEventContext): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -701,6 +722,7 @@ function buildToolContext(
   const made: ToolContext = {
     conversationId: String(api.conversationId),
     signal,
+    emit: makePluginEmit(pluginName, bindings, String(api.conversationId)),
     output: (chunk) => api.output(chunk),
     store: createPluginStore(backend, pluginName, api.conversationId),
     secrets: makePluginSecrets(pluginName, bindings, String(api.conversationId)),
@@ -863,11 +885,12 @@ export function createPluginContextMembers(
   pluginName = "?",
   collect?: (call: NamedModelCall) => void,
   includeCases = false,
-): Pick<ToolContext, "models" | "secrets" | "files" | "store" | "case"> & {
+): Pick<ToolContext, "models" | "secrets" | "files" | "store" | "case" | "emit"> & {
   cases?: PluginCases;
 } {
   const cases = includeCases ? makePluginCases(pluginName, bindings) : undefined;
   return {
+    emit: makePluginEmit(pluginName, bindings, conversationId),
     models: makePluginModels(pluginName, bindings, collect, conversationId),
     secrets: makePluginSecrets(pluginName, bindings, conversationId),
     files: conversationId ? makeFileContext(conversationId, bindings) : stubFiles(),
@@ -970,6 +993,8 @@ export interface PluginBindings {
   stopRun?: (conversationId: string, taskId: string, notice: RunStopNotice) => Promise<void>;
   /** Queue an `onModelUsage` event; filled once the agent's event queue exists. */
   modelUsage?: (event: ModelUsageEvent) => void;
+  /** Queue a plugin's emitted event; filled once the agent's event queue exists. */
+  emit?: (plugin: string, event: PluginEvent) => void;
   /**
    * The coordinator list of `beforeModelCall` hooks, in plugin declaration order:
    * resolves the first refusal, or undefined when no hook refused. Built from the
@@ -992,6 +1017,27 @@ export function makePluginSecrets(
   return {
     fetch: (name, url, init) => required().fetch(pluginName, name, url, init, conversationId),
     get: (name) => required().get(pluginName, name, conversationId),
+  };
+}
+
+/** Build the emit surface for one plugin: validate, copy and queue its event. */
+export function makePluginEmit(
+  pluginName: string,
+  bindings?: PluginBindings,
+  conversationId?: string,
+): (name: string, data: JsonValue) => void {
+  return (name, data) => {
+    if (typeof name !== "string" || name.trim() === "") {
+      throw new Error(`plugin "${pluginName}" event name must be a non-empty string`);
+    }
+    if (!bindings?.emit) throw new Error("plugin events are not wired in this build");
+    bindings.emit(pluginName, {
+      name,
+      data,
+      plugin: pluginName,
+      ...(conversationId === undefined ? {} : { conversationId }),
+      at: Date.now(),
+    });
   };
 }
 
@@ -1526,6 +1572,7 @@ export function makeEventContext(
       : (Number(conversationId) as unknown as ConversationId);
   const cases = makePluginCases(name, bindings);
   return {
+    emit: makePluginEmit(name, bindings, conversationId),
     models: makePluginModels(name, bindings, undefined, conversationId),
     secrets: makePluginSecrets(name, bindings, conversationId),
     store: bindings?.storage

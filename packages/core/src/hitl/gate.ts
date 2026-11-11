@@ -60,6 +60,8 @@ export interface GatedActionRunContext {
   case: ToolContext["case"];
   /** Other cases, when the plugin declared `{ cases: true }`. */
   cases?: ToolContext["cases"];
+  /** Announce this plugin's own event to the other plugins' `onPluginEvent` hooks. */
+  emit: ToolContext["emit"];
 }
 
 export interface GatedToolResult {

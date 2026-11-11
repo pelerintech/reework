@@ -61,6 +61,7 @@ export type {
   PluginHooks,
   PluginHookContext,
   PluginEventContext,
+  PluginEvent,
   ModelUsageEvent,
   ModelCallRequest,
   SecretUseEvent,
