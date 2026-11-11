@@ -1304,6 +1304,7 @@ export function makePluginModels(
         }
       }
       if (usage !== undefined) {
+        collect?.({ model: name, usage: toAiUsage(usage) });
         bindings?.modelUsage?.({
           source: "plugin",
           plugin: pluginName,
@@ -1324,6 +1325,18 @@ function combineSignals(a?: AbortSignal, b?: AbortSignal): AbortSignal | undefin
   if (signals.length === 0) return undefined;
   if (signals.length === 1) return signals[0];
   return AbortSignal.any(signals);
+}
+
+/** A typed token count as pi-ai's usage record; reework never prices tokens. */
+function toAiUsage(usage: ModelUsage): Usage {
+  return {
+    input: usage.inputTokens,
+    output: usage.outputTokens,
+    cacheRead: usage.cacheReadTokens,
+    cacheWrite: usage.cacheWriteTokens,
+    totalTokens: usage.totalTokens,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  };
 }
 
 /** A pi-ai usage record as reework's typed token counts. */

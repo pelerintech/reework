@@ -240,6 +240,53 @@ describe("ctx.models.embed", () => {
     expect((seenError as Error).name).toBe("AbortError");
   });
 
+  it("records embed usage on the tool result's ledger", async () => {
+    const endpoint = await startFakeEmbeddings();
+    endpoint.respond({ embeddings: [[1]], usage: { promptTokens: 7, totalTokens: 7 } });
+    const llm = await startFakeLlm();
+    process.env[LLM_ENV] = "llm-key";
+    process.env[EMBED_ENV] = "embed-key";
+
+    const embedder = definePlugin(
+      "embedder",
+      () => ({
+        tools: [
+          defineTool({
+            name: "embed",
+            description: "embed a passage",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              await ctx.models.embed("embedder", ["a"]);
+              return "embedded";
+            },
+          }),
+        ],
+      }),
+      { models: ["embedder"] },
+    );
+
+    const agent = await startTestAgent(
+      definition(llm.url, endpoint.url, [{ plugin: embedder, config: {} }]),
+      { models: undefined },
+    );
+    llm.script({ toolCall: { name: "embed" } }, { text: "done" });
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "go", { wait: true });
+
+    const { entries } = await agent.host.readConversation(id);
+    const messages = entries.flatMap(
+      (entry) => (entry as { model?: readonly unknown[] }).model ?? [],
+    );
+    const toolResult = messages.find(
+      (message) => (message as { role?: string }).role === "toolResult",
+    ) as {
+      details?: { reework?: { modelUsage?: { model: string; inputTokens: number }[] } };
+    };
+    expect(toolResult.details?.reework?.modelUsage).toEqual([
+      { model: "embedder", inputTokens: 7, outputTokens: 0 },
+    ]);
+  });
+
   it("batches inputs in groups of at most 512 and sums their usage", async () => {
     const endpoint = await startFakeEmbeddings();
     endpoint.respond(
