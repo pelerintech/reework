@@ -1304,7 +1304,10 @@ export function makePluginModels(
       const embeddings: number[][] = [];
       let dimension: number | undefined;
       let usage: ModelUsage | undefined;
+      let batches = 0;
+      let usageBatches = 0;
       for (let start = 0; start < texts.length; start += EMBED_BATCH_SIZE) {
+        batches += 1;
         const result = await requestBatch(texts.slice(start, start + EMBED_BATCH_SIZE));
         if (dimension === undefined) dimension = result.dimension;
         else if (result.dimension !== dimension) {
@@ -1316,6 +1319,7 @@ export function makePluginModels(
         }
         embeddings.push(...result.embeddings);
         if (result.usage) {
+          usageBatches += 1;
           usage =
             usage === undefined
               ? result.usage
@@ -1329,6 +1333,11 @@ export function makePluginModels(
         }
       }
       if (usage !== undefined) {
+        if (usageBatches < batches) {
+          console.warn(
+            `[reework] plugin "${pluginName}" model "${name}" embeddings response omitted usage for some batches; reporting only the usage that was returned`,
+          );
+        }
         collect?.({ model: name, usage: toAiUsage(usage) });
         bindings?.modelUsage?.({
           source: "plugin",

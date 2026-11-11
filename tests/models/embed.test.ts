@@ -1,7 +1,7 @@
 // `ctx.models.embed` calls a named model's OpenAI-compatible embeddings
 // endpoint directly, reports its usage like completions, refuses protocols
 // without embeddings, and honours `beforeModelCall`.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ModelCallRefused, Type, definePlugin, defineTool } from "@reework/core";
 import type { AgentDefinition, ModelEmbedResult, ModelUsageEvent } from "@reework/core";
 import { startFakeEmbeddings } from "../support/fake-embeddings.ts";
@@ -16,6 +16,7 @@ const EMBED_ENV = "REEWORK_TEST_EMBED_KEY";
 afterEach(() => {
   delete process.env[LLM_ENV];
   delete process.env[EMBED_ENV];
+  vi.restoreAllMocks();
 });
 
 function definition(
@@ -610,6 +611,55 @@ describe("ctx.models.embed", () => {
     expect((seenError as Error).message).toContain('plugin "embedder"');
     expect((seenError as Error).message).toContain('model "embedder"');
     expect((seenError as Error).message).toContain("dimension");
+  });
+
+  it("warns once when only some batches report usage", async () => {
+    const endpoint = await startFakeEmbeddings();
+    endpoint.respond(
+      {
+        embeddings: Array.from({ length: 512 }, () => [1]),
+        usage: { promptTokens: 512, totalTokens: 512 },
+      },
+      { embeddings: [[1]] },
+    );
+    const llm = await startFakeLlm();
+    process.env[LLM_ENV] = "llm-key";
+    process.env[EMBED_ENV] = "embed-key";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const texts = Array.from({ length: 513 }, (_, i) => `text-${i}`);
+    let seen: ModelEmbedResult | undefined;
+    const embedder = definePlugin(
+      "embedder",
+      () => ({
+        tools: [
+          defineTool({
+            name: "embed",
+            description: "embed many passages",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              seen = await ctx.models.embed("embedder", texts);
+              return "done";
+            },
+          }),
+        ],
+      }),
+      { models: ["embedder"] },
+    );
+
+    const agent = await startTestAgent(
+      definition(llm.url, endpoint.url, [{ plugin: embedder, config: {} }]),
+      { models: undefined },
+    );
+    llm.script({ toolCall: { name: "embed" } }, { text: "done" });
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "go", { wait: true });
+
+    expect(seen?.usage).toMatchObject({ inputTokens: 512, totalTokens: 512 });
+    expect(warn).toHaveBeenCalledTimes(1);
+    const message = String(warn.mock.calls[0]?.[0]);
+    expect(message).toContain('plugin "embedder"');
+    expect(message).toContain('model "embedder"');
   });
 
   it("rejects dimensions that differ across batches", async () => {
