@@ -68,6 +68,7 @@ describe("gated actions get the reework context", () => {
       proposalId: proposal.id,
       selectedOption: "yes",
       instruction: null,
+      decidedBy: { kind: "human", name: "Ana" },
     });
     await waitForIdle(test.agent.host, id);
     await waitFor(() => runCtx !== undefined);

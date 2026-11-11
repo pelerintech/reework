@@ -115,20 +115,20 @@ describe("decision attribution", () => {
     await test.dispose();
   });
 
-  it("says Someone decided when no author was recorded", async () => {
+  it("refuses an unnamed decision so no settlement is unattributed", async () => {
     const { test, client, id, proposal, close, watch } = await openGate();
 
-    await client.decide(
-      { proposalId: proposal.id, selectedOption: "a", instruction: null },
-      { conversationId: id },
-    );
-
-    const stored = await waitFor(async () => {
-      const text = await resumedText(test.agent, id);
-      return text.includes("Someone decided") ? text : undefined;
-    });
-    expect(stored).toContain("Someone decided");
-    expect(stored).not.toContain("The human decided");
+    const error = (await client
+      .decide(
+        { proposalId: proposal.id, selectedOption: "a", instruction: null },
+        { conversationId: id },
+      )
+      .catch((err: ProtocolError) => err)) as ProtocolError;
+    expect(error.status).toBe(400);
+    expect(String(error.message)).toContain("gate audience is human");
+    expect((await test.agent.host.listProposals({ conversationId: id })).map((p) => p.id)).toEqual([
+      proposal.id,
+    ]);
 
     watch.close();
     await close();

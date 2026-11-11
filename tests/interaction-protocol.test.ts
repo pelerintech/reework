@@ -56,7 +56,12 @@ describe("interaction protocol: a client submits input and reads the outcome", (
     const decision = await app.request(`/proposals/${proposalId}/decisions`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Bearer t" },
-      body: JSON.stringify({ proposalId, selectedOption: "rollback", instruction: null }),
+      body: JSON.stringify({
+        proposalId,
+        selectedOption: "rollback",
+        instruction: null,
+        decidedBy: { kind: "human", name: "Ana" },
+      }),
     });
     expect(decision.status).toBe(200);
 

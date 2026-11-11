@@ -319,6 +319,7 @@ describe("event hooks: onProposalOpened", () => {
       proposalId: proposal.id,
       selectedOption: "a",
       instruction: null,
+      decidedBy: { kind: "human", name: "Ana" },
     });
     await eventually(() => log.length >= 2);
     expect(log).toEqual([`opened:${proposal.id}:${id}`, `decided:${proposal.id}`]);

@@ -33,6 +33,7 @@ export type { EventMapperState } from "./protocol/event-mapper.ts";
 
 export { createRegistry } from "./runtime/bootstrap.ts";
 export { ConversationsDoc } from "./protocol/conversations.ts";
+export { ProposalsDoc } from "./protocol/proposals.ts";
 export type { RunningAgent } from "./runtime/bootstrap.ts";
 import type { RunningAgent as RA } from "./runtime/bootstrap.ts";
 import type { Engine } from "./engine.ts";

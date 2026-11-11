@@ -61,6 +61,7 @@ describe("the testing kit", () => {
       proposalId: proposal.id,
       selectedOption: "go",
       instruction: null,
+      decidedBy: { kind: "human", name: "Ana" },
     });
     await waitForIdle(agent.host, id);
     const { messages } = await agent.host.snapshot(id);

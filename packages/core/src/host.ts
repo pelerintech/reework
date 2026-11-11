@@ -4,12 +4,14 @@ import type { AgentChange, ConversationId, EntryRecord, TaskId } from "@earendil
 import type { JsonValue } from "@earendil-works/chord";
 import type {
   Author,
+  AuthorKind,
   Case,
   CaseKind,
   CasePatch,
   CasePriority,
   CaseStatus,
   FileRecord,
+  GateAudience,
   Message,
   Proposal,
   RunStopNotice,
@@ -494,6 +496,15 @@ export class AgentHost {
     ) {
       throw new ProposalNotFound(decision.proposalId);
     }
+    // A gate admits only the deciders its audience names: a human gate a human,
+    // an agent-capable gate a human or an agent. An unnamed or system decision is
+    // never admitted, so an agent principal cannot settle a gate by omitting its
+    // attribution.
+    const admitted: readonly AuthorKind[] =
+      proposal.audience === "human-or-agent" ? ["human", "agent"] : ["human"];
+    if (decidedBy === undefined || !admitted.includes(decidedBy.kind)) {
+      throw new GateAudienceRejected(proposal.id, proposal.audience);
+    }
     await settleGate(this.engine, {
       proposalId: decision.proposalId,
       selectedOption: decision.selectedOption,
@@ -650,6 +661,18 @@ export class ProposalNotFound extends Error {
   constructor(proposalId: string) {
     super(`open proposal not found: ${proposalId}`);
     this.proposalId = proposalId;
+  }
+}
+
+/** A decision was offered by someone the proposal's audience does not admit. */
+export class GateAudienceRejected extends Error {
+  readonly proposalId: string;
+  readonly audience: GateAudience;
+
+  constructor(proposalId: string, audience: GateAudience) {
+    super(`proposal ${proposalId}: gate audience is ${audience}`);
+    this.proposalId = proposalId;
+    this.audience = audience;
   }
 }
 

@@ -1,7 +1,7 @@
 import { Type, uuidv7 } from "@earendil-works/pi-ai";
 import type { Static, TSchema } from "@earendil-works/pi-ai";
 import type { JsonValue } from "@earendil-works/chord";
-import type { GateDecision, Proposal, ProposalAttachment } from "@reework/types";
+import type { GateAudience, GateDecision, Proposal, ProposalAttachment } from "@reework/types";
 import { defineTool, markGatedTool, toolInternal } from "../tooling/facade.ts";
 import type { ToolContext, ToolResult, ReeworkTool } from "../tooling/facade.ts";
 import { onceInCommit } from "../tooling/once.ts";
@@ -17,6 +17,8 @@ export interface GatedActionGate {
   options?: { id: string; label: string; description?: string }[];
   /** Whether the human may also give a free-form instruction. */
   acceptFreeForm?: boolean;
+  /** Who may decide this gate; absent means `human` (a built gate may raise it). */
+  audience?: GateAudience;
   /** Evidence and proposed changes shown with the proposal. */
   attachments?: ProposalAttachment[];
 }
@@ -60,6 +62,8 @@ export interface GatedActionDefinition<TParameters extends TSchema = TSchema> {
         args: Static<TParameters>,
         ctx: GatedActionGateContext,
       ) => GatedActionGate | Promise<GatedActionGate>);
+  /** Who may decide when the gate does not set it; absent means `human`. */
+  audience?: GateAudience;
   /** Runs after the human decides, with the decision and the original arguments. */
   run(
     ctx: GatedActionRunContext,
@@ -122,6 +126,7 @@ export function gatedAction<TParameters extends TSchema>(
         id: uuidv7(),
         conversationId: ctx.conversationId,
         title: gate.title,
+        audience: gate.audience ?? def.audience ?? "human",
         ...(gate.description === undefined ? {} : { description: gate.description }),
         ...(attachments === undefined ? {} : { attachments }),
         options: gate.options ?? [],
@@ -143,6 +148,7 @@ export function gatedAction<TParameters extends TSchema>(
               title: proposal.title,
               options: proposal.options,
               acceptFreeForm: proposal.acceptFreeForm,
+              audience: proposal.audience,
             },
             createdAt: proposal.createdAt,
           },

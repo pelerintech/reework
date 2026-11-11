@@ -1,5 +1,6 @@
 import { defineDoc } from "@earendil-works/pi-durable";
 import type { Proposal, ProposalAttachment } from "@reework/types";
+import type { GateAudience } from "@reework/types";
 import type { Engine } from "../engine.ts";
 import { CONTEXT } from "../engine.ts";
 import { GateDecisionDoc, notifyProposalOpen } from "../hitl/gate.ts";
@@ -14,6 +15,8 @@ export type OpenProposal = {
   options: { id: string; label: string; description?: string }[];
   attachments?: ProposalAttachment[];
   acceptFreeForm: boolean;
+  /** Who may decide; absent on proposals stored before audiences existed (read as `human`). */
+  audience?: GateAudience;
   createdAt: number;
   status: "open" | "settled";
 };
@@ -48,23 +51,6 @@ export async function publishProposal(engine: Engine, proposal: Proposal): Promi
   notifyProposalOpen(engine.hitl, proposal);
 }
 
-/**
- * Mark a proposal settled so it leaves the open list. Returns its conversation when
- * this call settled it (undefined when unknown or already settled).
- */
-export async function markProposalSettled(
-  engine: Engine,
-  proposalId: string,
-): Promise<string | undefined> {
-  return engine.commit(async (tx) => {
-    const doc = (await tx.doc(ProposalsDoc)) as { proposals: OpenProposal[] };
-    const found = doc.proposals.find((p) => p.id === proposalId);
-    if (!found || found.status === "settled") return undefined;
-    found.status = "settled";
-    return found.conversationId;
-  });
-}
-
 /** Subscribe (in-process) to proposals settled by a decision. Returns an unsubscribe fn. */
 export function onProposalSettled(
   engine: Engine,
@@ -79,7 +65,7 @@ export async function listOpenProposals(engine: Engine): Promise<Proposal[]> {
   const doc = await engine.harness.snapshot(ProposalsDoc, CONTEXT);
   return (doc?.proposals ?? [])
     .filter((p) => p.status === "open")
-    .map(({ status: _status, ...rest }) => rest);
+    .map(({ status: _status, ...rest }) => ({ ...rest, audience: rest.audience ?? "human" }));
 }
 
 /**
@@ -95,6 +81,7 @@ export async function listSettledProposals(engine: Engine): Promise<Proposal[]> 
     const decision = (await engine.harness.snapshot(GateDecisionDoc, record.id, CONTEXT))?.decision;
     settled.push({
       ...proposal,
+      audience: proposal.audience ?? "human",
       ...(decision === null || decision === undefined
         ? {}
         : {

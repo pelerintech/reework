@@ -781,6 +781,7 @@ describe("ctx.secrets in every plugin context", () => {
       proposalId: proposal.id,
       selectedOption: "yes",
       instruction: null,
+      decidedBy: { kind: "human", name: "Ana" },
     });
     await waitFor(() => seen.run !== undefined);
 

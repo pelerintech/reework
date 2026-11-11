@@ -492,6 +492,29 @@ result as a new message. `gate` may be a function of the arguments (and may be a
 a diff); it gets `{ conversationId, models, files, store, case }` (plus `cases` when the plugin
 declared it). Gates survive restarts.
 
+### Gate audiences
+
+A gated action declares who may decide it: `audience: "human"` (the default) or
+`"human-or-agent"`. A gate built from the call's arguments may set its own `audience`, raising a
+definition's `human` default (for example when the action is reversible); it is the plugin's own gate,
+so no config or manifest ceiling applies. The opened proposal carries the resolved `audience` in
+listings, snapshots and proposal events, and a stored proposal without one reads as `human`.
+
+A decision is admitted only when it names a decider its audience admits: a `human` gate admits a human
+decider, and a `human-or-agent` gate admits a human or an agent decider. A decision that names no
+decider, or names a `system` decider, is refused on both audiences — an agent principal cannot settle a
+gate by omitting or mislabelling its attribution. The host throws `GateAudienceRejected`, HTTP decision
+routes answer 400 with the audience in the message (`gate audience is human`), and `ctx.cases.decide` —
+which goes through `submitDecision` — refuses it too. The refusal happens before the gate settles, so
+the proposal stays open.
+
+Attribution is caller-asserted: the API token is the trusted-operator boundary, so a token holder can
+assert a human identity, and a channel transport verifies its own identities (a Slack user, a TUI
+operator) before passing `decidedBy` through. See [Authors](#authors).
+
+Who the agent deciders are and how a supervisor relays a decision belong to plugins; an
+`"human-or-agent"` gate is the seam they use.
+
 Settled proposals stay readable: `host.listProposals({ status: "settled" })`, HTTP
 `GET /proposals?status=settled` (and `GET /conversations/:id/proposals?status=settled`), and the
 client's `listProposals({ status: "settled" })` return decided proposals with `decidedBy` and the
@@ -549,8 +572,9 @@ carry the same shape as `decidedBy`, and the resumed message names the decider.
 
 Input without an author stays unattributed: **a missing author is never a human**, and a plugin that must
 trust the author treats absence as untrusted. An invalid author is refused (`400 invalid_author` over HTTP,
-`InvalidAuthor` in-process). Trust caveat: any holder of the API token can claim `kind: "human"`, so an author
-records what the caller declared, not proof, until scoped tokens exist.
+`InvalidAuthor` in-process). Trust caveat: the API token is the trusted-operator boundary, so any holder of it
+can claim `kind: "human"`; an author records what the caller declared, not proof, until scoped tokens exist.
+Channel transports verify their own identities before passing one through.
 
 ```ts
 import { definePlugin } from "@reework/core";
