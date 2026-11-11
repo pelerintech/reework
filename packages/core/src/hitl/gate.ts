@@ -11,7 +11,8 @@ import type { GateDecision, ModelCallUsage, Proposal } from "@reework/types";
 import type { GateAudience } from "@reework/types";
 import type { Engine } from "../engine.ts";
 import { CONTEXT } from "../engine.ts";
-import { markProposalSettled, ProposalsDoc, publishProposal } from "../protocol/proposals.ts";
+import { ProposalsDoc, publishProposal } from "../protocol/proposals.ts";
+import type { OpenProposal } from "../protocol/proposals.ts";
 import type { StorageSeam } from "../tooling/storage.ts";
 import { createPluginContextMembers, modelUsageOf } from "../tooling/facade.ts";
 import type { NamedModelCall, PluginBindings, ToolContext } from "../tooling/facade.ts";
@@ -153,13 +154,21 @@ export function notifyProposalOpen(state: HitlState, proposal: Proposal): void {
   for (const listener of state.listeners) listener(proposal);
 }
 
-/** Deliver a human decision to an open gate (durable + wakes the awaiting task). */
+/**
+ * Deliver a human decision to an open gate (durable + wakes the awaiting task).
+ * The decision and the proposal's settled status land in one commit, so a crash
+ * cannot leave a decided-but-open proposal that a later decision re-decides.
+ */
 export async function settleGate(engine: Engine, decision: GateDecision): Promise<void> {
   const proposalId = decision.proposalId;
-  await engine.commit(async (tx) => {
+  const conversationId = await engine.commit(async (tx) => {
     (await tx.doc(GateDecisionDoc, proposalId, proposalId)).decision = decision;
+    const doc = (await tx.doc(ProposalsDoc)) as { proposals: OpenProposal[] };
+    const found = doc.proposals.find((p) => p.id === proposalId);
+    if (!found || found.status === "settled") return undefined;
+    found.status = "settled";
+    return found.conversationId;
   });
-  const conversationId = await markProposalSettled(engine, proposalId);
   if (conversationId !== undefined) {
     const proposal = await settledProposal(engine, proposalId);
     for (const listener of engine.hitl.settledListeners) {

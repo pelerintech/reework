@@ -51,23 +51,6 @@ export async function publishProposal(engine: Engine, proposal: Proposal): Promi
   notifyProposalOpen(engine.hitl, proposal);
 }
 
-/**
- * Mark a proposal settled so it leaves the open list. Returns its conversation when
- * this call settled it (undefined when unknown or already settled).
- */
-export async function markProposalSettled(
-  engine: Engine,
-  proposalId: string,
-): Promise<string | undefined> {
-  return engine.commit(async (tx) => {
-    const doc = (await tx.doc(ProposalsDoc)) as { proposals: OpenProposal[] };
-    const found = doc.proposals.find((p) => p.id === proposalId);
-    if (!found || found.status === "settled") return undefined;
-    found.status = "settled";
-    return found.conversationId;
-  });
-}
-
 /** Subscribe (in-process) to proposals settled by a decision. Returns an unsubscribe fn. */
 export function onProposalSettled(
   engine: Engine,
