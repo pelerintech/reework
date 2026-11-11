@@ -1165,7 +1165,6 @@ export function makePluginModels(
       return { text: assistantText(result), usage: mapUsage(result.usage) };
     },
     embed: async (name, texts, options) => {
-      if (texts.length === 0) return { embeddings: [] };
       const { catalog, model } = resolve(name);
       if (model.api !== "openai-completions" && model.api !== "openai-responses") {
         throw new ModelHasNoEmbeddings(name);
@@ -1176,6 +1175,7 @@ export function makePluginModels(
         ...(conversationId === undefined ? {} : { conversationId }),
       });
       if (refusal !== undefined) throw new ModelCallRefused(refusal);
+      if (texts.length === 0) return { embeddings: [] };
       const auth = await catalog.getAuth(model);
       const baseUrl = (auth?.auth.baseUrl ?? model.baseUrl ?? "").replace(/\/+$/, "");
       if (!baseUrl) {

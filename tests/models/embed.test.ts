@@ -336,6 +336,99 @@ describe("ctx.models.embed", () => {
     expect(seen?.usage).toMatchObject({ inputTokens: 513, totalTokens: 513 });
   });
 
+  it("resolves the model for empty input", async () => {
+    const endpoint = await startFakeEmbeddings();
+    const llm = await startFakeLlm();
+    process.env[LLM_ENV] = "llm-key";
+    process.env[EMBED_ENV] = "embed-key";
+
+    let seenError: unknown;
+    const embedder = definePlugin(
+      "embedder",
+      () => ({
+        tools: [
+          defineTool({
+            name: "embed",
+            description: "embed nothing with an undeclared model",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              try {
+                await ctx.models.embed("undeclared", []);
+              } catch (error) {
+                seenError = error;
+              }
+              return "done";
+            },
+          }),
+        ],
+      }),
+      { models: [] },
+    );
+
+    const agent = await startTestAgent(
+      definition(llm.url, endpoint.url, [{ plugin: embedder, config: {} }]),
+      { models: undefined },
+    );
+    llm.script({ toolCall: { name: "embed" } }, { text: "done" });
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "go", { wait: true });
+
+    expect((seenError as Error).message).toContain('did not request model "undeclared"');
+    expect(endpoint.requests).toHaveLength(0);
+  });
+
+  it("runs beforeModelCall for empty input", async () => {
+    const endpoint = await startFakeEmbeddings();
+    const llm = await startFakeLlm();
+    process.env[LLM_ENV] = "llm-key";
+    process.env[EMBED_ENV] = "embed-key";
+
+    const blocker = definePlugin("blocker", () => ({
+      hooks: {
+        async beforeModelCall({ model }) {
+          if (model === "embedder") return { refuse: "budget" };
+        },
+      },
+    }));
+    let seenError: unknown;
+    const embedder = definePlugin(
+      "embedder",
+      () => ({
+        tools: [
+          defineTool({
+            name: "embed",
+            description: "embed nothing",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              try {
+                await ctx.models.embed("embedder", []);
+              } catch (error) {
+                seenError = error;
+              }
+              return "done";
+            },
+          }),
+        ],
+      }),
+      { models: ["embedder"] },
+    );
+
+    const agent = await startTestAgent(
+      definition(llm.url, endpoint.url, [
+        { plugin: blocker, config: {} },
+        { plugin: embedder, config: {} },
+      ]),
+      { models: undefined },
+    );
+    llm.script({ toolCall: { name: "embed" } }, { text: "done" });
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "go", { wait: true });
+
+    expect(seenError).toBeInstanceOf(ModelCallRefused);
+    expect((seenError as ModelCallRefused).reason).toBe("budget");
+    expect(endpoint.requests).toHaveLength(0);
+  });
+
   it("returns no vectors for empty input without a request", async () => {
     const endpoint = await startFakeEmbeddings();
     const llm = await startFakeLlm();
