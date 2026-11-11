@@ -315,4 +315,63 @@ describe("plugin events", () => {
 
     await test.dispose();
   });
+
+  it("discards emits from a round that was aborted, never delivering them later", async () => {
+    let started = false;
+    const seen: string[] = [];
+    const emitter = definePlugin("a", () => ({
+      tools: [
+        defineTool({
+          name: "hang",
+          description: "Emit, then wait for the run to be aborted.",
+          parameters: Type.Object({}),
+          async execute(_args, ctx) {
+            ctx.emit("hang.emitted", {});
+            started = true;
+            await new Promise<void>((resolve) => {
+              if (ctx.signal.aborted) resolve();
+              else ctx.signal.addEventListener("abort", () => resolve(), { once: true });
+            });
+            ctx.emit("hang.after.abort", {});
+            return "aborted";
+          },
+        }),
+        defineTool({
+          name: "ok",
+          description: "Emit from a committed round.",
+          parameters: Type.Object({}),
+          async execute(_args, ctx) {
+            ctx.emit("ok.emitted", {});
+            return "ok";
+          },
+        }),
+      ],
+    }));
+    const consumer = definePlugin("b", () => ({
+      hooks: {
+        async onPluginEvent(event) {
+          seen.push(event.name);
+        },
+      },
+    }));
+
+    const test = await startTestAgent(
+      definition([
+        { plugin: emitter, config: {} },
+        { plugin: consumer, config: {} },
+      ]),
+    );
+    test.model.respond([toolCall("hang"), toolCall("ok"), text("done")]);
+    const { id } = await test.agent.host.createConversation();
+    await test.agent.host.submitInput(id, "go");
+    await eventually(() => started);
+    await test.agent.host.abort(id);
+
+    await test.agent.host.submitInput(id, "again");
+    await eventually(() => seen.includes("ok.emitted"));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(seen).toEqual(["ok.emitted"]);
+
+    await test.dispose();
+  });
 });

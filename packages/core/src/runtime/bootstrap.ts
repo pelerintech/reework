@@ -273,19 +273,28 @@ async function boot(
   bindings.modelUsage = (event) => events.enqueue("onModelUsage", event.conversationId, event);
   bindings.emit = (plugin, event) =>
     events.enqueue("onPluginEvent", event.conversationId, event, plugin);
-  const pendingEmits = new Map<string, PluginEvent[]>();
-  bindings.bufferEmit = (event) => {
+  const pendingEmits = new Map<string, Map<string, PluginEvent[]>>();
+  bindings.bufferEmit = (taskId, event) => {
     const id = event.conversationId;
     if (id === undefined) return;
-    pendingEmits.set(id, [...(pendingEmits.get(id) ?? []), event]);
+    const byTask = pendingEmits.get(id) ?? new Map<string, PluginEvent[]>();
+    byTask.set(taskId, [...(byTask.get(taskId) ?? []), event]);
+    pendingEmits.set(id, byTask);
   };
-  bindings.flushEmits = (id) => {
-    const pending = pendingEmits.get(id);
-    if (pending === undefined) return;
-    pendingEmits.delete(id);
-    for (const event of pending) {
-      events.enqueue("onPluginEvent", event.conversationId, event, event.plugin);
+  bindings.flushEmits = (id, taskIds) => {
+    const byTask = pendingEmits.get(id);
+    if (byTask === undefined) return;
+    // Flush only the round's committed calls; anything else is stale (aborted or rolled back).
+    for (const taskId of taskIds) {
+      for (const event of byTask.get(taskId) ?? []) {
+        events.enqueue("onPluginEvent", event.conversationId, event, event.plugin);
+      }
+      byTask.delete(taskId);
     }
+    for (const taskId of byTask.keys()) {
+      if (!taskIds.has(taskId)) byTask.delete(taskId);
+    }
+    if (byTask.size === 0) pendingEmits.delete(id);
   };
   secrets.setOnUse((event) => events.enqueue("onSecretUse", event.conversationId, event));
   onProposalOpen(engine, (proposal) => {

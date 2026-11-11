@@ -727,7 +727,10 @@ function buildToolContext(
   const made: ToolContext = {
     conversationId: String(api.conversationId),
     signal,
-    emit: makePluginEmit(pluginName, bindings, String(api.conversationId), true),
+    emit: makePluginEmit(pluginName, bindings, String(api.conversationId), {
+      taskId: String(api.taskId),
+      signal,
+    }),
     output: (chunk) => api.output(chunk),
     store: createPluginStore(backend, pluginName, api.conversationId),
     secrets: makePluginSecrets(pluginName, bindings, String(api.conversationId)),
@@ -1000,10 +1003,10 @@ export interface PluginBindings {
   modelUsage?: (event: ModelUsageEvent) => void;
   /** Queue a plugin's emitted event; filled once the agent's event queue exists. */
   emit?: (plugin: string, event: PluginEvent) => void;
-  /** Hold a tool call's emitted events until its round's tools have committed. */
-  bufferEmit?: (event: PluginEvent) => void;
-  /** Queue the events a conversation's tool calls emitted once their round committed. */
-  flushEmits?: (conversationId: string) => void;
+  /** Hold a tool task's emitted events until its round's tools have committed. */
+  bufferEmit?: (taskId: string, event: PluginEvent) => void;
+  /** Queue a round's tool emits, and drop the conversation's stale buffered emits. */
+  flushEmits?: (conversationId: string, taskIds: ReadonlySet<string>) => void;
   /**
    * The coordinator list of `beforeModelCall` hooks, in plugin declaration order:
    * resolves the first refusal, or undefined when no hook refused. Built from the
@@ -1034,7 +1037,7 @@ export function makePluginEmit(
   pluginName: string,
   bindings?: PluginBindings,
   conversationId?: string,
-  defer = false,
+  defer?: { readonly taskId: string; readonly signal?: AbortSignal },
 ): (name: string, data: JsonValue) => void {
   return (name, data) => {
     if (typeof name !== "string" || name.trim() === "") {
@@ -1057,8 +1060,9 @@ export function makePluginEmit(
       at: Date.now(),
     };
     if (defer) {
+      if (defer.signal?.aborted) return;
       if (!bindings?.bufferEmit) throw new Error("plugin events are not wired in this build");
-      bindings.bufferEmit(event);
+      bindings.bufferEmit(defer.taskId, event);
       return;
     }
     if (!bindings?.emit) throw new Error("plugin events are not wired in this build");
@@ -1578,8 +1582,32 @@ export function buildUsageHooks(
 /** Build the afterTools hook that queues a round's tool emits once the tools committed. */
 export function buildPluginEventFlushHook(bindings?: PluginBindings): HookRegistration {
   return hook(GenerationTask, {
-    afterTools(_assistant, _results, api) {
-      bindings?.flushEmits?.(String(api.conversationId));
+    async afterTools(_assistant, results, api, context) {
+      const live = await api.snapshot(LiveDoc, api.conversationId, context);
+      const committed = new Set(results.map(String));
+      const taskIds = new Set<string>();
+      for (const slot of live?.tools ?? []) {
+        if (
+          slot.entry !== undefined &&
+          slot.taskId !== undefined &&
+          committed.has(String(slot.entry))
+        ) {
+          taskIds.add(String(slot.taskId));
+        }
+      }
+      // A nested call belongs to the round of the tool that made it.
+      let added = true;
+      while (added) {
+        added = false;
+        for (const slot of live?.nestedTools ?? []) {
+          if (taskIds.has(String(slot.taskId))) continue;
+          if (taskIds.has(String(slot.parentTaskId))) {
+            taskIds.add(String(slot.taskId));
+            added = true;
+          }
+        }
+      }
+      bindings?.flushEmits?.(String(api.conversationId), taskIds);
     },
   });
 }

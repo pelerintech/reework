@@ -272,7 +272,8 @@ strict JSON — an emit with a function, a cycle or another non-JSON value throw
 The event is `{ name, data, plugin, conversationId?, at }`: `plugin` is the emitter, and `conversationId` is the
 emitting context's conversation (absent from `setup` and routes). Delivery goes through the same per-agent FIFO
 queue as the host's event hooks — after the commit, at most once, the caller never waits, consumers in declaration
-order, in emit order. A tool call's emits are held until the round's tools have committed. The emitter never
+order, in emit order. A tool call's emits are held until the round's tools have committed; a round that is aborted or
+rolled back discards them, so a round stopped mid-way loses its emits — delivery is at most once. The emitter never
 receives its own event.
 
 `emit` is on every plugin context: tools, hooks, event hooks, gated-action gates and runs, `setup` and routes.
