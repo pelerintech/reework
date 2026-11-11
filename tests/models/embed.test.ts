@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ModelCallRefused, Type, definePlugin, defineTool } from "@reework/core";
 import type { AgentDefinition, ModelEmbedResult, ModelUsageEvent } from "@reework/core";
 import { startFakeEmbeddings } from "../support/fake-embeddings.ts";
+import { startFakeGateway } from "../support/fake-gateway.ts";
 import { startFakeLlm } from "../support/fake-llm.ts";
 import { startTestAgent, testDefinition } from "../support/agent.ts";
 import { eventually } from "../support/wait.ts";
@@ -236,6 +237,68 @@ describe("ctx.models.embed", () => {
     await eventually(() => seenError !== undefined);
 
     expect((seenError as Error).name).toBe("AbortError");
+  });
+
+  it("times out an embed call with the gateway backend's timeout", async () => {
+    const endpoint = await startFakeEmbeddings();
+    endpoint.respond({ embeddings: [[1]], delayMs: 300 });
+    const llm = await startFakeLlm();
+    const gateway = await startFakeGateway({
+      secrets: {},
+      raw: [],
+      upstreams: {
+        main: { baseUrl: llm.url, apiKey: "main-key" },
+        embedder: { baseUrl: endpoint.url, apiKey: "embed-key" },
+      },
+    });
+    const boxToken = "REEWORK_TEST_EMBED_BOX_TOKEN";
+    process.env[boxToken] = "box-token";
+    process.env[LLM_ENV] = "llm-key";
+    process.env[EMBED_ENV] = "embed-key";
+
+    let seenError: unknown;
+    let elapsed = 0;
+    const embedder = definePlugin(
+      "embedder",
+      () => ({
+        tools: [
+          defineTool({
+            name: "embed",
+            description: "embed a passage",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              const started = Date.now();
+              try {
+                await ctx.models.embed("embedder", ["a"]);
+              } catch (error) {
+                seenError = error;
+              } finally {
+                elapsed = Date.now() - started;
+              }
+              return "done";
+            },
+          }),
+        ],
+      }),
+      { models: ["embedder"] },
+    );
+
+    const agent = await startTestAgent(
+      {
+        ...definition(llm.url, endpoint.url, [{ plugin: embedder, config: {} }]),
+        secretsBackend: { kind: "gateway", url: gateway.url, tokenEnv: boxToken, timeoutMs: 50 },
+      },
+      { models: undefined },
+    );
+    llm.script({ toolCall: { name: "embed" } }, { text: "done" });
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "go", { wait: true });
+
+    expect((seenError as Error).name).toBe("EmbeddingTimeoutError");
+    expect((seenError as Error).message).toContain('plugin "embedder"');
+    expect((seenError as Error).message).toContain('model "embedder"');
+    expect(elapsed).toBeLessThan(250);
+    delete process.env[boxToken];
   });
 
   it("rejects a response with a vector missing for an input", async () => {

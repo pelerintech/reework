@@ -22,6 +22,7 @@ export {
   ModelCallRefused,
   ModelHasNoEmbeddings,
   EmbeddingResponseInvalid,
+  EmbeddingTimeoutError,
   section,
   toDurableTool,
   toExtension,

@@ -52,6 +52,7 @@ export {
   ModelCallRefused,
   ModelHasNoEmbeddings,
   EmbeddingResponseInvalid,
+  EmbeddingTimeoutError,
   section,
   Type,
 } from "./tooling/index.ts";

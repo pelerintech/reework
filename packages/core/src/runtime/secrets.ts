@@ -55,6 +55,11 @@ export class SecretsRuntime {
     return this.gatewayUrl(`/plugins/secrets-gateway/open/llm/${encodeURIComponent(upstream)}`);
   }
 
+  /** Timeout for a direct named-model request: the gateway timeout in gateway mode, else 60 s. */
+  modelRequestTimeout(): number {
+    return this.isGateway() ? this.gatewayTimeout() : 60_000;
+  }
+
   /** The gateway request timeout: configured, or 30 seconds. */
   private gatewayTimeout(): number {
     return this.backend.kind === "gateway" ? (this.backend.timeoutMs ?? 30_000) : 30_000;
@@ -531,6 +536,8 @@ const MAX_REDIRECTS = 5;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 export interface SecretsAccess {
+  /** Timeout for a direct named-model request; the gateway timeout in gateway mode. */
+  modelRequestTimeout?(): number;
   fetch(
     plugin: string,
     name: string,

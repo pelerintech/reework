@@ -1180,12 +1180,23 @@ export function makePluginModels(
       }
       if (auth?.auth.apiKey) headers.authorization = `Bearer ${auth.auth.apiKey}`;
       const callSignal = combineSignals(signal, options?.signal);
-      const response = await fetch(`${baseUrl}/embeddings`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ model: model.id, input: texts }),
-        ...(callSignal === undefined ? {} : { signal: callSignal }),
-      });
+      const timeoutMs = bindings?.secrets?.modelRequestTimeout?.() ?? 60_000;
+      const requestSignal = combineSignals(callSignal, AbortSignal.timeout(timeoutMs));
+      let response: Response;
+      try {
+        response = await fetch(`${baseUrl}/embeddings`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ model: model.id, input: texts }),
+          ...(requestSignal === undefined ? {} : { signal: requestSignal }),
+        });
+      } catch (error) {
+        if (callSignal?.aborted) throw error;
+        if ((error as { name?: string }).name === "TimeoutError") {
+          throw new EmbeddingTimeoutError(pluginName, name, timeoutMs);
+        }
+        throw error;
+      }
       if (!response.ok) {
         throw new Error(
           `plugin ${pluginName}: model "${name}" embeddings request failed with ${response.status}`,
@@ -1770,6 +1781,21 @@ export function buildPluginEventFlushHook(bindings?: PluginBindings): HookRegist
       bindings?.flushEmits?.(String(api.conversationId), taskIds);
     },
   });
+}
+
+/** A named model's embeddings request did not answer before its timeout. */
+export class EmbeddingTimeoutError extends Error {
+  readonly plugin: string;
+  readonly model: string;
+  readonly timeoutMs: number;
+
+  constructor(plugin: string, model: string, timeoutMs: number) {
+    super(`plugin "${plugin}" model "${model}" embeddings request timed out after ${timeoutMs} ms`);
+    this.name = "EmbeddingTimeoutError";
+    this.plugin = plugin;
+    this.model = model;
+    this.timeoutMs = timeoutMs;
+  }
 }
 
 /** A named model returned an embeddings response that does not fit the request. */
