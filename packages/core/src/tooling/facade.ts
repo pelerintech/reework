@@ -1151,6 +1151,12 @@ export function makePluginModels(
       if (model.api !== "openai-completions" && model.api !== "openai-responses") {
         throw new ModelHasNoEmbeddings(name);
       }
+      const refusal = await bindings?.beforeModelCall?.({
+        plugin: pluginName,
+        model: name,
+        ...(conversationId === undefined ? {} : { conversationId }),
+      });
+      if (refusal !== undefined) throw new ModelCallRefused(refusal);
       const auth = await catalog.getAuth(model);
       const baseUrl = (auth?.auth.baseUrl ?? model.baseUrl ?? "").replace(/\/+$/, "");
       if (!baseUrl) {

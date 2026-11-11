@@ -2,7 +2,7 @@
 // endpoint directly, reports its usage like completions, refuses protocols
 // without embeddings, and honours `beforeModelCall`.
 import { afterEach, describe, expect, it } from "vitest";
-import { Type, definePlugin, defineTool } from "@reework/core";
+import { ModelCallRefused, Type, definePlugin, defineTool } from "@reework/core";
 import type { AgentDefinition, ModelEmbedResult, ModelUsageEvent } from "@reework/core";
 import { startFakeEmbeddings } from "../support/fake-embeddings.ts";
 import { startFakeLlm } from "../support/fake-llm.ts";
@@ -201,6 +201,58 @@ describe("ctx.models.embed", () => {
 
     expect((seenError as Error).name).toBe("ModelHasNoEmbeddings");
     expect((seenError as Error).message).toContain("chat-only");
+    expect(endpoint.requests).toHaveLength(0);
+  });
+
+  it("honours a beforeModelCall refusal before sending anything", async () => {
+    const endpoint = await startFakeEmbeddings();
+    const llm = await startFakeLlm();
+    process.env[LLM_ENV] = "llm-key";
+    process.env[EMBED_ENV] = "embed-key";
+
+    const blocker = definePlugin("blocker", () => ({
+      hooks: {
+        async beforeModelCall({ model }) {
+          if (model === "embedder") return { refuse: "budget" };
+        },
+      },
+    }));
+    let seenError: unknown;
+    const embedder = definePlugin(
+      "embedder",
+      () => ({
+        tools: [
+          defineTool({
+            name: "embed",
+            description: "embed a passage",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              try {
+                await ctx.models.embed("embedder", ["a"]);
+              } catch (error) {
+                seenError = error;
+              }
+              return "done";
+            },
+          }),
+        ],
+      }),
+      { models: ["embedder"] },
+    );
+
+    const agent = await startTestAgent(
+      definition(llm.url, endpoint.url, [
+        { plugin: blocker, config: {} },
+        { plugin: embedder, config: {} },
+      ]),
+      { models: undefined },
+    );
+    llm.script({ toolCall: { name: "embed" } }, { text: "done" });
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "go", { wait: true });
+
+    expect(seenError).toBeInstanceOf(ModelCallRefused);
+    expect((seenError as ModelCallRefused).reason).toBe("budget");
     expect(endpoint.requests).toHaveLength(0);
   });
 
