@@ -49,14 +49,16 @@ export function customModels(
   model: AgentModel | undefined,
   named: Record<string, AgentModel> = {},
   secrets?: SecretsRuntime,
+  limiters?: Map<string, RequestLimiter>,
 ): MutableModels {
   const models = createModels();
-  if (model) models.setProvider(agentModelProvider(MODEL_PROVIDER_ID, model, secrets, "main"));
+  if (model)
+    models.setProvider(agentModelProvider(MODEL_PROVIDER_ID, model, secrets, "main", limiters));
   for (const [name, def] of Object.entries(named)) {
     if (name === "main") {
       throw new Error(`model name "main" is reserved; it names the conversation model`);
     }
-    models.setProvider(agentModelProvider(`reework.model.${name}`, def, secrets, name));
+    models.setProvider(agentModelProvider(`reework.model.${name}`, def, secrets, name, limiters));
   }
   return models;
 }
@@ -67,6 +69,7 @@ function agentModelProvider(
   model: AgentModel,
   secrets: SecretsRuntime | undefined,
   upstream: string,
+  limiters?: Map<string, RequestLimiter>,
 ): ReturnType<typeof createProvider> {
   const api = model.provider.api ?? "openai-completions";
   const { contextWindow, maxTokens } = modelLimits(model);
@@ -78,6 +81,11 @@ function agentModelProvider(
         resolve: async () => ({ auth: { apiKey: secrets!.gatewayToken() }, source: "gateway" }),
       }
     : modelApiKeyAuth(model, secrets, upstream);
+  const limiter =
+    model.maxConcurrentRequests === undefined
+      ? undefined
+      : createRequestLimiter(model.maxConcurrentRequests);
+  if (limiter) limiters?.set(upstream, limiter);
   return createProvider({
     id: providerId,
     name: providerId,
@@ -97,7 +105,7 @@ function agentModelProvider(
         maxTokens,
       },
     ],
-    api: { [api]: limitRequests(STREAMS[api](), model.maxConcurrentRequests) },
+    api: { [api]: limitRequests(STREAMS[api](), limiter) },
   });
 }
 
@@ -156,12 +164,8 @@ function modelLimits(model: AgentModel): { contextWindow: number; maxTokens: num
  * the real request starts when a slot is free and gives it back when it ends — done,
  * failed or aborted. An aborted waiter still starts, so the provider reports the abort.
  */
-function limitRequests(streams: ProviderStreams, limit: number | undefined): ProviderStreams {
-  if (limit === undefined) return streams;
-  if (!Number.isInteger(limit) || limit <= 0) {
-    throw new Error(`model.maxConcurrentRequests must be a positive integer (got ${limit})`);
-  }
-  const slots = semaphore(limit);
+function limitRequests(streams: ProviderStreams, slots?: RequestLimiter): ProviderStreams {
+  if (slots === undefined) return streams;
   const limited = <O extends { signal?: AbortSignal }>(
     start: (model: never, context: never, options?: O) => ReturnType<ProviderStreams["stream"]>,
   ) =>
@@ -188,8 +192,22 @@ function limitRequests(streams: ProviderStreams, limit: number | undefined): Pro
   };
 }
 
+/** One model's request limiter, shared by its completions and embeddings. */
+export interface RequestLimiter {
+  /** Take a slot; the returned release gives it back. An aborted waiter takes none. */
+  acquire(signal?: AbortSignal): Promise<() => void>;
+}
+
+/** A FIFO limiter for `maxConcurrentRequests`, validated here. */
+export function createRequestLimiter(limit: number): RequestLimiter {
+  if (!Number.isInteger(limit) || limit <= 0) {
+    throw new Error(`model.maxConcurrentRequests must be a positive integer (got ${limit})`);
+  }
+  return semaphore(limit);
+}
+
 /** A FIFO counting semaphore; an aborted waiter is let through at once. */
-function semaphore(size: number) {
+function semaphore(size: number): RequestLimiter {
   let free = size;
   const queue: (() => void)[] = [];
   const release = () => {

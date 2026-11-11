@@ -42,6 +42,7 @@ import { Type } from "@earendil-works/pi-ai";
 import type { Static, TSchema } from "@earendil-works/pi-ai";
 import type { AgentHost, ConversationSnapshot, ListCasesFilter } from "../host.ts";
 import { endRun } from "../runtime/abort.ts";
+import type { RequestLimiter } from "../runtime/models.ts";
 import type { SecretsAccess } from "../runtime/secrets.ts";
 import { markGated } from "../hitl/gate.ts";
 import type { GatedActionRunContext } from "../hitl/gate.ts";
@@ -172,9 +173,24 @@ export interface ModelCompleteResult {
   readonly usage?: { readonly inputTokens?: number; readonly outputTokens?: number };
 }
 
+export interface ModelEmbedOptions {
+  /** Aborts this call; combined with the context's own signal where one exists. */
+  readonly signal?: AbortSignal;
+}
+
+export interface ModelEmbedResult {
+  readonly embeddings: number[][];
+  readonly usage?: ModelUsage;
+}
+
 /** The named models a plugin declared, keyed by name. */
 export interface PluginModels {
   complete(name: string, input: ModelCompleteInput): Promise<ModelCompleteResult>;
+  embed(
+    name: string,
+    texts: readonly string[],
+    options?: ModelEmbedOptions,
+  ): Promise<ModelEmbedResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -739,6 +755,7 @@ function buildToolContext(
       bindings,
       (call) => modelCalls.push(call),
       String(api.conversationId),
+      signal,
     ),
     files: makeFileContext(String(api.conversationId), bindings),
     case: makeCaseContext(String(api.conversationId), bindings),
@@ -893,13 +910,14 @@ export function createPluginContextMembers(
   pluginName = "?",
   collect?: (call: NamedModelCall) => void,
   includeCases = false,
+  signal?: AbortSignal,
 ): Pick<ToolContext, "models" | "secrets" | "files" | "store" | "case" | "emit"> & {
   cases?: PluginCases;
 } {
   const cases = includeCases ? makePluginCases(pluginName, bindings) : undefined;
   return {
     emit: makePluginEmit(pluginName, bindings, conversationId),
-    models: makePluginModels(pluginName, bindings, collect, conversationId),
+    models: makePluginModels(pluginName, bindings, collect, conversationId, signal),
     secrets: makePluginSecrets(pluginName, bindings, conversationId),
     files: conversationId ? makeFileContext(conversationId, bindings) : stubFiles(),
     store: store ?? uninitializedStore(),
@@ -975,6 +993,8 @@ export interface PluginBindings {
   readonly lent: ReadonlyMap<string, readonly string[]>;
   /** The plugins that declared `{ cases: true }`; the declaration is the grant. */
   readonly lentCases?: ReadonlySet<string>;
+  /** A named model's request limiter, shared with its completions. */
+  requestLimiter?: (name: string) => RequestLimiter | undefined;
   case?: PluginCaseAccess;
   cases?: PluginCasesAccess;
   files?: PluginFilesAccess;
@@ -1085,30 +1105,38 @@ export function makePluginEmit(
   };
 }
 
+/** OpenAI-compatible servers cap one embeddings request's inputs. */
+const EMBED_BATCH_SIZE = 512;
+
 export function makePluginModels(
   pluginName: string,
   bindings?: PluginBindings,
   collect?: (call: NamedModelCall) => void,
   conversationId?: string,
+  signal?: AbortSignal,
 ): PluginModels {
   const lent = bindings?.lent.get(pluginName) ?? [];
+  const resolve = (name: string) => {
+    const catalog = bindings?.catalog;
+    if (!catalog) {
+      throw new Error(`plugin ${pluginName}: named models are not wired in this build`);
+    }
+    if (name === "main") {
+      throw new Error(`plugin ${pluginName}: "main" names the conversation model`);
+    }
+    if (!lent.includes(name)) {
+      throw new Error(`plugin "${pluginName}" did not request model "${name}"`);
+    }
+    const provider = `reework.model.${name}`;
+    const model = catalog.getModels(provider)[0];
+    if (!model) {
+      throw new Error(`plugin ${pluginName}: model "${name}" is not available`);
+    }
+    return { catalog, model };
+  };
   return {
     complete: async (name, input) => {
-      const catalog = bindings?.catalog;
-      if (!catalog) {
-        throw new Error(`plugin ${pluginName}: named models are not wired in this build`);
-      }
-      if (name === "main") {
-        throw new Error(`plugin ${pluginName}: "main" names the conversation model`);
-      }
-      if (!lent.includes(name)) {
-        throw new Error(`plugin "${pluginName}" did not request model "${name}"`);
-      }
-      const provider = `reework.model.${name}`;
-      const model = catalog.getModels(provider)[0];
-      if (!model) {
-        throw new Error(`plugin ${pluginName}: model "${name}" is not available`);
-      }
+      const { catalog, model } = resolve(name);
       if (hasImage(input.messages) && !(model.input as readonly string[]).includes("image")) {
         throw new Error(`model "${name}" does not accept image input`);
       }
@@ -1136,6 +1164,212 @@ export function makePluginModels(
       }
       return { text: assistantText(result), usage: mapUsage(result.usage) };
     },
+    embed: async (name, texts, options) => {
+      const { catalog, model } = resolve(name);
+      if (model.api !== "openai-completions" && model.api !== "openai-responses") {
+        throw new ModelHasNoEmbeddings(name);
+      }
+      const refusal = await bindings?.beforeModelCall?.({
+        plugin: pluginName,
+        model: name,
+        ...(conversationId === undefined ? {} : { conversationId }),
+      });
+      if (refusal !== undefined) throw new ModelCallRefused(refusal);
+      if (texts.length === 0) return { embeddings: [] };
+      const auth = await catalog.getAuth(model);
+      const baseUrl = (auth?.auth.baseUrl ?? model.baseUrl ?? "").replace(/\/+$/, "");
+      if (!baseUrl) {
+        throw new Error(`plugin ${pluginName}: model "${name}" has no base URL`);
+      }
+      const headers: Record<string, string> = { "content-type": "application/json" };
+      for (const [key, value] of Object.entries(auth?.auth.headers ?? {})) {
+        if (value !== null) headers[key] = value;
+      }
+      if (auth?.auth.apiKey) headers.authorization = `Bearer ${auth.auth.apiKey}`;
+      const callSignal = combineSignals(signal, options?.signal);
+
+      const requestBatch = async (batch: readonly string[]) => {
+        const release = await bindings?.requestLimiter?.(name)?.acquire(callSignal);
+        try {
+          const timeoutMs = bindings?.secrets?.modelRequestTimeout?.() ?? 60_000;
+          const requestSignal = combineSignals(callSignal, AbortSignal.timeout(timeoutMs));
+          let response: Response;
+          try {
+            response = await fetch(`${baseUrl}/embeddings`, {
+              method: "POST",
+              headers,
+              body: JSON.stringify({ model: model.id, input: batch }),
+              ...(requestSignal === undefined ? {} : { signal: requestSignal }),
+            });
+          } catch (error) {
+            if (callSignal?.aborted) throw error;
+            if ((error as { name?: string }).name === "TimeoutError") {
+              throw new EmbeddingTimeoutError(pluginName, name, timeoutMs);
+            }
+            throw error;
+          }
+          if (!response.ok) {
+            throw new Error(
+              `plugin ${pluginName}: model "${name}" embeddings request failed with ${response.status}`,
+            );
+          }
+          const text = await response.text();
+          let body: {
+            data?: { index?: number; embedding?: number[] }[];
+            usage?: { prompt_tokens?: number; total_tokens?: number };
+          };
+          try {
+            body = JSON.parse(text) as typeof body;
+          } catch {
+            throw new EmbeddingResponseInvalid(pluginName, name, "response is not JSON");
+          }
+
+          const data = body.data ?? [];
+          if (data.length !== batch.length) {
+            throw new EmbeddingResponseInvalid(
+              pluginName,
+              name,
+              `expected ${batch.length} vectors, got ${data.length}`,
+            );
+          }
+          const vectors: number[][] = [];
+          const used = new Set<number>();
+          let dimension: number | undefined;
+          for (const item of data) {
+            const index = item.index;
+            if (
+              typeof index !== "number" ||
+              !Number.isInteger(index) ||
+              index < 0 ||
+              index >= batch.length
+            ) {
+              throw new EmbeddingResponseInvalid(
+                pluginName,
+                name,
+                `item index ${String(index)} is not one of 0..${batch.length - 1}`,
+              );
+            }
+            if (used.has(index)) {
+              throw new EmbeddingResponseInvalid(pluginName, name, `duplicate index ${index}`);
+            }
+            if (!Array.isArray(item.embedding)) {
+              throw new EmbeddingResponseInvalid(
+                pluginName,
+                name,
+                `item ${index} has no embedding`,
+              );
+            }
+            if (item.embedding.length === 0) {
+              throw new EmbeddingResponseInvalid(
+                pluginName,
+                name,
+                `item ${index} vector dimension must be positive`,
+              );
+            }
+            for (const value of item.embedding) {
+              if (typeof value !== "number" || !Number.isFinite(value)) {
+                throw new EmbeddingResponseInvalid(
+                  pluginName,
+                  name,
+                  `item ${index} vector element is not a finite number`,
+                );
+              }
+            }
+            if (dimension === undefined) dimension = item.embedding.length;
+            else if (item.embedding.length !== dimension) {
+              throw new EmbeddingResponseInvalid(
+                pluginName,
+                name,
+                `vectors have inconsistent dimensions (${dimension} and ${item.embedding.length})`,
+              );
+            }
+            used.add(index);
+            vectors[index] = item.embedding;
+          }
+          const usage: ModelUsage | undefined = body.usage
+            ? {
+                inputTokens: body.usage.prompt_tokens ?? 0,
+                outputTokens: 0,
+                cacheReadTokens: 0,
+                cacheWriteTokens: 0,
+                totalTokens: body.usage.total_tokens ?? body.usage.prompt_tokens ?? 0,
+              }
+            : undefined;
+          return { embeddings: vectors, dimension: dimension ?? 0, usage };
+        } finally {
+          release?.();
+        }
+      };
+
+      const embeddings: number[][] = [];
+      let dimension: number | undefined;
+      let usage: ModelUsage | undefined;
+      let batches = 0;
+      let usageBatches = 0;
+      for (let start = 0; start < texts.length; start += EMBED_BATCH_SIZE) {
+        batches += 1;
+        const result = await requestBatch(texts.slice(start, start + EMBED_BATCH_SIZE));
+        if (dimension === undefined) dimension = result.dimension;
+        else if (result.dimension !== dimension) {
+          throw new EmbeddingResponseInvalid(
+            pluginName,
+            name,
+            `vectors have inconsistent dimensions across batches (${dimension} and ${result.dimension})`,
+          );
+        }
+        embeddings.push(...result.embeddings);
+        if (result.usage) {
+          usageBatches += 1;
+          usage =
+            usage === undefined
+              ? result.usage
+              : {
+                  inputTokens: usage.inputTokens + result.usage.inputTokens,
+                  outputTokens: 0,
+                  cacheReadTokens: 0,
+                  cacheWriteTokens: 0,
+                  totalTokens: usage.totalTokens + result.usage.totalTokens,
+                };
+        }
+      }
+      if (usage !== undefined) {
+        if (usageBatches < batches) {
+          console.warn(
+            `[reework] plugin "${pluginName}" model "${name}" embeddings response omitted usage for some batches; reporting only the usage that was returned`,
+          );
+        }
+        collect?.({ model: name, usage: toAiUsage(usage) });
+        bindings?.modelUsage?.({
+          source: "plugin",
+          plugin: pluginName,
+          model: name,
+          ...(conversationId === undefined ? {} : { conversationId }),
+          usage,
+          at: Date.now(),
+        });
+      }
+      return { embeddings, ...(usage === undefined ? {} : { usage }) };
+    },
+  };
+}
+
+/** One abort signal from the context and the caller, or undefined when neither exists. */
+function combineSignals(a?: AbortSignal, b?: AbortSignal): AbortSignal | undefined {
+  const signals = [a, b].filter((signal): signal is AbortSignal => signal !== undefined);
+  if (signals.length === 0) return undefined;
+  if (signals.length === 1) return signals[0];
+  return AbortSignal.any(signals);
+}
+
+/** A typed token count as pi-ai's usage record; reework never prices tokens. */
+function toAiUsage(usage: ModelUsage): Usage {
+  return {
+    input: usage.inputTokens,
+    output: usage.outputTokens,
+    cacheRead: usage.cacheReadTokens,
+    cacheWrite: usage.cacheWriteTokens,
+    totalTokens: usage.totalTokens,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
   };
 }
 
@@ -1394,7 +1628,13 @@ function makeHookContext(
           }
         : undefined,
     ),
-    models: makePluginModels(name, bindings, undefined, String(api.conversationId)),
+    models: makePluginModels(
+      name,
+      bindings,
+      undefined,
+      String(api.conversationId),
+      context.abortSignal,
+    ),
     files: makeFileContext(String(api.conversationId), bindings),
     case: makeCaseContext(String(api.conversationId), bindings),
     memo: async <T extends JsonValue>(key: string, compute: () => Promise<T>): Promise<T> => {
@@ -1637,6 +1877,47 @@ export function buildPluginEventFlushHook(bindings?: PluginBindings): HookRegist
       bindings?.flushEmits?.(String(api.conversationId), taskIds);
     },
   });
+}
+
+/** A named model's embeddings request did not answer before its timeout. */
+export class EmbeddingTimeoutError extends Error {
+  readonly plugin: string;
+  readonly model: string;
+  readonly timeoutMs: number;
+
+  constructor(plugin: string, model: string, timeoutMs: number) {
+    super(`plugin "${plugin}" model "${model}" embeddings request timed out after ${timeoutMs} ms`);
+    this.name = "EmbeddingTimeoutError";
+    this.plugin = plugin;
+    this.model = model;
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+/** A named model returned an embeddings response that does not fit the request. */
+export class EmbeddingResponseInvalid extends Error {
+  readonly plugin: string;
+  readonly model: string;
+  readonly reason: string;
+
+  constructor(plugin: string, model: string, reason: string) {
+    super(`plugin "${plugin}" model "${model}" returned an invalid embeddings response: ${reason}`);
+    this.name = "EmbeddingResponseInvalid";
+    this.plugin = plugin;
+    this.model = model;
+    this.reason = reason;
+  }
+}
+
+/** A named model whose protocol has no OpenAI-compatible embeddings endpoint. */
+export class ModelHasNoEmbeddings extends Error {
+  readonly model: string;
+
+  constructor(model: string) {
+    super(`model "${model}" has no embeddings`);
+    this.name = "ModelHasNoEmbeddings";
+    this.model = model;
+  }
 }
 
 /** A named-model call a plugin refused; the caller receives it as an error. */

@@ -76,6 +76,7 @@ A tool's `execute(args, ctx)` receives a reework `ToolContext`:
 | `ctx.signal`                       | Aborted when the run is stopped or the agent shuts down.                                                              |
 | `ctx.output(chunk)`                | Append running output; it becomes the result's output when omitted.                                                   |
 | `ctx.models.complete(name, input)` | Call a named model this plugin declared (no retry).                                                                   |
+| `ctx.models.embed(name, texts)`    | Embed texts through a named model's OpenAI-compatible `/embeddings` endpoint.                                         |
 | `ctx.files.list/read/add`          | The conversation's files (see [Files](#files)).                                                                       |
 | `ctx.store`                        | This plugin's storage, agent-wide and per case (see [Plugin storage](#plugin-storage)).                               |
 | `ctx.case.get/update`              | The conversation's case (see [Cases](#cases)).                                                                        |
@@ -370,7 +371,7 @@ export const meter = definePlugin("meter", () => ({
 
 ## Refusing model calls
 
-`beforeModelCall` runs before every `ctx.models.complete` — from a tool, hook, gated action, `setup` or a route —
+`beforeModelCall` runs before every `ctx.models.complete` and `ctx.models.embed` — from a tool, hook, gated action, `setup` or a route —
 in plugin declaration order. The first `{ refuse: reason }` wins and makes the call throw `ModelCallRefused` with
 that reason; no request reaches the model. Its context is agent-level: `conversationId`, `files` and `case` are
 absent when the call belongs to no conversation, and `store.case` is absent too. A hook that throws is logged and
@@ -401,7 +402,8 @@ models: {
 
 `main` is reserved. A plugin calls only models it declared: `definePlugin(name, factory, { models: ["fast"] })`,
 then `await ctx.models.complete("fast", { messages })` — from a tool or hook, or outside a run from `setup`'s
-context (a background loop may keep it for the agent's life) and a route's context. Calls do not retry and carry
+context (a background loop may keep it for the agent's life) and a route's context. An embedding-capable named
+model is called the same way with `ctx.models.embed(name, texts)` (see [Embeddings](#embeddings)). Calls do not retry and carry
 the caller's abort signal; outside a run, pass your own `signal` (for example `setup`'s). Usage is recorded on a
 tool's result only for calls made by that tool. Each named model has its own request cap (`maxConcurrentRequests`) and its own
 catalog entry (`reework.model.<name>`); a model the agent declares but the plugin does not request fails at
@@ -412,6 +414,65 @@ A tool's named-model spend is recorded on its result: `details.reework.modelUsag
 `{ model, inputTokens, outputTokens }`, beside whatever `details` the tool returned, and the aggregate
 spend is also attached as the result's `usage` (the conversation's usage ledger). A gated action's `run`
 records the same list on its outcome.
+
+## Embeddings
+
+`ctx.models.embed(name, texts, options?)` embeds passages with a named model the plugin declared, from any
+context that has `models` (a tool, hook, gated action, `setup` or a route). It returns
+`{ embeddings: number[][], usage? }`, one vector per input text in input order. Empty input still resolves the
+model and runs `beforeModelCall` (so an undeclared model or a refusal errors), then returns `[]` without a request.
+
+Core calls the model's OpenAI-compatible `POST <baseUrl>/embeddings` endpoint directly (pi-ai has no embedding
+operation) with the model's configured key and `{ model: <modelId>, input: <batch> }`. Inputs are sent in
+batches of at most 512 per request; their vectors are concatenated in input order and their usage is summed.
+Only `openai-completions` and `openai-responses` providers support embeddings; an `anthropic-messages` provider
+(or any other `api`) throws `ModelHasNoEmbeddings` naming the model and sends no request.
+
+Each response item is placed by its `index`, so a server may return vectors out of order. A response that does
+not fit the request — wrong vector count, missing/duplicate/out-of-range index, missing embedding, a zero-length
+vector, an element that is not a finite number, dimensions that differ within or across batches, or a non-JSON
+body — throws `EmbeddingResponseInvalid` naming the plugin, the model and the reason; no raw parser error
+escapes.
+
+`options.signal` aborts the call and is combined with the context's own signal where one exists (a tool, hook,
+gated run, `setup` or route context). The timeout applies **per request**: the gateway backend's `timeoutMs` in
+gateway mode, otherwise 60 seconds, so a batched call may take several timeouts before failing; a pending
+request fails with `EmbeddingTimeoutError` naming the plugin and model. Embed requests share the model's
+`maxConcurrentRequests` limiter with completions, so they queue beside chat calls.
+
+A response's usage is reported through `onModelUsage` like a completion — `source: "plugin"`, the plugin, the
+model, the conversation when the call belongs to one, and the summed prompt/total token counts. When only some
+batches report usage, the reported counts are summed (no estimate) and one warning naming the plugin and model
+is logged. A response without usage still returns its vectors and reports no usage. Embed usage is also recorded
+on a tool result's
+`details.reework.modelUsage` ledger like completions. `beforeModelCall` runs before embed calls too, so a
+`{ refuse }` throws `ModelCallRefused` and nothing is sent. A test's fake embedding endpoint receives the
+request's `{ model, input }` and answers the OpenAI shape
+(`{ data: [{ index, embedding: [...] }], usage? }`).
+
+```ts
+import { Type, definePlugin, defineTool } from "@reework/core";
+
+export const similar = definePlugin(
+  "similar",
+  () => ({
+    tools: [
+      defineTool({
+        name: "find_similar",
+        description: "Embed the query and report its dimensions",
+        parameters: Type.Object({ query: Type.String() }),
+        async execute({ query }, ctx) {
+          const { embeddings, usage } = await ctx.models.embed("embedder", [query], {
+            signal: ctx.signal,
+          });
+          return `${embeddings[0]?.length ?? 0} dimensions; ${usage?.totalTokens ?? 0} tokens`;
+        },
+      }),
+    ],
+  }),
+  { models: ["embedder"] },
+);
+```
 
 ## Plugin storage
 

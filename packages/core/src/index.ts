@@ -50,6 +50,9 @@ export {
   isReeworkTool,
   markGatedTool,
   ModelCallRefused,
+  ModelHasNoEmbeddings,
+  EmbeddingResponseInvalid,
+  EmbeddingTimeoutError,
   section,
   Type,
 } from "./tooling/index.ts";
@@ -69,6 +72,7 @@ export type {
   PluginStoreScope,
   PluginStoreItem,
   PluginModels,
+  ModelEmbedResult,
   PluginSecrets,
   CaseFiles,
   CaseContext,

@@ -346,6 +346,7 @@ function createHitlTasks(state: HitlState) {
             registered.plugin,
             (call) => modelCalls.push(call),
             true,
+            runtime.signal,
           ),
         };
         const branch = decision.selectedOption ?? (decision.instruction ? "instruction" : "abort");
