@@ -1181,10 +1181,48 @@ export function makePluginModels(
         data?: { index?: number; embedding?: number[] }[];
         usage?: { prompt_tokens?: number; total_tokens?: number };
       };
-      const embeddings = (body.data ?? [])
-        .slice()
-        .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
-        .map((item) => item.embedding ?? []);
+      const data = body.data ?? [];
+      if (data.length !== texts.length) {
+        throw new EmbeddingResponseInvalid(
+          pluginName,
+          name,
+          `expected ${texts.length} vectors, got ${data.length}`,
+        );
+      }
+      const embeddings: number[][] = [];
+      const used = new Set<number>();
+      let dimension: number | undefined;
+      for (const item of data) {
+        const index = item.index;
+        if (
+          typeof index !== "number" ||
+          !Number.isInteger(index) ||
+          index < 0 ||
+          index >= texts.length
+        ) {
+          throw new EmbeddingResponseInvalid(
+            pluginName,
+            name,
+            `item index ${String(index)} is not one of 0..${texts.length - 1}`,
+          );
+        }
+        if (used.has(index)) {
+          throw new EmbeddingResponseInvalid(pluginName, name, `duplicate index ${index}`);
+        }
+        if (!Array.isArray(item.embedding)) {
+          throw new EmbeddingResponseInvalid(pluginName, name, `item ${index} has no embedding`);
+        }
+        if (dimension === undefined) dimension = item.embedding.length;
+        else if (item.embedding.length !== dimension) {
+          throw new EmbeddingResponseInvalid(
+            pluginName,
+            name,
+            `vectors have inconsistent dimensions (${dimension} and ${item.embedding.length})`,
+          );
+        }
+        used.add(index);
+        embeddings[index] = item.embedding;
+      }
       if (!body.usage) return { embeddings };
       const usage: ModelUsage = {
         inputTokens: body.usage.prompt_tokens ?? 0,
@@ -1704,6 +1742,21 @@ export function buildPluginEventFlushHook(bindings?: PluginBindings): HookRegist
       bindings?.flushEmits?.(String(api.conversationId), taskIds);
     },
   });
+}
+
+/** A named model returned an embeddings response that does not fit the request. */
+export class EmbeddingResponseInvalid extends Error {
+  readonly plugin: string;
+  readonly model: string;
+  readonly reason: string;
+
+  constructor(plugin: string, model: string, reason: string) {
+    super(`plugin "${plugin}" model "${model}" returned an invalid embeddings response: ${reason}`);
+    this.name = "EmbeddingResponseInvalid";
+    this.plugin = plugin;
+    this.model = model;
+    this.reason = reason;
+  }
 }
 
 /** A named model whose protocol has no OpenAI-compatible embeddings endpoint. */

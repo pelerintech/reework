@@ -51,6 +51,7 @@ export {
   markGatedTool,
   ModelCallRefused,
   ModelHasNoEmbeddings,
+  EmbeddingResponseInvalid,
   section,
   Type,
 } from "./tooling/index.ts";

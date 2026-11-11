@@ -21,6 +21,7 @@ export {
   markGatedTool,
   ModelCallRefused,
   ModelHasNoEmbeddings,
+  EmbeddingResponseInvalid,
   section,
   toDurableTool,
   toExtension,

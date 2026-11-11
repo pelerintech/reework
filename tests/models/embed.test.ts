@@ -145,6 +145,99 @@ describe("ctx.models.embed", () => {
     expect(seen?.embeddings).toEqual([[1], [2]]);
   });
 
+  it("rejects a response with a vector missing for an input", async () => {
+    const endpoint = await startFakeEmbeddings();
+    endpoint.respond({ items: [{ index: 0, embedding: [1] }] });
+    const llm = await startFakeLlm();
+    process.env[LLM_ENV] = "llm-key";
+    process.env[EMBED_ENV] = "embed-key";
+
+    let seenError: unknown;
+    const embedder = definePlugin(
+      "embedder",
+      () => ({
+        tools: [
+          defineTool({
+            name: "embed",
+            description: "embed two passages",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              try {
+                await ctx.models.embed("embedder", ["a", "b"]);
+              } catch (error) {
+                seenError = error;
+              }
+              return "done";
+            },
+          }),
+        ],
+      }),
+      { models: ["embedder"] },
+    );
+
+    const agent = await startTestAgent(
+      definition(llm.url, endpoint.url, [{ plugin: embedder, config: {} }]),
+      { models: undefined },
+    );
+    llm.script({ toolCall: { name: "embed" } }, { text: "done" });
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "go", { wait: true });
+
+    expect((seenError as Error).name).toBe("EmbeddingResponseInvalid");
+    expect((seenError as Error).message).toContain('plugin "embedder"');
+    expect((seenError as Error).message).toContain('model "embedder"');
+    expect((seenError as Error).message).toContain("2");
+  });
+
+  it("rejects vectors with inconsistent dimensions", async () => {
+    const endpoint = await startFakeEmbeddings();
+    endpoint.respond({
+      items: [
+        { index: 0, embedding: [1, 2] },
+        { index: 1, embedding: [3] },
+      ],
+    });
+    const llm = await startFakeLlm();
+    process.env[LLM_ENV] = "llm-key";
+    process.env[EMBED_ENV] = "embed-key";
+
+    let seenError: unknown;
+    const embedder = definePlugin(
+      "embedder",
+      () => ({
+        tools: [
+          defineTool({
+            name: "embed",
+            description: "embed two passages",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              try {
+                await ctx.models.embed("embedder", ["a", "b"]);
+              } catch (error) {
+                seenError = error;
+              }
+              return "done";
+            },
+          }),
+        ],
+      }),
+      { models: ["embedder"] },
+    );
+
+    const agent = await startTestAgent(
+      definition(llm.url, endpoint.url, [{ plugin: embedder, config: {} }]),
+      { models: undefined },
+    );
+    llm.script({ toolCall: { name: "embed" } }, { text: "done" });
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "go", { wait: true });
+
+    expect((seenError as Error).name).toBe("EmbeddingResponseInvalid");
+    expect((seenError as Error).message).toContain('plugin "embedder"');
+    expect((seenError as Error).message).toContain('model "embedder"');
+    expect((seenError as Error).message).toContain("dimension");
+  });
+
   it("reports embedding usage like a completion", async () => {
     const endpoint = await startFakeEmbeddings();
     endpoint.respond({
