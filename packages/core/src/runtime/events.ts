@@ -9,7 +9,8 @@ export type EventHookName =
   | "onProposalOpened"
   | "onDecision"
   | "onCaseClosed"
-  | "onCaseReopened";
+  | "onCaseReopened"
+  | "onModelUsage";
 
 /** One plugin's event hooks, with its name for logging. */
 export interface EventHookPlugin {
@@ -19,22 +20,23 @@ export interface EventHookPlugin {
 
 interface QueuedEvent {
   readonly hook: EventHookName;
-  readonly conversationId: string;
+  /** Absent for an agent-level event (a model call outside a conversation). */
+  readonly conversationId?: string;
   readonly input: unknown;
 }
 
 export class EventDispatcher {
   private readonly queue: QueuedEvent[] = [];
   private readonly plugins: readonly EventHookPlugin[];
-  /** Build the context one plugin receives for one conversation. */
-  private readonly context: (plugin: string, conversationId: string) => PluginEventContext;
+  /** Build the context one plugin receives for one conversation (agent-level without one). */
+  private readonly context: (plugin: string, conversationId?: string) => PluginEventContext;
   /** Aborted when the agent begins to stop; no new events are queued afterwards. */
   private readonly signal: AbortSignal;
   private active?: Promise<void>;
 
   constructor(
     plugins: readonly EventHookPlugin[],
-    context: (plugin: string, conversationId: string) => PluginEventContext,
+    context: (plugin: string, conversationId?: string) => PluginEventContext,
     signal: AbortSignal,
   ) {
     this.plugins = plugins;
@@ -43,7 +45,7 @@ export class EventDispatcher {
   }
 
   /** Queue an event; the caller returns at once. Dropped once stopping began. */
-  enqueue(hook: EventHookName, conversationId: string, input: unknown): void {
+  enqueue(hook: EventHookName, conversationId: string | undefined, input: unknown): void {
     if (this.signal.aborted) return;
     this.queue.push({ hook, conversationId, input });
     this.start();

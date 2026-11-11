@@ -10,6 +10,7 @@ import {
 import type {
   Extension,
   EntryRecord,
+  ConversationId,
   HookApi,
   HookRegistration,
   PromptInput,
@@ -32,11 +33,13 @@ import type {
   ModelCallUsage,
   ModelMessage,
   ModelUsage,
+  RunStopNotice,
 } from "@reework/types";
 import { isAuthor } from "@reework/types";
 import { Type } from "@earendil-works/pi-ai";
 import type { Static, TSchema } from "@earendil-works/pi-ai";
 import type { AgentHost } from "../host.ts";
+import { endRun } from "../runtime/abort.ts";
 import { markGated } from "../hitl/gate.ts";
 import type { GatedActionRunContext } from "../hitl/gate.ts";
 import { once } from "./once.ts";
@@ -337,17 +340,43 @@ export interface PluginHookContext {
   memo<T extends JsonValue>(name: string, compute: () => Promise<T>): Promise<T>;
 }
 
-/** The context an event hook receives: a run hook's bindings without `memo`. */
+/** The context an event hook receives: a run hook's bindings without `memo`.
+ *  For a model call with no conversation (a plugin's setup or a route), the context
+ *  is agent-level: `conversationId`, `files` and `case` are absent, and `store.case`
+ *  is absent too; `store.agent` still works. */
 export interface PluginEventContext {
-  readonly conversationId: string;
+  readonly conversationId?: string;
   /** The named models this plugin declared. */
   readonly models: PluginModels;
-  /** This plugin's storage, agent-wide and per case. */
+  /** This plugin's storage, agent-wide and (with a conversation) per case. */
   readonly store: PluginStore;
-  /** Files scoped to this conversation. */
-  readonly files: CaseFiles;
-  /** The conversation's case. */
-  readonly case: CaseContext;
+  /** Files scoped to this conversation; absent for agent-level entries. */
+  readonly files?: CaseFiles;
+  /** The conversation's case; absent for agent-level entries. */
+  readonly case?: CaseContext;
+}
+
+/** One model call that returned usage, for `onModelUsage`. */
+export interface ModelUsageEvent {
+  /** `run` for the conversation's main model, `plugin` for a named-model call. */
+  readonly source: "run" | "plugin";
+  /** The plugin that made a named-model call; absent for a run's main model. */
+  readonly plugin?: string;
+  /** The named model, or `main` for the conversation model. */
+  readonly model: string;
+  /** The conversation, when the call belongs to one. */
+  readonly conversationId?: string;
+  readonly usage: ModelUsage;
+  readonly at: number;
+}
+
+/** The call a `beforeModelCall` hook sees. */
+export interface ModelCallRequest {
+  /** The plugin making the call. */
+  readonly plugin: string;
+  readonly model: string;
+  /** The conversation, when the call belongs to one. */
+  readonly conversationId?: string;
 }
 
 /** The hooks a plugin may provide, run in plugin declaration order. */
@@ -355,7 +384,7 @@ export interface PluginHooks {
   beforeModelRequest?(
     input: { messages: ModelMessage[] },
     ctx: PluginHookContext,
-  ): Promise<{ messages: ModelMessage[] } | void>;
+  ): Promise<{ messages: ModelMessage[] } | { stop: string } | void>;
   afterModelResponse?(
     input: { message: ModelMessage; usage?: ModelUsage },
     ctx: PluginHookContext,
@@ -393,6 +422,13 @@ export interface PluginHooks {
     input: { case: Case; cause: "input" | "update" },
     ctx: PluginEventContext,
   ): Promise<void>;
+  /** A model call returned usage: a run's main model or a plugin's named-model call. */
+  onModelUsage?(input: ModelUsageEvent, ctx: PluginEventContext): Promise<void>;
+  /** Before any `ctx.models.complete`; `{ refuse }` makes the call throw `ModelCallRefused`. */
+  beforeModelCall?(
+    input: ModelCallRequest,
+    ctx: PluginEventContext,
+  ): Promise<{ refuse: string } | void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -571,7 +607,12 @@ function buildToolContext(
     signal,
     output: (chunk) => api.output(chunk),
     store: createPluginStore(backend, pluginName, api.conversationId),
-    models: makePluginModels(pluginName, bindings, (call) => modelCalls.push(call)),
+    models: makePluginModels(
+      pluginName,
+      bindings,
+      (call) => modelCalls.push(call),
+      String(api.conversationId),
+    ),
     files: makeFileContext(String(api.conversationId), bindings),
     case: makeCaseContext(String(api.conversationId), bindings),
     once: (key, fn) => once(api, key, context, fn),
@@ -725,7 +766,7 @@ export function createPluginContextMembers(
   collect?: (call: NamedModelCall) => void,
 ): Pick<ToolContext, "models" | "files" | "store" | "case"> {
   return {
-    models: makePluginModels(pluginName, bindings, collect),
+    models: makePluginModels(pluginName, bindings, collect, conversationId),
     files: conversationId ? makeFileContext(conversationId, bindings) : stubFiles(),
     store: store ?? uninitializedStore(),
     case: conversationId ? makeCaseContext(conversationId, bindings) : stubCase(),
@@ -795,12 +836,24 @@ export interface PluginBindings {
   ) => Promise<readonly { toolCallId: string; external: boolean }[]>;
   /** The engine's storage, for the plugin store run hooks get. Filled once the engine exists. */
   storage?: StoreBackend;
+  /** Stop the run whose generation task is `taskId`; filled once the engine exists. */
+  stopRun?: (conversationId: string, taskId: string, notice: RunStopNotice) => Promise<void>;
+  /** Queue an `onModelUsage` event; filled once the agent's event queue exists. */
+  modelUsage?: (event: ModelUsageEvent) => void;
+  /**
+   * The coordinator list of `beforeModelCall` hooks, in plugin declaration order:
+   * resolves the first refusal, or undefined when no hook refused. Built from the
+   * built plugins, so every `ctx.models.complete` sees it (a plugin's models have
+   * no access to other plugins' hooks).
+   */
+  beforeModelCall?: (call: ModelCallRequest) => Promise<string | undefined>;
 }
 
 export function makePluginModels(
   pluginName: string,
   bindings?: PluginBindings,
   collect?: (call: NamedModelCall) => void,
+  conversationId?: string,
 ): PluginModels {
   const lent = bindings?.lent.get(pluginName) ?? [];
   return {
@@ -823,14 +876,41 @@ export function makePluginModels(
       if (hasImage(input.messages) && !(model.input as readonly string[]).includes("image")) {
         throw new Error(`model "${name}" does not accept image input`);
       }
+      const refusal = await bindings?.beforeModelCall?.({
+        plugin: pluginName,
+        model: name,
+        ...(conversationId === undefined ? {} : { conversationId }),
+      });
+      if (refusal !== undefined) throw new ModelCallRefused(refusal);
       const result = await catalog.complete(
         model,
         { systemPrompt: input.system, messages: toAiMessages(input.messages) },
         { signal: input.signal },
       );
-      if (result.usage) collect?.({ model: name, usage: result.usage });
+      if (result.usage) {
+        collect?.({ model: name, usage: result.usage });
+        bindings?.modelUsage?.({
+          source: "plugin",
+          plugin: pluginName,
+          model: name,
+          ...(conversationId === undefined ? {} : { conversationId }),
+          usage: toModelUsage(result.usage),
+          at: Date.now(),
+        });
+      }
       return { text: assistantText(result), usage: mapUsage(result.usage) };
     },
+  };
+}
+
+/** A pi-ai usage record as reework's typed token counts. */
+function toModelUsage(usage: Usage): ModelUsage {
+  return {
+    inputTokens: usage.input,
+    outputTokens: usage.output,
+    cacheReadTokens: usage.cacheRead,
+    cacheWriteTokens: usage.cacheWrite,
+    totalTokens: usage.totalTokens,
   };
 }
 
@@ -955,31 +1035,17 @@ function buildHooks(
   const hookCtx = (api: HookApi, context: Context): PluginHookContext =>
     makeHookContext(name, api, context, bindings);
 
-  if (hooks.beforeModelRequest || hooks.afterModelResponse || hooks.onAnswer) {
+  if (hooks.afterModelResponse || hooks.onAnswer) {
     registration.push(
       hook(GenerationTask, {
-        beforeRequest({ messages }, api, context) {
-          const run = async () => {
-            if (!hooks.beforeModelRequest) return undefined;
-            const next = await hooks.beforeModelRequest(
-              { messages: await authoredRequestMessages(name, messages, api, bindings) },
-              hookCtx(api, context),
-            );
-            if (!next?.messages) return undefined;
-            return { messages: next.messages.map(hookMessageTo) };
-          };
-          return run().catch((err) => {
-            logHookError(name, "beforeModelRequest", err);
-            return undefined;
-          });
-        },
         afterResponse(message, api, context) {
+          const usage = usageOf(message);
           if (!hooks.afterModelResponse) return undefined;
           return Promise.resolve(
             hooks.afterModelResponse(
               {
                 message: reworkMessageFrom(message as unknown as Message),
-                usage: usageOf(message),
+                usage,
               },
               hookCtx(api, context),
             ),
@@ -1045,7 +1111,7 @@ function makeHookContext(
       undefined,
       bindings,
     ),
-    models: makePluginModels(name, bindings),
+    models: makePluginModels(name, bindings, undefined, String(api.conversationId)),
     files: makeFileContext(String(api.conversationId), bindings),
     case: makeCaseContext(String(api.conversationId), bindings),
     memo: async <T extends JsonValue>(key: string, compute: () => Promise<T>): Promise<T> => {
@@ -1149,6 +1215,148 @@ export function buildToolHooks(
       return toDurableResult(current);
     },
   });
+}
+
+// ---------------------------------------------------------------------------
+// The model-request coordinator: one GenerationTask hook that runs every
+// plugin's beforeModelRequest in declaration order. A `{ stop }` ends the run
+// before the request is made (the tool-round budget's abort path), and the first
+// stop wins; later hooks do not run.
+// ---------------------------------------------------------------------------
+
+/** Build the single GenerationTask hook registration that coordinates beforeModelRequest. */
+export function buildModelHooks(
+  plugins: readonly { readonly name: string; readonly hooks?: PluginHooks }[],
+  bindings?: PluginBindings,
+): HookRegistration | undefined {
+  const any = plugins.filter((p) => typeof p.hooks?.beforeModelRequest === "function");
+  if (any.length === 0) return undefined;
+  return hook(GenerationTask, {
+    async beforeRequest({ messages }, api, context) {
+      let current: readonly Message[] = messages;
+      let replaced = false;
+      for (const p of plugins) {
+        if (!p.hooks?.beforeModelRequest) continue;
+        let next: { messages: ModelMessage[] } | { stop: string } | void;
+        try {
+          next = await p.hooks.beforeModelRequest(
+            { messages: await authoredRequestMessages(p.name, current, api, bindings) },
+            makeHookContext(p.name, api, context, bindings),
+          );
+        } catch (err) {
+          logHookError(p.name, "beforeModelRequest", err);
+          continue;
+        }
+        if (!next) continue;
+        if ("stop" in next) {
+          const notice: RunStopNotice = { plugin: p.name, reason: next.stop };
+          // End the run the way the tool-round budget does: abort it and wait for
+          // its generation. The run-scoped abort is not awaited (we run inside that task).
+          try {
+            await bindings?.stopRun?.(String(api.conversationId), String(api.taskId), notice);
+          } catch (err) {
+            logHookError(p.name, "beforeModelRequest", err);
+          }
+          await endRun(() => Promise.resolve(), (api as { signal?: AbortSignal }).signal);
+          return undefined;
+        }
+        current = next.messages.map(hookMessageTo);
+        replaced = true;
+      }
+      return replaced ? { messages: current } : undefined;
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// The named-model call coordinator: every `ctx.models.complete` runs the
+// plugins' beforeModelCall hooks in declaration order; the first refusal wins.
+// ---------------------------------------------------------------------------
+
+/** Build the coordinator that runs before every named-model call. */
+export function buildModelCallHooks(
+  plugins: readonly { readonly name: string; readonly hooks?: PluginHooks }[],
+  bindings?: PluginBindings,
+): (call: ModelCallRequest) => Promise<string | undefined> {
+  const watchers = plugins.filter((p) => typeof p.hooks?.beforeModelCall === "function");
+  if (watchers.length === 0) return async () => undefined;
+  return async (call) => {
+    for (const p of watchers) {
+      try {
+        const next = await p.hooks!.beforeModelCall!(
+          call,
+          makeEventContext(p.name, bindings, call.conversationId),
+        );
+        if (next && "refuse" in next) return next.refuse;
+      } catch (err) {
+        logHookError(p.name, "beforeModelCall", err);
+      }
+    }
+    return undefined;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The run-usage coordinator: one GenerationTask hook that emits one `onModelUsage`
+// event per main-model response, however many plugins declare the event hook.
+// ---------------------------------------------------------------------------
+
+/** Build the single afterResponse hook that reports a run's model usage. */
+export function buildUsageHooks(
+  plugins: readonly { readonly name: string; readonly hooks?: PluginHooks }[],
+  bindings?: PluginBindings,
+): HookRegistration | undefined {
+  if (!plugins.some((p) => typeof p.hooks?.onModelUsage === "function")) return undefined;
+  return hook(GenerationTask, {
+    afterResponse(message, api) {
+      const usage = usageOf(message);
+      if (!usage) return undefined;
+      bindings?.modelUsage?.({
+        source: "run",
+        model: "main",
+        conversationId: String(api.conversationId),
+        usage,
+        at: Date.now(),
+      });
+      return undefined;
+    },
+  });
+}
+
+/** A named-model call a plugin refused; the caller receives it as an error. */
+export class ModelCallRefused extends Error {
+  readonly reason: string;
+
+  constructor(reason: string) {
+    super(`model call refused: ${reason}`);
+    this.name = "ModelCallRefused";
+    this.reason = reason;
+  }
+}
+
+/** Build the context one plugin receives for one event (agent-level without a conversation). */
+export function makeEventContext(
+  name: string,
+  bindings?: PluginBindings,
+  conversationId?: string,
+): PluginEventContext {
+  const conversation =
+    conversationId === undefined
+      ? undefined
+      : (Number(conversationId) as unknown as ConversationId);
+  return {
+    models: makePluginModels(name, bindings, undefined, conversationId),
+    store: bindings?.storage
+      ? createPluginStore(bindings.storage, name, conversation)
+      : uninitializedStore(),
+    ...(conversationId === undefined
+      ? {}
+      : {
+          conversationId,
+          files: makeFileContext(conversationId, bindings),
+          case: makeCaseContext(conversationId, bindings),
+        }),
+  };
 }
 
 /**

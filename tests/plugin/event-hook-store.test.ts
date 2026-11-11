@@ -47,7 +47,7 @@ describe("plugin store in event hooks", () => {
         },
         async onCaseClosed(_input, ctx) {
           await ctx.store.case.set("closed", true);
-          closed[ctx.conversationId] = {
+          closed[ctx.conversationId!] = {
             inputs: await ctx.store.case.get("inputs"),
             keys: (await ctx.store.case.list("")).map((item) => item.key),
           };

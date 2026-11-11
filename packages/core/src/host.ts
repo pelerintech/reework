@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { configure } from "@earendil-works/pi-durable";
-import type { AgentChange, ConversationId, EntryRecord } from "@earendil-works/pi-durable";
+import type { AgentChange, ConversationId, EntryRecord, TaskId } from "@earendil-works/pi-durable";
 import type { JsonValue } from "@earendil-works/chord";
 import type {
   Author,
@@ -11,6 +11,7 @@ import type {
   FileRecord,
   Message,
   Proposal,
+  RunStopNotice,
   TranscriptItem,
 } from "@reework/types";
 import { isAuthor, normalizeAuthor } from "@reework/types";
@@ -26,6 +27,7 @@ import type { GateDecision } from "@reework/types";
 import type { ConversationRecord } from "./protocol/conversations.ts";
 import type { WorkspaceProvider } from "./tooling/facade.ts";
 import type { EventDispatcher } from "./runtime/events.ts";
+import { readStopNotice, recordStopNotice } from "./runtime/stop-notice.ts";
 
 /** A conversation as the protocol sees it. Ids are strings on the wire. */
 export interface ConversationInfo {
@@ -440,13 +442,54 @@ export class AgentHost {
     );
     const transcript = toTranscript(entries, running);
     const caseInfo = await this.getCase(id);
-    return { conversationId: id, messages, proposals, running, transcript, case: caseInfo };
+    const stopNotice = await readStopNotice(this.engine, id);
+    return {
+      conversationId: id,
+      messages,
+      proposals,
+      running,
+      transcript,
+      case: caseInfo,
+      ...(stopNotice ? { stopNotice } : {}),
+    };
   }
 
   /** Stop the conversation's current run. Background work such as open gates is untouched. */
   async abort(id: string): Promise<void> {
     const conversation = await this.conversation(id);
     await conversation.abort(CONTEXT);
+  }
+
+  /**
+   * A plugin stopped the run `taskId`: record the notice, abort only that run (not
+   * the conversation, so input submitted meanwhile is kept), and once the run is
+   * idle admit queued input again so it starts a fresh run.
+   */
+  async stopRun(id: string, taskId: string, notice: RunStopNotice): Promise<void> {
+    const conversation = await this.conversation(id);
+    const idle = conversation.waitForIdle(CONTEXT);
+    await recordStopNotice(this.engine, id, notice);
+    void this.engine.harness.abortTask(taskId as unknown as TaskId, CONTEXT).catch(() => {});
+    void idle.then(() => this.admitQueuedInput(id)).catch(() => {});
+  }
+
+  /**
+   * Place queued input after a stopped run. A run that ends without a boundary
+   * leaves its inbox for the next input; a bookkeeping write (an entry with no
+   * model messages) runs the boundary and starts the queued input, changing
+   * nothing the model sees.
+   */
+  private async admitQueuedInput(id: string): Promise<void> {
+    const inspect = await this.engine.harness.inspect(CONTEXT);
+    const queued = inspect.submissions.some(
+      (s) => String(s.conversationId) === id && s.status === "queued" && s.type === "input",
+    );
+    if (!queued) return;
+    const conversation = await this.conversation(id);
+    await conversation.submit(
+      { type: "write", entry: { kind: "reework.kick", model: [] } },
+      CONTEXT,
+    );
   }
 
   async readConversation(id: string): Promise<ConversationRead> {
@@ -491,6 +534,8 @@ export interface ConversationSnapshot {
   readonly transcript: readonly TranscriptItem[];
   /** The conversation's case at snapshot time. */
   readonly case: Case;
+  /** The last plugin stop of this conversation's run, when a plugin stopped it. */
+  readonly stopNotice?: RunStopNotice;
 }
 
 export class ConversationNotFound extends Error {

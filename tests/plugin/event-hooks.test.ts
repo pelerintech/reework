@@ -55,8 +55,8 @@ describe("event hooks: onInput", () => {
     expect(first.ctx.conversationId).toBe(id);
     expect(typeof first.ctx.store.agent.get).toBe("function");
     expect(typeof first.ctx.store.case.get).toBe("function");
-    expect(typeof first.ctx.files.list).toBe("function");
-    expect(typeof first.ctx.case.get).toBe("function");
+    expect(typeof first.ctx.files?.list).toBe("function");
+    expect(typeof first.ctx.case?.get).toBe("function");
     expect(typeof first.ctx.models.complete).toBe("function");
 
     // A repeat of the same request id admits nothing and fires nothing.
