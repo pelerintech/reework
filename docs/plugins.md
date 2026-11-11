@@ -492,6 +492,24 @@ result as a new message. `gate` may be a function of the arguments (and may be a
 a diff); it gets `{ conversationId, models, files, store, case }` (plus `cases` when the plugin
 declared it). Gates survive restarts.
 
+### Gate audiences
+
+A gated action declares who may decide it: `audience: "human"` (the default) or
+`"human-or-agent"`. A gate built from the call's arguments may set its own `audience`, raising a
+definition's `human` default (for example when the action is reversible); it is the plugin's own gate,
+so no config or manifest ceiling applies. The opened proposal carries the resolved `audience` in
+listings, snapshots and proposal events, and a stored proposal without one reads as `human`.
+
+A decision naming an agent decider (`decidedBy.kind: "agent"`) is refused on a `human` gate: the host
+throws `GateAudienceRejected`, HTTP decision routes answer 400 with the audience in the message
+(`gate audience is human`), and `ctx.cases.decide` — which goes through `submitDecision` — refuses it
+too. The refusal happens before the gate settles, so the proposal stays open. A human decider is
+accepted on both audiences, and a decision that names no decider (a system or UI surface that does not
+attribute one) is accepted on both.
+
+Who the agent deciders are and how a supervisor relays a decision belong to plugins; an
+`"human-or-agent"` gate is the seam they use.
+
 Settled proposals stay readable: `host.listProposals({ status: "settled" })`, HTTP
 `GET /proposals?status=settled` (and `GET /conversations/:id/proposals?status=settled`), and the
 client's `listProposals({ status: "settled" })` return decided proposals with `decidedBy` and the
