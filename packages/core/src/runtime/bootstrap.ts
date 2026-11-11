@@ -262,7 +262,8 @@ async function boot(
     lifecycle.signal,
   );
   bindings.modelUsage = (event) => events.enqueue("onModelUsage", event.conversationId, event);
-  bindings.emit = (_plugin, event) => events.enqueue("onPluginEvent", event.conversationId, event);
+  bindings.emit = (plugin, event) =>
+    events.enqueue("onPluginEvent", event.conversationId, event, plugin);
   secrets.setOnUse((event) => events.enqueue("onSecretUse", event.conversationId, event));
   onProposalOpen(engine, (proposal) => {
     events.enqueue("onProposalOpened", proposal.conversationId, { proposal });

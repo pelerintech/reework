@@ -25,6 +25,8 @@ interface QueuedEvent {
   /** Absent for an agent-level event (a model call outside a conversation). */
   readonly conversationId?: string;
   readonly input: unknown;
+  /** The plugin whose own emit this is; it receives nothing for it. */
+  readonly skip?: string;
 }
 
 export class EventDispatcher {
@@ -47,9 +49,14 @@ export class EventDispatcher {
   }
 
   /** Queue an event; the caller returns at once. Dropped once stopping began. */
-  enqueue(hook: EventHookName, conversationId: string | undefined, input: unknown): void {
+  enqueue(
+    hook: EventHookName,
+    conversationId: string | undefined,
+    input: unknown,
+    skip?: string,
+  ): void {
     if (this.signal.aborted) return;
-    this.queue.push({ hook, conversationId, input });
+    this.queue.push({ hook, conversationId, input, ...(skip === undefined ? {} : { skip }) });
     this.start();
   }
 
@@ -84,6 +91,7 @@ export class EventDispatcher {
 
   private async deliver(event: QueuedEvent): Promise<void> {
     for (const plugin of this.plugins) {
+      if (plugin.name === event.skip) continue;
       const hook = (plugin.hooks as Record<string, unknown>)[event.hook];
       if (!hook) continue;
       try {

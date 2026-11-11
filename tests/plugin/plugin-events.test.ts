@@ -70,4 +70,52 @@ describe("plugin events", () => {
 
     await test.dispose();
   });
+
+  it("does not deliver an event back to the plugin that emitted it", async () => {
+    const own: PluginEvent[] = [];
+    const other: PluginEvent[] = [];
+    const emitter = definePlugin("a", () => ({
+      tools: [
+        defineTool({
+          name: "warn",
+          description: "Announce a budget warning.",
+          parameters: Type.Object({}),
+          async execute(_args, ctx) {
+            ctx.emit("budget.warning", { used: 90 });
+            return "announced";
+          },
+        }),
+      ],
+      hooks: {
+        async onPluginEvent(event) {
+          own.push(event);
+        },
+      },
+    }));
+    const consumer = definePlugin("b", () => ({
+      hooks: {
+        async onPluginEvent(event) {
+          other.push(event);
+        },
+      },
+    }));
+
+    const test = await startTestAgent(
+      definition([
+        { plugin: emitter, config: {} },
+        { plugin: consumer, config: {} },
+      ]),
+    );
+    test.model.respond([toolCall("warn"), text("done")]);
+    const { id } = await test.agent.host.createConversation();
+    await test.agent.host.submitInput(id, "go");
+
+    const delivered = await eventually(() => other[0]);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(delivered.plugin).toBe("a");
+    expect(delivered.conversationId).toBe(id);
+    expect(own).toEqual([]);
+
+    await test.dispose();
+  });
 });
