@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.2.0](https://github.com/pelerintech/reework/compare/types-v1.1.0...types-v1.2.0) (2026-11-11)
+
+
+### Features
+
+* **core:** add conversation kinds, owners and case access ([ad491fa](https://github.com/pelerintech/reework/commit/ad491fa6cb0e8af58e2bb448a773675fe7d99d82))
+* **core:** budget seams (v12) ([5f75fd3](https://github.com/pelerintech/reework/commit/5f75fd3f8db80847dccb2d24862b23c8ece0e5d0))
+* **core:** conversation kinds, owners and case access (v13) ([5c2865a](https://github.com/pelerintech/reework/commit/5c2865ae4f10ce7fec037f971dde76781022a4cd))
+* **core:** external tools (v11) ([facbcf6](https://github.com/pelerintech/reework/commit/facbcf6186f72abf5248215529ae737b744839ea))
+* **core:** gate audience (v15) ([e12ee35](https://github.com/pelerintech/reework/commit/e12ee35602c7ec428da9ea9a94bce9f978e8edc1))
+* **core:** let a plugin stop a run before the next model request ([8e76328](https://github.com/pelerintech/reework/commit/8e763289bf8b9417b1cf59364b5e167fd9288623))
+* **core:** plugin events (v16) ([cd007ba](https://github.com/pelerintech/reework/commit/cd007ba4612d86e7b3cb6dbbd52365681f100d82))
+* **core:** secrets and headless agents (v14) ([c65bf35](https://github.com/pelerintech/reework/commit/c65bf35a9c5dbd953339a8104ac317c21b931aa9))
+* **core:** serve settled proposals over HTTP and the client ([5792633](https://github.com/pelerintech/reework/commit/579263385ca26a2d3467a1b6503df0222f99bec6))
+* **types:** carry a gate audience on proposals ([589dbcb](https://github.com/pelerintech/reework/commit/589dbcb861c6e98f3856c642e6586e1b956c290b))
+* **types:** carry external on tool-result hook messages ([ea8e9a9](https://github.com/pelerintech/reework/commit/ea8e9a9c6fc755e1004a92623679759ca865ba0f))
+* **types:** show external on transcript tool items ([124629d](https://github.com/pelerintech/reework/commit/124629db87b0141a8074cad6854bc11996e20570))
+
 ## [1.1.0](https://github.com/pelerintech/reework/compare/types-v1.0.0...types-v1.1.0) (2026-11-04)
 
 

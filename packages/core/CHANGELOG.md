@@ -1,5 +1,99 @@
 # Changelog
 
+## [1.3.0](https://github.com/pelerintech/reework/compare/core-v1.2.3...core-v1.3.0) (2026-11-11)
+
+
+### Features
+
+* **core:** add conversation kinds, owners and case access ([ad491fa](https://github.com/pelerintech/reework/commit/ad491fa6cb0e8af58e2bb448a773675fe7d99d82))
+* **core:** add plugin events to every plugin context ([c568d89](https://github.com/pelerintech/reework/commit/c568d89ccbfda3ac0d3decf73c3e821e05be5d9f))
+* **core:** admit an agent decider on an agent-capable gate ([1f47b90](https://github.com/pelerintech/reework/commit/1f47b90108f70a2783c65e5df6c7b6d7c0a7ba3b))
+* **core:** audit raw secret reads and fetches ([4117db1](https://github.com/pelerintech/reework/commit/4117db13c0832b4e65d0281abbefba8eeccaff56))
+* **core:** budget seams (v12) ([5f75fd3](https://github.com/pelerintech/reework/commit/5f75fd3f8db80847dccb2d24862b23c8ece0e5d0))
+* **core:** conversation kinds, owners and case access (v13) ([5c2865a](https://github.com/pelerintech/reework/commit/5c2865ae4f10ce7fec037f971dde76781022a4cd))
+* **core:** deliver tool emits after the tool round commits ([3133b9f](https://github.com/pelerintech/reework/commit/3133b9fe650d8d39f0c88eef4c8c3e1bf43fd5dd))
+* **core:** embed named models through their embeddings endpoint ([628c9d2](https://github.com/pelerintech/reework/commit/628c9d2c0e56a958611d6c716fd1f4fe78c3ceba))
+* **core:** embeddings (v17) ([2f9388f](https://github.com/pelerintech/reework/commit/2f9388f3cf217c1aabad04c1593d6671dd1eff29))
+* **core:** emit plugin events from setup and routes ([8e36579](https://github.com/pelerintech/reework/commit/8e365798bb4a9e584cfdd604c22a79b2db831193))
+* **core:** external tools (v11) ([facbcf6](https://github.com/pelerintech/reework/commit/facbcf6186f72abf5248215529ae737b744839ea))
+* **core:** fail startup when the gateway token env is unset ([3f37e02](https://github.com/pelerintech/reework/commit/3f37e025276036f6095c7436a3dd9d9ca4fc97e1))
+* **core:** fetch with secrets in every plugin context ([54cfd51](https://github.com/pelerintech/reework/commit/54cfd51c91b564af571f316e04426c19bdfee771))
+* **core:** gate audience (v15) ([e12ee35](https://github.com/pelerintech/reework/commit/e12ee35602c7ec428da9ea9a94bce9f978e8edc1))
+* **core:** gateway secrets backend ([a0aac08](https://github.com/pelerintech/reework/commit/a0aac08c98d3f1757fbc98c467ed800cc7aa62fc))
+* **core:** headless agents without a model ([c0db230](https://github.com/pelerintech/reework/commit/c0db230aa4616dd0367afc6a444cc0548bbf5282))
+* **core:** keep input submitted during a run stop ([e573a65](https://github.com/pelerintech/reework/commit/e573a65537c05e7b2c23bc0d2528eac7933f22ba))
+* **core:** keep the external flag sticky through the hook chain ([b2e6b70](https://github.com/pelerintech/reework/commit/b2e6b702c2051ee870cf7e17c921e613cdcdbfe5))
+* **core:** let a built gate set the resolved audience ([0a027dd](https://github.com/pelerintech/reework/commit/0a027dd28fcdf64e58805273d5d67cc6b57a6e0b))
+* **core:** let a hook mark a blocked result external ([ada2045](https://github.com/pelerintech/reework/commit/ada20455c2ac8f053219412b42e942874ebba560))
+* **core:** let a plugin stop a run before the next model request ([8e76328](https://github.com/pelerintech/reework/commit/8e763289bf8b9417b1cf59364b5e167fd9288623))
+* **core:** let a tool result mark itself external ([d6b5f36](https://github.com/pelerintech/reework/commit/d6b5f36d74eab9c94781e2e7f2184227b8c804f4))
+* **core:** let humans and unnamed deciders settle either audience ([0eb8a4e](https://github.com/pelerintech/reework/commit/0eb8a4e4c8a2a69d7d0ceed7fe036418074f770c))
+* **core:** mark a flagged tool's results external for hooks ([17ae971](https://github.com/pelerintech/reework/commit/17ae971da19e82f21f4c7b55ed1f9c61fb868253))
+* **core:** model keys from secrets with exactly one source ([c4a1391](https://github.com/pelerintech/reework/commit/c4a1391df1531f6c95e194c937c065ca8d974330))
+* **core:** plugin events (v16) ([cd007ba](https://github.com/pelerintech/reework/commit/cd007ba4612d86e7b3cb6dbbd52365681f100d82))
+* **core:** refuse embeddings for models without an embeddings endpoint ([558ba2e](https://github.com/pelerintech/reework/commit/558ba2ed16c0f49f62f4e6752d391c14d03e06fe))
+* **core:** refuse secrets a plugin did not declare ([1fc23f8](https://github.com/pelerintech/reework/commit/1fc23f8220a0eabac4365ce802d3e1dd6c4b79ee))
+* **core:** reject an agent decider on a human gate ([f4d0f1c](https://github.com/pelerintech/reework/commit/f4d0f1c9968819ec3da1e4d6d523a4d9e703bb3d))
+* **core:** reject malformed secret definitions ([d633694](https://github.com/pelerintech/reework/commit/d633694e80c6ea22f9a3dffb4e70d72d0e95024f))
+* **core:** report embedding usage through onModelUsage ([a2299d7](https://github.com/pelerintech/reework/commit/a2299d7c4efe45c0d83c830f8449ee9a4ed20b32))
+* **core:** require plugin event data to be JSON ([d31649d](https://github.com/pelerintech/reework/commit/d31649d3d20a60b5132ffd22ec6fcee5dd327bf1))
+* **core:** resolve file-backed secrets ([28e870f](https://github.com/pelerintech/reework/commit/28e870f87e53f6597c12542b72df6673913d7d1c))
+* **core:** run beforeModelCall refusals before embed calls ([9772c43](https://github.com/pelerintech/reework/commit/9772c4304121089ce4e23051b5dbe90b8c5bcd8b))
+* **core:** secrets and headless agents (v14) ([c65bf35](https://github.com/pelerintech/reework/commit/c65bf35a9c5dbd953339a8104ac317c21b931aa9))
+* **core:** serve settled proposals over HTTP and the client ([5792633](https://github.com/pelerintech/reework/commit/579263385ca26a2d3467a1b6503df0222f99bec6))
+* **core:** skip the emitter when delivering plugin events ([28dab87](https://github.com/pelerintech/reework/commit/28dab87a6c0ae2bb15a623bdcf203394407d79af))
+* **core:** validate secret definitions at startup ([b8cf6f3](https://github.com/pelerintech/reework/commit/b8cf6f3f7eb0e9bf09b3f8a4d3c0e82f084c06b5))
+* **types:** carry a gate audience on proposals ([589dbcb](https://github.com/pelerintech/reework/commit/589dbcb861c6e98f3856c642e6586e1b956c290b))
+* **types:** carry external on tool-result hook messages ([ea8e9a9](https://github.com/pelerintech/reework/commit/ea8e9a9c6fc755e1004a92623679759ca865ba0f))
+* **types:** show external on transcript tool items ([124629d](https://github.com/pelerintech/reework/commit/124629db87b0141a8074cad6854bc11996e20570))
+
+
+### Bug Fixes
+
+* **core:** admit only the deciders a gate's audience names ([e80f3db](https://github.com/pelerintech/reework/commit/e80f3db2ab90a986e3a0fc237e08caeff8a093c3))
+* **core:** answer a headless submit with 409 and the clear message ([1a95062](https://github.com/pelerintech/reework/commit/1a95062bfa8f435712d89a6c0887457d7bb161e2))
+* **core:** answer an unknown conversation before a headless refusal ([311e2c3](https://github.com/pelerintech/reework/commit/311e2c3ab60bfa0aa1b2d726ef418980cd670c4b))
+* **core:** apply header formats literally ([f03a985](https://github.com/pelerintech/reework/commit/f03a985626f746217b11e85733963526eeaec74d))
+* **core:** attribute hook emits to their plugin and conversation ([cb8848d](https://github.com/pelerintech/reework/commit/cb8848d3e2194030d3099a7e6f5b96a41ca299a7))
+* **core:** audit failed local secret uses ([28491ad](https://github.com/pelerintech/reework/commit/28491adb737545e84316d0b1dbcc97a8eb1aef22))
+* **core:** audit refused secret uses and model keys ([b9e5927](https://github.com/pelerintech/reework/commit/b9e592722f4f0faf5ad456799dad55151effabe5))
+* **core:** batch embed inputs and sum their usage ([812a53e](https://github.com/pelerintech/reework/commit/812a53ebe0a3d23ae87fa301e1fb79383063b5ea))
+* **core:** buffer tool-hook emits with their tool round ([1e0a763](https://github.com/pelerintech/reework/commit/1e0a763c6df9b861cd192d7d81911d368cf5cada))
+* **core:** cut plugin event reaction chains at depth 8 ([270aab4](https://github.com/pelerintech/reework/commit/270aab4c3f3ea61d43a3602e5bca5e9064e33265))
+* **core:** discard tool emits from a round that did not commit ([75d7a50](https://github.com/pelerintech/reework/commit/75d7a50e68f90a22f3fed8f03c4c5b47407ede66))
+* **core:** emit one run usage event per model response ([91c7cb5](https://github.com/pelerintech/reework/commit/91c7cb56c01797de5fcfaafee2cc113244015c5b))
+* **core:** harden gateway request handling ([63e90c8](https://github.com/pelerintech/reework/commit/63e90c84017e6a0cbeaff93c76146e8af9895902))
+* **core:** keep external on hook-rewritten tool-result messages ([1807621](https://github.com/pelerintech/reework/commit/18076219612ffcdc0c197dbd359154b4241e526d))
+* **core:** match host entries by host, port and IPv6 form ([f263073](https://github.com/pelerintech/reework/commit/f2630731afceef381a08bc060dba90e1a01b526f))
+* **core:** name malformed embedding responses ([86422ec](https://github.com/pelerintech/reework/commit/86422ecea4db2f470686fae44e8db4197b912508))
+* **core:** order embedding vectors by their index ([b7d1a6f](https://github.com/pelerintech/reework/commit/b7d1a6f986e183c5fd2cbef30a3f8886648d0d86))
+* **core:** pass abort signals to embed requests ([4aac211](https://github.com/pelerintech/reework/commit/4aac211729b514729a93aaafe2a5b7e5533f657b))
+* **core:** re-check secret hosts on every redirect hop ([370bc31](https://github.com/pelerintech/reework/commit/370bc3184cd76cf9ab28725921e2a282e8a8986a))
+* **core:** record embed usage on the tool result ledger ([3e122e4](https://github.com/pelerintech/reework/commit/3e122e4564f390ec79343306c9384d6519c4124e))
+* **core:** redact query secrets from response URLs ([7a53c9a](https://github.com/pelerintech/reework/commit/7a53c9ae5d28e299de15b154f8c6e75393955e79))
+* **core:** reject unknown proposal listing statuses ([4c83b3c](https://github.com/pelerintech/reework/commit/4c83b3c9e42bafe13260c87607ca609195af9659))
+* **core:** report redirected after following a secret redirect ([091273f](https://github.com/pelerintech/reework/commit/091273f8e94bb6eff0eca306ddb878d378dc64c9))
+* **core:** resolve and refuse empty embed input ([47d2ebb](https://github.com/pelerintech/reework/commit/47d2ebbe8dfe15f92a076ac03d517ffa02d76724))
+* **core:** return a model error over HTTP as JSON ([c4ead1f](https://github.com/pelerintech/reework/commit/c4ead1f4743d8d25d2524752a7d51b387abe66d3))
+* **core:** return no embeddings for empty input without a request ([de26826](https://github.com/pelerintech/reework/commit/de268263eeae8f251fefb707807b0eca1a77341f))
+* **core:** settle a gate's decision and proposal in one commit ([789c09e](https://github.com/pelerintech/reework/commit/789c09ef1277b6472ff7ff37d6acb8643e618a15))
+* **core:** share maxConcurrentRequests between completions and embeddings ([f323d94](https://github.com/pelerintech/reework/commit/f323d94b2b7116d0e32c2381a2210b5c926ba261))
+* **core:** surface model errors as errors only for gateway agents ([e8456d7](https://github.com/pelerintech/reework/commit/e8456d7794fe3bbb1b0b0a84395a24d723d46730))
+* **core:** time out embed requests ([3525b6c](https://github.com/pelerintech/reework/commit/3525b6c5df8e47816a4d53017a299c56150cb3f2))
+* **core:** validate apply rules and empty secret values ([c3aaba3](https://github.com/pelerintech/reework/commit/c3aaba3923779f2d5436e5893ea35c0870ce5814))
+* **core:** validate embedding dimensions across batches ([5adaa2b](https://github.com/pelerintech/reework/commit/5adaa2b0493f292b5c87269d71225db0206acf1e))
+* **core:** validate embedding vectors against the inputs ([cd04c6b](https://github.com/pelerintech/reework/commit/cd04c6ba9fed47b1df6be92138b746c442cbfe0f))
+* **core:** validate plugin event names and payload size ([33200c9](https://github.com/pelerintech/reework/commit/33200c9184e88f7d9007f7f1cf0f99998fe62b05))
+* **core:** validate secret format and hosts types at startup ([aa66344](https://github.com/pelerintech/reework/commit/aa66344be64814f693d2f997b4307802eaa64e04))
+* **core:** warn when only some embed batches report usage ([d1026c0](https://github.com/pelerintech/reework/commit/d1026c0662d09c906aa405b34fb78fe4abeeb0d9))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @reework/types bumped to 1.2.0
+
 ## [1.2.3](https://github.com/pelerintech/reework/compare/core-v1.2.2...core-v1.2.3) (2026-11-10)
 
 
