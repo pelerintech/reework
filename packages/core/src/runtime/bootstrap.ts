@@ -26,6 +26,7 @@ import {
   buildToolHooks,
   buildUsageHooks,
   makeEventContext,
+  makePluginEmit,
   makePluginModels,
   makePluginSecrets,
   toDurableTool,
@@ -380,6 +381,7 @@ async function boot(
         signal: lifecycle.signal,
         dataDir: pluginDataDir(options.storagePath, plugin.name),
         models: makePluginModels(plugin.name, bindings),
+        emit: makePluginEmit(plugin.name, bindings),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -505,6 +507,7 @@ function mountPluginRoutes(
       signal,
       dataDir: pluginDataDir(storagePath, plugin.name),
       models: makePluginModels(plugin.name, bindings),
+      emit: makePluginEmit(plugin.name, bindings),
     };
     try {
       plugin.built.routes(subApp, ctx);

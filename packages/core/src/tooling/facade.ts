@@ -546,6 +546,8 @@ export interface PluginSetupContext<TConfig> {
    * loop started here). Usable for the agent's whole life, not only during setup.
    */
   readonly models: PluginModels;
+  /** Announce this plugin's own event; it reaches consumers agent-level (no conversation). */
+  emit(this: void, name: string, data: JsonValue): void;
 }
 
 /** What a plugin's `routes(app, ctx)` receives. */
@@ -561,6 +563,8 @@ export interface PluginRouteContext<TConfig> {
   readonly dataDir: string;
   /** The named models this plugin declared, for a route handler's own work. */
   readonly models: PluginModels;
+  /** Announce this plugin's own event; it reaches consumers agent-level (no conversation). */
+  emit(this: void, name: string, data: JsonValue): void;
 }
 
 /** What a plugin factory returns for one config. */

@@ -118,4 +118,64 @@ describe("plugin events", () => {
 
     await test.dispose();
   });
+
+  it("delivers setup and route events agent-level, with no conversation", async () => {
+    const seen: Seen[] = [];
+    const setupEmitter = definePlugin("setup-emitter", () => ({
+      setup(ctx) {
+        ctx.emit("setup.ready", { ok: true });
+      },
+    }));
+    const routeEmitter = definePlugin("route-emitter", () => ({
+      routes(app, ctx) {
+        app.post("/emit", (c) => {
+          ctx.emit("route.hit", { path: c.req.path });
+          return c.json({ ok: true });
+        });
+      },
+    }));
+    const consumer = definePlugin("b", () => ({
+      hooks: {
+        async onPluginEvent(event, ctx) {
+          seen.push({ event, ctx });
+        },
+      },
+    }));
+
+    const test = await startTestAgent(
+      definition([
+        { plugin: setupEmitter, config: {} },
+        { plugin: routeEmitter, config: {} },
+        { plugin: consumer, config: {} },
+      ]),
+    );
+
+    const setupSeen = await eventually(() => seen.find((s) => s.event.name === "setup.ready")!);
+    expect(setupSeen.event).toMatchObject({
+      name: "setup.ready",
+      data: { ok: true },
+      plugin: "setup-emitter",
+    });
+    expect(setupSeen.event.conversationId).toBeUndefined();
+    expect(setupSeen.ctx.conversationId).toBeUndefined();
+    expect(setupSeen.ctx.files).toBeUndefined();
+    expect(setupSeen.ctx.case).toBeUndefined();
+    expect(setupSeen.ctx.store.case).toBeUndefined();
+    expect(typeof setupSeen.ctx.store.agent.get).toBe("function");
+
+    const response = await test.agent.app.request("/plugins/route-emitter/emit", {
+      method: "POST",
+      headers: { authorization: `Bearer ${test.token}` },
+    });
+    expect(response.status).toBe(200);
+    const routeSeen = await eventually(() => seen.find((s) => s.event.name === "route.hit")!);
+    expect(routeSeen.event).toMatchObject({ name: "route.hit", plugin: "route-emitter" });
+    expect(routeSeen.event.conversationId).toBeUndefined();
+    expect(routeSeen.ctx.conversationId).toBeUndefined();
+    expect(routeSeen.ctx.files).toBeUndefined();
+    expect(routeSeen.ctx.case).toBeUndefined();
+    expect(routeSeen.ctx.store.case).toBeUndefined();
+
+    await test.dispose();
+  });
 });
