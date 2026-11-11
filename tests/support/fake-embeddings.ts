@@ -12,8 +12,14 @@ export interface RecordedEmbeddingRequest {
   readonly path: string;
 }
 
+export interface EmbeddingItem {
+  readonly index?: number;
+  readonly embedding?: number[];
+}
+
 export interface EmbeddingReply {
-  readonly embeddings: number[][];
+  readonly embeddings?: number[][];
+  readonly items?: EmbeddingItem[];
   readonly usage?: { readonly promptTokens?: number; readonly totalTokens?: number };
 }
 
@@ -47,15 +53,17 @@ export async function startFakeEmbeddings(): Promise<FakeEmbeddings> {
         path: req.url ?? "",
       });
       const reply = queue.shift() ?? { embeddings: [] };
+      const items =
+        reply.items ?? (reply.embeddings ?? []).map((embedding, index) => ({ embedding, index }));
       res.writeHead(200, { "content-type": "application/json" });
       res.end(
         JSON.stringify({
           object: "list",
           model: parsed.model,
-          data: reply.embeddings.map((embedding, index) => ({
+          data: items.map((item) => ({
             object: "embedding",
-            embedding,
-            index,
+            ...(item.embedding === undefined ? {} : { embedding: item.embedding }),
+            ...(item.index === undefined ? {} : { index: item.index }),
           })),
           ...(reply.usage
             ? {

@@ -1178,10 +1178,13 @@ export function makePluginModels(
         );
       }
       const body = (await response.json()) as {
-        data?: { embedding?: number[] }[];
+        data?: { index?: number; embedding?: number[] }[];
         usage?: { prompt_tokens?: number; total_tokens?: number };
       };
-      const embeddings = (body.data ?? []).map((item) => item.embedding ?? []);
+      const embeddings = (body.data ?? [])
+        .slice()
+        .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
+        .map((item) => item.embedding ?? []);
       if (!body.usage) return { embeddings };
       const usage: ModelUsage = {
         inputTokens: body.usage.prompt_tokens ?? 0,

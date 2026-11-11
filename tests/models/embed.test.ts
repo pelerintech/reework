@@ -103,6 +103,48 @@ describe("ctx.models.embed", () => {
     expect(endpoint.requests[0]!.headers.authorization).toBe("Bearer embed-key");
   });
 
+  it("orders vectors by each item's index", async () => {
+    const endpoint = await startFakeEmbeddings();
+    endpoint.respond({
+      items: [
+        { index: 1, embedding: [2] },
+        { index: 0, embedding: [1] },
+      ],
+    });
+    const llm = await startFakeLlm();
+    process.env[LLM_ENV] = "llm-key";
+    process.env[EMBED_ENV] = "embed-key";
+
+    let seen: ModelEmbedResult | undefined;
+    const embedder = definePlugin(
+      "embedder",
+      () => ({
+        tools: [
+          defineTool({
+            name: "embed",
+            description: "embed two passages",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              seen = await ctx.models.embed("embedder", ["a", "b"]);
+              return "embedded";
+            },
+          }),
+        ],
+      }),
+      { models: ["embedder"] },
+    );
+
+    const agent = await startTestAgent(
+      definition(llm.url, endpoint.url, [{ plugin: embedder, config: {} }]),
+      { models: undefined },
+    );
+    llm.script({ toolCall: { name: "embed" } }, { text: "done" });
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "go", { wait: true });
+
+    expect(seen?.embeddings).toEqual([[1], [2]]);
+  });
+
   it("reports embedding usage like a completion", async () => {
     const endpoint = await startFakeEmbeddings();
     endpoint.respond({
