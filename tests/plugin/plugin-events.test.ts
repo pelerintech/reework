@@ -261,4 +261,58 @@ describe("plugin events", () => {
 
     await test.dispose();
   });
+
+  it("attributes hook emits to the emitting plugin and its conversation", async () => {
+    const seen: Seen[] = [];
+    const own: PluginEvent[] = [];
+    const emitter = definePlugin("h", () => ({
+      tools: [
+        defineTool({
+          name: "echo",
+          description: "Echo.",
+          parameters: Type.Object({}),
+          async execute() {
+            return "echoed";
+          },
+        }),
+      ],
+      hooks: {
+        async beforeTool({ name }, ctx) {
+          if (name === "echo") ctx.emit("hook.beforeTool", { name });
+        },
+        async onPluginEvent(event) {
+          own.push(event);
+        },
+      },
+    }));
+    const consumer = definePlugin("b", () => ({
+      hooks: {
+        async onPluginEvent(event, ctx) {
+          seen.push({ event, ctx });
+        },
+      },
+    }));
+
+    const test = await startTestAgent(
+      definition([
+        { plugin: emitter, config: {} },
+        { plugin: consumer, config: {} },
+      ]),
+    );
+    test.model.respond([toolCall("echo"), text("done")]);
+    const { id } = await test.agent.host.createConversation();
+    await test.agent.host.submitInput(id, "go");
+
+    const delivered = await eventually(() => seen[0]);
+    expect(delivered.event).toMatchObject({
+      name: "hook.beforeTool",
+      plugin: "h",
+      conversationId: id,
+    });
+    expect(delivered.ctx.conversationId).toBe(id);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(own).toEqual([]);
+
+    await test.dispose();
+  });
 });

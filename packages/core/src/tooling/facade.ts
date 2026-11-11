@@ -1359,8 +1359,9 @@ function makeHookContext(
     conversationId: String(api.conversationId),
     ...createPluginContextMembers(
       bindings?.storage ? createPluginStore(bindings.storage, name, api.conversationId) : undefined,
-      undefined,
+      String(api.conversationId),
       bindings,
+      name,
     ),
     models: makePluginModels(name, bindings, undefined, String(api.conversationId)),
     files: makeFileContext(String(api.conversationId), bindings),
