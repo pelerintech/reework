@@ -412,7 +412,7 @@ async function boot(
         config: plugin.config,
         signal: lifecycle.signal,
         dataDir: pluginDataDir(options.storagePath, plugin.name),
-        models: makePluginModels(plugin.name, bindings),
+        models: makePluginModels(plugin.name, bindings, undefined, undefined, lifecycle.signal),
         emit: makePluginEmit(plugin.name, bindings),
       });
     } catch (error) {
@@ -538,7 +538,7 @@ function mountPluginRoutes(
       config: plugin.config,
       signal,
       dataDir: pluginDataDir(storagePath, plugin.name),
-      models: makePluginModels(plugin.name, bindings),
+      models: makePluginModels(plugin.name, bindings, undefined, undefined, signal),
       emit: makePluginEmit(plugin.name, bindings),
     };
     try {

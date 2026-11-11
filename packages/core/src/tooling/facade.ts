@@ -172,6 +172,11 @@ export interface ModelCompleteResult {
   readonly usage?: { readonly inputTokens?: number; readonly outputTokens?: number };
 }
 
+export interface ModelEmbedOptions {
+  /** Aborts this call; combined with the context's own signal where one exists. */
+  readonly signal?: AbortSignal;
+}
+
 export interface ModelEmbedResult {
   readonly embeddings: number[][];
   readonly usage?: ModelUsage;
@@ -180,7 +185,11 @@ export interface ModelEmbedResult {
 /** The named models a plugin declared, keyed by name. */
 export interface PluginModels {
   complete(name: string, input: ModelCompleteInput): Promise<ModelCompleteResult>;
-  embed(name: string, texts: readonly string[]): Promise<ModelEmbedResult>;
+  embed(
+    name: string,
+    texts: readonly string[],
+    options?: ModelEmbedOptions,
+  ): Promise<ModelEmbedResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -745,6 +754,7 @@ function buildToolContext(
       bindings,
       (call) => modelCalls.push(call),
       String(api.conversationId),
+      signal,
     ),
     files: makeFileContext(String(api.conversationId), bindings),
     case: makeCaseContext(String(api.conversationId), bindings),
@@ -899,13 +909,14 @@ export function createPluginContextMembers(
   pluginName = "?",
   collect?: (call: NamedModelCall) => void,
   includeCases = false,
+  signal?: AbortSignal,
 ): Pick<ToolContext, "models" | "secrets" | "files" | "store" | "case" | "emit"> & {
   cases?: PluginCases;
 } {
   const cases = includeCases ? makePluginCases(pluginName, bindings) : undefined;
   return {
     emit: makePluginEmit(pluginName, bindings, conversationId),
-    models: makePluginModels(pluginName, bindings, collect, conversationId),
+    models: makePluginModels(pluginName, bindings, collect, conversationId, signal),
     secrets: makePluginSecrets(pluginName, bindings, conversationId),
     files: conversationId ? makeFileContext(conversationId, bindings) : stubFiles(),
     store: store ?? uninitializedStore(),
@@ -1096,6 +1107,7 @@ export function makePluginModels(
   bindings?: PluginBindings,
   collect?: (call: NamedModelCall) => void,
   conversationId?: string,
+  signal?: AbortSignal,
 ): PluginModels {
   const lent = bindings?.lent.get(pluginName) ?? [];
   const resolve = (name: string) => {
@@ -1146,7 +1158,7 @@ export function makePluginModels(
       }
       return { text: assistantText(result), usage: mapUsage(result.usage) };
     },
-    embed: async (name, texts) => {
+    embed: async (name, texts, options) => {
       const { catalog, model } = resolve(name);
       if (model.api !== "openai-completions" && model.api !== "openai-responses") {
         throw new ModelHasNoEmbeddings(name);
@@ -1167,10 +1179,12 @@ export function makePluginModels(
         if (value !== null) headers[key] = value;
       }
       if (auth?.auth.apiKey) headers.authorization = `Bearer ${auth.auth.apiKey}`;
+      const callSignal = combineSignals(signal, options?.signal);
       const response = await fetch(`${baseUrl}/embeddings`, {
         method: "POST",
         headers,
         body: JSON.stringify({ model: model.id, input: texts }),
+        ...(callSignal === undefined ? {} : { signal: callSignal }),
       });
       if (!response.ok) {
         throw new Error(
@@ -1242,6 +1256,14 @@ export function makePluginModels(
       return { embeddings, usage };
     },
   };
+}
+
+/** One abort signal from the context and the caller, or undefined when neither exists. */
+function combineSignals(a?: AbortSignal, b?: AbortSignal): AbortSignal | undefined {
+  const signals = [a, b].filter((signal): signal is AbortSignal => signal !== undefined);
+  if (signals.length === 0) return undefined;
+  if (signals.length === 1) return signals[0];
+  return AbortSignal.any(signals);
 }
 
 /** A pi-ai usage record as reework's typed token counts. */
@@ -1499,7 +1521,13 @@ function makeHookContext(
           }
         : undefined,
     ),
-    models: makePluginModels(name, bindings, undefined, String(api.conversationId)),
+    models: makePluginModels(
+      name,
+      bindings,
+      undefined,
+      String(api.conversationId),
+      context.abortSignal,
+    ),
     files: makeFileContext(String(api.conversationId), bindings),
     case: makeCaseContext(String(api.conversationId), bindings),
     memo: async <T extends JsonValue>(key: string, compute: () => Promise<T>): Promise<T> => {

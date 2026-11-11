@@ -21,6 +21,8 @@ export interface EmbeddingReply {
   readonly embeddings?: number[][];
   readonly items?: EmbeddingItem[];
   readonly usage?: { readonly promptTokens?: number; readonly totalTokens?: number };
+  /** Hold the reply for this long, so a test can abort or time out in flight. */
+  readonly delayMs?: number;
 }
 
 export interface FakeEmbeddings {
@@ -41,6 +43,7 @@ afterEach(async () => {
 export async function startFakeEmbeddings(): Promise<FakeEmbeddings> {
   const requests: RecordedEmbeddingRequest[] = [];
   const queue: EmbeddingReply[] = [];
+  const timers = new Set<NodeJS.Timeout>();
   const server = createServer((req, res) => {
     let body = "";
     req.on("data", (chunk) => (body += chunk));
@@ -55,26 +58,36 @@ export async function startFakeEmbeddings(): Promise<FakeEmbeddings> {
       const reply = queue.shift() ?? { embeddings: [] };
       const items =
         reply.items ?? (reply.embeddings ?? []).map((embedding, index) => ({ embedding, index }));
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(
-        JSON.stringify({
-          object: "list",
-          model: parsed.model,
-          data: items.map((item) => ({
-            object: "embedding",
-            ...(item.embedding === undefined ? {} : { embedding: item.embedding }),
-            ...(item.index === undefined ? {} : { index: item.index }),
-          })),
-          ...(reply.usage
-            ? {
-                usage: {
-                  prompt_tokens: reply.usage.promptTokens ?? 0,
-                  total_tokens: reply.usage.totalTokens ?? reply.usage.promptTokens ?? 0,
-                },
-              }
-            : {}),
-        }),
-      );
+      const send = () => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            object: "list",
+            model: parsed.model,
+            data: items.map((item) => ({
+              object: "embedding",
+              ...(item.embedding === undefined ? {} : { embedding: item.embedding }),
+              ...(item.index === undefined ? {} : { index: item.index }),
+            })),
+            ...(reply.usage
+              ? {
+                  usage: {
+                    prompt_tokens: reply.usage.promptTokens ?? 0,
+                    total_tokens: reply.usage.totalTokens ?? reply.usage.promptTokens ?? 0,
+                  },
+                }
+              : {}),
+          }),
+        );
+      };
+      if (reply.delayMs === undefined) send();
+      else {
+        const timer = setTimeout(() => {
+          timers.delete(timer);
+          send();
+        }, reply.delayMs);
+        timers.add(timer);
+      }
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -83,7 +96,10 @@ export async function startFakeEmbeddings(): Promise<FakeEmbeddings> {
     url: `http://127.0.0.1:${port}/v1`,
     requests,
     respond: (...replies) => queue.push(...replies),
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    close: () => {
+      for (const timer of timers) clearTimeout(timer);
+      return new Promise<void>((resolve) => server.close(() => resolve()));
+    },
   };
   open.push(fake);
   return fake;
