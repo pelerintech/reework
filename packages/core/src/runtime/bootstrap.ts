@@ -50,6 +50,7 @@ import { budgetExtension } from "./budget.ts";
 import { lockStorage } from "./lock.ts";
 import type { LockOptions } from "./lock.ts";
 import { customModels, MODEL_PROVIDER_ID, validateModelKeys } from "./models.ts";
+import type { RequestLimiter } from "./models.ts";
 import { modelSecretNames, SecretsRuntime } from "./secrets.ts";
 
 export { MODEL_PROVIDER_ID };
@@ -110,7 +111,8 @@ export async function startAgent(
   secrets.validate();
   secrets.validateGatewayToken();
   validateModelKeys(agent);
-  const models = options.models ?? customModels(agent.model, agent.models, secrets);
+  const limiters = new Map<string, RequestLimiter>();
+  const models = options.models ?? customModels(agent.model, agent.models, secrets, limiters);
   const lifecycle = new AbortController();
   const built: Built[] = [];
   const opened: Opened = {};
@@ -147,6 +149,7 @@ export async function startAgent(
       secrets,
       lent: new Map(built.map((p) => [p.name, p.models])),
       lentCases: new Set(built.filter((p) => p.cases).map((p) => p.name)),
+      requestLimiter: (name) => limiters.get(name),
     };
     bindings.beforeModelCall = buildModelCallHooks(
       built.map((p) => ({ name: p.name, hooks: p.built.hooks })),

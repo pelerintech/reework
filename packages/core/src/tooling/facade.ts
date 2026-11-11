@@ -42,6 +42,7 @@ import { Type } from "@earendil-works/pi-ai";
 import type { Static, TSchema } from "@earendil-works/pi-ai";
 import type { AgentHost, ConversationSnapshot, ListCasesFilter } from "../host.ts";
 import { endRun } from "../runtime/abort.ts";
+import type { RequestLimiter } from "../runtime/models.ts";
 import type { SecretsAccess } from "../runtime/secrets.ts";
 import { markGated } from "../hitl/gate.ts";
 import type { GatedActionRunContext } from "../hitl/gate.ts";
@@ -992,6 +993,8 @@ export interface PluginBindings {
   readonly lent: ReadonlyMap<string, readonly string[]>;
   /** The plugins that declared `{ cases: true }`; the declaration is the grant. */
   readonly lentCases?: ReadonlySet<string>;
+  /** A named model's request limiter, shared with its completions. */
+  requestLimiter?: (name: string) => RequestLimiter | undefined;
   case?: PluginCaseAccess;
   cases?: PluginCasesAccess;
   files?: PluginFilesAccess;
@@ -1180,32 +1183,38 @@ export function makePluginModels(
       }
       if (auth?.auth.apiKey) headers.authorization = `Bearer ${auth.auth.apiKey}`;
       const callSignal = combineSignals(signal, options?.signal);
-      const timeoutMs = bindings?.secrets?.modelRequestTimeout?.() ?? 60_000;
-      const requestSignal = combineSignals(callSignal, AbortSignal.timeout(timeoutMs));
-      let response: Response;
-      try {
-        response = await fetch(`${baseUrl}/embeddings`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ model: model.id, input: texts }),
-          ...(requestSignal === undefined ? {} : { signal: requestSignal }),
-        });
-      } catch (error) {
-        if (callSignal?.aborted) throw error;
-        if ((error as { name?: string }).name === "TimeoutError") {
-          throw new EmbeddingTimeoutError(pluginName, name, timeoutMs);
-        }
-        throw error;
-      }
-      if (!response.ok) {
-        throw new Error(
-          `plugin ${pluginName}: model "${name}" embeddings request failed with ${response.status}`,
-        );
-      }
-      const body = (await response.json()) as {
+      const release = await bindings?.requestLimiter?.(name)?.acquire(callSignal);
+      let body: {
         data?: { index?: number; embedding?: number[] }[];
         usage?: { prompt_tokens?: number; total_tokens?: number };
       };
+      try {
+        const timeoutMs = bindings?.secrets?.modelRequestTimeout?.() ?? 60_000;
+        const requestSignal = combineSignals(callSignal, AbortSignal.timeout(timeoutMs));
+        let response: Response;
+        try {
+          response = await fetch(`${baseUrl}/embeddings`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ model: model.id, input: texts }),
+            ...(requestSignal === undefined ? {} : { signal: requestSignal }),
+          });
+        } catch (error) {
+          if (callSignal?.aborted) throw error;
+          if ((error as { name?: string }).name === "TimeoutError") {
+            throw new EmbeddingTimeoutError(pluginName, name, timeoutMs);
+          }
+          throw error;
+        }
+        if (!response.ok) {
+          throw new Error(
+            `plugin ${pluginName}: model "${name}" embeddings request failed with ${response.status}`,
+          );
+        }
+        body = (await response.json()) as typeof body;
+      } finally {
+        release?.();
+      }
       const data = body.data ?? [];
       if (data.length !== texts.length) {
         throw new EmbeddingResponseInvalid(

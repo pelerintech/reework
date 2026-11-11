@@ -29,6 +29,8 @@ export interface FakeEmbeddings {
   /** Base URL for OpenAI-style endpoints (ends in `/v1`). */
   readonly url: string;
   readonly requests: RecordedEmbeddingRequest[];
+  /** Requests being answered right now, and the most seen at once. */
+  readonly load: { inFlight: number; peak: number };
   /** Queue replies; once empty, every request answers one empty vector. */
   respond(...replies: EmbeddingReply[]): void;
   close(): Promise<void>;
@@ -44,11 +46,14 @@ export async function startFakeEmbeddings(): Promise<FakeEmbeddings> {
   const requests: RecordedEmbeddingRequest[] = [];
   const queue: EmbeddingReply[] = [];
   const timers = new Set<NodeJS.Timeout>();
+  const load = { inFlight: 0, peak: 0 };
   const server = createServer((req, res) => {
     let body = "";
     req.on("data", (chunk) => (body += chunk));
     req.on("end", () => {
       const parsed = JSON.parse(body) as { model: string; input: string[] };
+      load.inFlight += 1;
+      load.peak = Math.max(load.peak, load.inFlight);
       requests.push({
         model: parsed.model,
         input: parsed.input,
@@ -59,6 +64,7 @@ export async function startFakeEmbeddings(): Promise<FakeEmbeddings> {
       const items =
         reply.items ?? (reply.embeddings ?? []).map((embedding, index) => ({ embedding, index }));
       const send = () => {
+        load.inFlight -= 1;
         res.writeHead(200, { "content-type": "application/json" });
         res.end(
           JSON.stringify({
@@ -95,6 +101,7 @@ export async function startFakeEmbeddings(): Promise<FakeEmbeddings> {
   const fake: FakeEmbeddings = {
     url: `http://127.0.0.1:${port}/v1`,
     requests,
+    load,
     respond: (...replies) => queue.push(...replies),
     close: () => {
       for (const timer of timers) clearTimeout(timer);

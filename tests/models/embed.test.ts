@@ -30,6 +30,7 @@ function definition(
       embedder: {
         provider: { baseUrl: embedUrl, apiKeyEnv: EMBED_ENV },
         modelId: "text-embedding-3-small",
+        maxConcurrentRequests: 1,
       },
       "chat-only": {
         provider: { baseUrl: embedUrl, apiKeyEnv: EMBED_ENV, api: "anthropic-messages" },
@@ -237,6 +238,47 @@ describe("ctx.models.embed", () => {
     await eventually(() => seenError !== undefined);
 
     expect((seenError as Error).name).toBe("AbortError");
+  });
+
+  it("shares the model's maxConcurrentRequests limiter", async () => {
+    const endpoint = await startFakeEmbeddings();
+    endpoint.respond({ embeddings: [[1]], delayMs: 100 }, { embeddings: [[2]], delayMs: 100 });
+    const llm = await startFakeLlm();
+    process.env[LLM_ENV] = "llm-key";
+    process.env[EMBED_ENV] = "embed-key";
+
+    let seen: ModelEmbedResult[] = [];
+    const embedder = definePlugin(
+      "embedder",
+      () => ({
+        tools: [
+          defineTool({
+            name: "embed",
+            description: "embed two passages concurrently",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              seen = await Promise.all([
+                ctx.models.embed("embedder", ["a"]),
+                ctx.models.embed("embedder", ["b"]),
+              ]);
+              return "embedded";
+            },
+          }),
+        ],
+      }),
+      { models: ["embedder"] },
+    );
+
+    const agent = await startTestAgent(
+      definition(llm.url, endpoint.url, [{ plugin: embedder, config: {} }]),
+      { models: undefined },
+    );
+    llm.script({ toolCall: { name: "embed" } }, { text: "done" });
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "go", { wait: true });
+
+    expect(seen.map((result) => result.embeddings)).toEqual([[[1]], [[2]]]);
+    expect(endpoint.load.peak).toBe(1);
   });
 
   it("times out an embed call with the gateway backend's timeout", async () => {
