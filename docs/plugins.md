@@ -262,6 +262,57 @@ export const journal = definePlugin("journal", () => ({
 }));
 ```
 
+## Plugin events
+
+A plugin can announce its own moment with `ctx.emit(name, data)`, and every other plugin that provides
+`onPluginEvent(event, ctx)` receives it. `name` is a free-form string the emitting plugin chooses
+(`budget.warning`, `secrets-gateway.use`, `library.proposal`), 1–128 printable characters without control
+characters; core keeps no registry or schema. `data` must be strict JSON, serialized at most 256 KB — an emit with a
+function, a cycle, another non-JSON value or an oversized payload throws, naming the event.
+
+The event is `{ name, data, plugin, conversationId?, at }`: `plugin` is the emitter, and `conversationId` is the
+emitting context's conversation (absent from `setup` and routes). Delivery goes through the same per-agent FIFO
+queue as the host's event hooks — after the commit, at most once, the caller never waits, consumers in declaration
+order, in emit order. A tool call's emits — from its `execute` and from the `beforeTool`/`afterTool` hooks of that
+call — are held until the round's tools have committed; a round that is aborted or rolled back discards them, so a
+round stopped mid-way loses its emits — delivery is at most once. Emits from other hooks (`beforeModelRequest`,
+`afterModelResponse`, `onAnswer`, `beforeCompaction`, and the event hooks) are queued immediately. The emitter never
+receives its own event. A reaction chain — a handler emitting in response to an event — is cut at depth 8, and the
+dropped emit logs a warning naming the plugin and event.
+
+`emit` is on every plugin context: tools, hooks, event hooks, gated-action gates and runs, `setup` and routes.
+Events without a conversation reach consumers with an agent-level context: `conversationId`, `files` and `case`
+are absent, and `store.case` is absent too (see [Model usage events](#model-usage-events)).
+
+```ts
+import { definePlugin, defineTool, Type } from "@reework/core";
+
+export const budget = definePlugin("budget", () => ({
+  tools: [
+    defineTool({
+      name: "check_budget",
+      description: "Check the run's budget.",
+      parameters: Type.Object({}),
+      async execute(_args, ctx) {
+        ctx.emit("budget.warning", { used: 90 });
+        return "checked";
+      },
+    }),
+  ],
+}));
+
+export const audit = definePlugin("audit", () => ({
+  hooks: {
+    async onPluginEvent({ name, data, plugin }, ctx) {
+      await ctx.store.agent.set(`event/${name}/${plugin}/${Date.now()}`, data);
+    },
+  },
+}));
+```
+
+The audit plugin records events in its own reework-plugins request (`audit-plugin-events`); core only carries the
+event, so one plugin can announce something and another record it without either knowing the other.
+
 ## Stopping a run
 
 A `beforeModelRequest` hook may stop the run instead of rewriting the request: return `{ stop: reason }`. Core makes

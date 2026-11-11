@@ -24,6 +24,7 @@ import type { AssistantMessage, Message, Usage } from "@earendil-works/pi-ai";
 import type { Models } from "@earendil-works/pi-ai/models";
 import type { Hono } from "hono";
 import type { Context, JsonValue } from "@earendil-works/chord";
+import { copyJson } from "@earendil-works/chord";
 import type {
   Author,
   Case,
@@ -296,6 +297,8 @@ export interface ToolContext {
   readonly cases?: PluginCases;
   /** Run `fn` at most once per tool call and key; a replay returns the value. */
   once<T extends JsonValue>(key: string, fn: () => Promise<T>): Promise<T>;
+  /** Announce this plugin's own event to the other plugins' `onPluginEvent` hooks. */
+  emit(this: void, name: string, data: JsonValue): void;
 }
 
 /**
@@ -390,6 +393,8 @@ export interface PluginHookContext {
   readonly case: CaseContext;
   /** A value computed once per task attempt and reused on retry. */
   memo<T extends JsonValue>(name: string, compute: () => Promise<T>): Promise<T>;
+  /** Announce this plugin's own event to the other plugins' `onPluginEvent` hooks. */
+  emit(this: void, name: string, data: JsonValue): void;
 }
 
 /** The context an event hook receives: a run hook's bindings without `memo`.
@@ -410,6 +415,21 @@ export interface PluginEventContext {
   readonly case?: CaseContext;
   /** Other cases, when the plugin declared `{ cases: true }`. */
   readonly cases?: PluginCases;
+  /** Announce this plugin's own event to the other plugins' `onPluginEvent` hooks. */
+  emit(this: void, name: string, data: JsonValue): void;
+}
+
+/** An event one plugin emitted for the others to observe. */
+export interface PluginEvent {
+  /** The emitting plugin's own event name, a free-form string (`budget.warning`). */
+  readonly name: string;
+  /** The event payload; strict JSON. */
+  readonly data: JsonValue;
+  /** The plugin that emitted it; it never receives its own event. */
+  readonly plugin: string;
+  /** The emitting context's conversation; absent for `setup` and routes. */
+  readonly conversationId?: string;
+  readonly at: number;
 }
 
 /** One model call that returned usage, for `onModelUsage`. */
@@ -503,6 +523,8 @@ export interface PluginHooks {
     input: ModelCallRequest,
     ctx: PluginEventContext,
   ): Promise<{ refuse: string } | void>;
+  /** Another plugin emitted an event with `ctx.emit`; the emitter never receives its own. */
+  onPluginEvent?(input: PluginEvent, ctx: PluginEventContext): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -525,6 +547,8 @@ export interface PluginSetupContext<TConfig> {
    * loop started here). Usable for the agent's whole life, not only during setup.
    */
   readonly models: PluginModels;
+  /** Announce this plugin's own event; it reaches consumers agent-level (no conversation). */
+  emit(this: void, name: string, data: JsonValue): void;
 }
 
 /** What a plugin's `routes(app, ctx)` receives. */
@@ -540,6 +564,8 @@ export interface PluginRouteContext<TConfig> {
   readonly dataDir: string;
   /** The named models this plugin declared, for a route handler's own work. */
   readonly models: PluginModels;
+  /** Announce this plugin's own event; it reaches consumers agent-level (no conversation). */
+  emit(this: void, name: string, data: JsonValue): void;
 }
 
 /** What a plugin factory returns for one config. */
@@ -701,6 +727,10 @@ function buildToolContext(
   const made: ToolContext = {
     conversationId: String(api.conversationId),
     signal,
+    emit: makePluginEmit(pluginName, bindings, String(api.conversationId), {
+      taskId: String(api.taskId),
+      signal,
+    }),
     output: (chunk) => api.output(chunk),
     store: createPluginStore(backend, pluginName, api.conversationId),
     secrets: makePluginSecrets(pluginName, bindings, String(api.conversationId)),
@@ -863,11 +893,12 @@ export function createPluginContextMembers(
   pluginName = "?",
   collect?: (call: NamedModelCall) => void,
   includeCases = false,
-): Pick<ToolContext, "models" | "secrets" | "files" | "store" | "case"> & {
+): Pick<ToolContext, "models" | "secrets" | "files" | "store" | "case" | "emit"> & {
   cases?: PluginCases;
 } {
   const cases = includeCases ? makePluginCases(pluginName, bindings) : undefined;
   return {
+    emit: makePluginEmit(pluginName, bindings, conversationId),
     models: makePluginModels(pluginName, bindings, collect, conversationId),
     secrets: makePluginSecrets(pluginName, bindings, conversationId),
     files: conversationId ? makeFileContext(conversationId, bindings) : stubFiles(),
@@ -970,6 +1001,12 @@ export interface PluginBindings {
   stopRun?: (conversationId: string, taskId: string, notice: RunStopNotice) => Promise<void>;
   /** Queue an `onModelUsage` event; filled once the agent's event queue exists. */
   modelUsage?: (event: ModelUsageEvent) => void;
+  /** Queue a plugin's emitted event; filled once the agent's event queue exists. */
+  emit?: (plugin: string, event: PluginEvent, depth?: number) => void;
+  /** Hold a tool task's emitted events until its round's tools have committed. */
+  bufferEmit?: (taskId: string, event: PluginEvent) => void;
+  /** Queue a round's tool emits, and drop the conversation's stale buffered emits. */
+  flushEmits?: (conversationId: string, taskIds: ReadonlySet<string>) => void;
   /**
    * The coordinator list of `beforeModelCall` hooks, in plugin declaration order:
    * resolves the first refusal, or undefined when no hook refused. Built from the
@@ -992,6 +1029,59 @@ export function makePluginSecrets(
   return {
     fetch: (name, url, init) => required().fetch(pluginName, name, url, init, conversationId),
     get: (name) => required().get(pluginName, name, conversationId),
+  };
+}
+
+/** Build the emit surface for one plugin: validate, copy and queue its event. */
+export function makePluginEmit(
+  pluginName: string,
+  bindings?: PluginBindings,
+  conversationId?: string,
+  defer?: { readonly taskId: string; readonly signal?: AbortSignal },
+  chainDepth = 0,
+): (name: string, data: JsonValue) => void {
+  return (name, data) => {
+    if (typeof name !== "string" || name.trim() === "") {
+      throw new Error(`plugin "${pluginName}" event name must be a non-empty string`);
+    }
+    if (name.length > 128) {
+      throw new Error(`plugin "${pluginName}" event name must be at most 128 characters`);
+    }
+    if (!/^[\x20-\x7E]+$/.test(name)) {
+      throw new Error(
+        `plugin "${pluginName}" event "${name}" name must be printable characters without control characters`,
+      );
+    }
+    let copied: JsonValue;
+    try {
+      copied = copyJson(data);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`plugin "${pluginName}" event "${name}" data must be JSON: ${message}`, {
+        cause: error,
+      });
+    }
+    const bytes = Buffer.byteLength(JSON.stringify(copied), "utf8");
+    if (bytes > 256 * 1024) {
+      throw new Error(
+        `plugin "${pluginName}" event "${name}" payload must be at most 256 KB (got ${bytes} bytes)`,
+      );
+    }
+    const event: PluginEvent = {
+      name,
+      data: copied,
+      plugin: pluginName,
+      ...(conversationId === undefined ? {} : { conversationId }),
+      at: Date.now(),
+    };
+    if (defer) {
+      if (defer.signal?.aborted) return;
+      if (!bindings?.bufferEmit) throw new Error("plugin events are not wired in this build");
+      bindings.bufferEmit(defer.taskId, event);
+      return;
+    }
+    if (!bindings?.emit) throw new Error("plugin events are not wired in this build");
+    bindings.emit(pluginName, event, chainDepth);
   };
 }
 
@@ -1283,13 +1373,26 @@ function makeHookContext(
   api: HookApi,
   context: Context,
   bindings?: PluginBindings,
+  toolRound = false,
 ): PluginHookContext {
   return {
     conversationId: String(api.conversationId),
     ...createPluginContextMembers(
       bindings?.storage ? createPluginStore(bindings.storage, name, api.conversationId) : undefined,
-      undefined,
+      String(api.conversationId),
       bindings,
+      name,
+    ),
+    emit: makePluginEmit(
+      name,
+      bindings,
+      String(api.conversationId),
+      toolRound
+        ? {
+            taskId: String(api.taskId),
+            ...(context.abortSignal === undefined ? {} : { signal: context.abortSignal }),
+          }
+        : undefined,
     ),
     models: makePluginModels(name, bindings, undefined, String(api.conversationId)),
     files: makeFileContext(String(api.conversationId), bindings),
@@ -1340,7 +1443,7 @@ export function buildToolHooks(
         if (!p.hooks?.beforeTool) continue;
         const res = await p.hooks.beforeTool(
           { name: call.name, args, callId: call.id, external },
-          makeHookContext(p.name, api, context, bindings),
+          makeHookContext(p.name, api, context, bindings, true),
         );
         if (res && "block" in res) {
           // Report the blocked call to the plugins declared after this one. A
@@ -1354,7 +1457,7 @@ export function buildToolHooks(
               const next = await q.hooks.afterTool(
                 { name: call.name, args, callId: call.id, external },
                 blocked,
-                makeHookContext(q.name, api, context, bindings),
+                makeHookContext(q.name, api, context, bindings, true),
               );
               if (next) {
                 blockedExternal =
@@ -1385,7 +1488,7 @@ export function buildToolHooks(
             external,
           },
           current,
-          makeHookContext(p.name, api, context, bindings),
+          makeHookContext(p.name, api, context, bindings, true),
         );
         if (next) {
           flag = flag || next.external === true || externalOfDetails(next.details);
@@ -1503,6 +1606,39 @@ export function buildUsageHooks(
   });
 }
 
+/** Build the afterTools hook that queues a round's tool emits once the tools committed. */
+export function buildPluginEventFlushHook(bindings?: PluginBindings): HookRegistration {
+  return hook(GenerationTask, {
+    async afterTools(_assistant, results, api, context) {
+      const live = await api.snapshot(LiveDoc, api.conversationId, context);
+      const committed = new Set(results.map(String));
+      const taskIds = new Set<string>();
+      for (const slot of live?.tools ?? []) {
+        if (
+          slot.entry !== undefined &&
+          slot.taskId !== undefined &&
+          committed.has(String(slot.entry))
+        ) {
+          taskIds.add(String(slot.taskId));
+        }
+      }
+      // A nested call belongs to the round of the tool that made it.
+      let added = true;
+      while (added) {
+        added = false;
+        for (const slot of live?.nestedTools ?? []) {
+          if (taskIds.has(String(slot.taskId))) continue;
+          if (taskIds.has(String(slot.parentTaskId))) {
+            taskIds.add(String(slot.taskId));
+            added = true;
+          }
+        }
+      }
+      bindings?.flushEmits?.(String(api.conversationId), taskIds);
+    },
+  });
+}
+
 /** A named-model call a plugin refused; the caller receives it as an error. */
 export class ModelCallRefused extends Error {
   readonly reason: string;
@@ -1519,6 +1655,7 @@ export function makeEventContext(
   name: string,
   bindings?: PluginBindings,
   conversationId?: string,
+  emitDepth = 0,
 ): PluginEventContext {
   const conversation =
     conversationId === undefined
@@ -1526,6 +1663,7 @@ export function makeEventContext(
       : (Number(conversationId) as unknown as ConversationId);
   const cases = makePluginCases(name, bindings);
   return {
+    emit: makePluginEmit(name, bindings, conversationId, undefined, emitDepth),
     models: makePluginModels(name, bindings, undefined, conversationId),
     secrets: makePluginSecrets(name, bindings, conversationId),
     store: bindings?.storage

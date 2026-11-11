@@ -1,0 +1,597 @@
+// Plugin events: one plugin announces its own moment with `ctx.emit`, and every
+// other plugin that provides `onPluginEvent` receives it through the same queued
+// event delivery as the host's event hooks.
+import { describe, expect, it, vi } from "vitest";
+import { definePlugin, defineTool, Type } from "@reework/core";
+import type { AgentDefinition, PluginEvent, PluginEventContext } from "@reework/core";
+import { startTestAgent, text, toolCall } from "@reework/core/testing";
+import { eventually } from "../support/wait.ts";
+
+interface Seen {
+  readonly event: PluginEvent;
+  readonly ctx: PluginEventContext;
+}
+
+function definition(plugins: AgentDefinition["plugins"]): AgentDefinition {
+  return {
+    name: "event-agent",
+    model: {
+      provider: { baseUrl: "http://127.0.0.1:1/v1", apiKeyEnv: "K" },
+      modelId: "m1",
+    },
+    plugins,
+    channels: [],
+    mission: { role: "You answer." },
+  };
+}
+
+describe("plugin events", () => {
+  it("delivers an emitted event to other plugins with the emitter and conversation", async () => {
+    const seen: Seen[] = [];
+    const emitter = definePlugin("a", () => ({
+      tools: [
+        defineTool({
+          name: "warn",
+          description: "Announce a budget warning.",
+          parameters: Type.Object({}),
+          async execute(_args, ctx) {
+            ctx.emit("budget.warning", { used: 90 });
+            return "announced";
+          },
+        }),
+      ],
+    }));
+    const consumer = definePlugin("b", () => ({
+      hooks: {
+        async onPluginEvent(event, ctx) {
+          seen.push({ event, ctx });
+        },
+      },
+    }));
+
+    const test = await startTestAgent(
+      definition([
+        { plugin: emitter, config: {} },
+        { plugin: consumer, config: {} },
+      ]),
+    );
+    test.model.respond([toolCall("warn"), text("done")]);
+    const { id } = await test.agent.host.createConversation();
+    await test.agent.host.submitInput(id, "go");
+
+    const delivered = await eventually(() => seen[0]);
+    expect(delivered.event).toMatchObject({
+      name: "budget.warning",
+      data: { used: 90 },
+      plugin: "a",
+      conversationId: id,
+    });
+    expect(delivered.ctx.conversationId).toBe(id);
+
+    await test.dispose();
+  });
+
+  it("does not deliver an event back to the plugin that emitted it", async () => {
+    const own: PluginEvent[] = [];
+    const other: PluginEvent[] = [];
+    const emitter = definePlugin("a", () => ({
+      tools: [
+        defineTool({
+          name: "warn",
+          description: "Announce a budget warning.",
+          parameters: Type.Object({}),
+          async execute(_args, ctx) {
+            ctx.emit("budget.warning", { used: 90 });
+            return "announced";
+          },
+        }),
+      ],
+      hooks: {
+        async onPluginEvent(event) {
+          own.push(event);
+        },
+      },
+    }));
+    const consumer = definePlugin("b", () => ({
+      hooks: {
+        async onPluginEvent(event) {
+          other.push(event);
+        },
+      },
+    }));
+
+    const test = await startTestAgent(
+      definition([
+        { plugin: emitter, config: {} },
+        { plugin: consumer, config: {} },
+      ]),
+    );
+    test.model.respond([toolCall("warn"), text("done")]);
+    const { id } = await test.agent.host.createConversation();
+    await test.agent.host.submitInput(id, "go");
+
+    const delivered = await eventually(() => other[0]);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(delivered.plugin).toBe("a");
+    expect(delivered.conversationId).toBe(id);
+    expect(own).toEqual([]);
+
+    await test.dispose();
+  });
+
+  it("delivers setup and route events agent-level, with no conversation", async () => {
+    const seen: Seen[] = [];
+    const setupEmitter = definePlugin("setup-emitter", () => ({
+      setup(ctx) {
+        ctx.emit("setup.ready", { ok: true });
+      },
+    }));
+    const routeEmitter = definePlugin("route-emitter", () => ({
+      routes(app, ctx) {
+        app.post("/emit", (c) => {
+          ctx.emit("route.hit", { path: c.req.path });
+          return c.json({ ok: true });
+        });
+      },
+    }));
+    const consumer = definePlugin("b", () => ({
+      hooks: {
+        async onPluginEvent(event, ctx) {
+          seen.push({ event, ctx });
+        },
+      },
+    }));
+
+    const test = await startTestAgent(
+      definition([
+        { plugin: setupEmitter, config: {} },
+        { plugin: routeEmitter, config: {} },
+        { plugin: consumer, config: {} },
+      ]),
+    );
+
+    const setupSeen = await eventually(() => seen.find((s) => s.event.name === "setup.ready")!);
+    expect(setupSeen.event).toMatchObject({
+      name: "setup.ready",
+      data: { ok: true },
+      plugin: "setup-emitter",
+    });
+    expect(setupSeen.event.conversationId).toBeUndefined();
+    expect(setupSeen.ctx.conversationId).toBeUndefined();
+    expect(setupSeen.ctx.files).toBeUndefined();
+    expect(setupSeen.ctx.case).toBeUndefined();
+    expect(setupSeen.ctx.store.case).toBeUndefined();
+    expect(typeof setupSeen.ctx.store.agent.get).toBe("function");
+
+    const response = await test.agent.app.request("/plugins/route-emitter/emit", {
+      method: "POST",
+      headers: { authorization: `Bearer ${test.token}` },
+    });
+    expect(response.status).toBe(200);
+    const routeSeen = await eventually(() => seen.find((s) => s.event.name === "route.hit")!);
+    expect(routeSeen.event).toMatchObject({ name: "route.hit", plugin: "route-emitter" });
+    expect(routeSeen.event.conversationId).toBeUndefined();
+    expect(routeSeen.ctx.conversationId).toBeUndefined();
+    expect(routeSeen.ctx.files).toBeUndefined();
+    expect(routeSeen.ctx.case).toBeUndefined();
+    expect(routeSeen.ctx.store.case).toBeUndefined();
+
+    await test.dispose();
+  });
+
+  it("queues tool emits post-commit, without delaying the caller, in emit order", async () => {
+    let executeReturned = false;
+    let release!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const order: string[] = [];
+    const committedAtReceive: boolean[] = [];
+    const emitter = definePlugin("a", () => ({
+      tools: [
+        defineTool({
+          name: "announce",
+          description: "Announce two events.",
+          parameters: Type.Object({}),
+          async execute(_args, ctx) {
+            ctx.emit("first", { n: 1 });
+            ctx.emit("second", { n: 2 });
+            await new Promise((resolve) => setTimeout(resolve, 150));
+            executeReturned = true;
+            return "done";
+          },
+        }),
+      ],
+    }));
+    const consumer = definePlugin("b", () => ({
+      hooks: {
+        async onPluginEvent(event) {
+          committedAtReceive.push(executeReturned);
+          order.push(event.name);
+          if (event.name === "first") await deferred;
+        },
+      },
+    }));
+
+    const test = await startTestAgent(
+      definition([
+        { plugin: emitter, config: {} },
+        { plugin: consumer, config: {} },
+      ]),
+    );
+    test.model.respond([toolCall("announce"), text("done")]);
+    const { id } = await test.agent.host.createConversation();
+
+    const begun = Date.now();
+    await test.agent.host.submitInput(id, "go");
+    expect(Date.now() - begun).toBeLessThan(150);
+
+    await eventually(() => order[0]);
+    expect(committedAtReceive).toEqual([true]);
+    release();
+    await eventually(() => order.length === 2);
+    expect(order).toEqual(["first", "second"]);
+    expect(committedAtReceive).toEqual([true, true]);
+
+    await test.dispose();
+  });
+
+  it("refuses data that is not JSON, naming the event", async () => {
+    const errors: string[] = [];
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const emitter = definePlugin("a", () => ({
+      setup(ctx) {
+        const emit = (name: string, data: unknown) => {
+          try {
+            ctx.emit(name, data as never);
+          } catch (error) {
+            errors.push(error instanceof Error ? error.message : String(error));
+          }
+        };
+        emit("budget.function", { fn: () => 1 });
+        emit("budget.cycle", circular);
+      },
+    }));
+
+    const test = await startTestAgent(definition([{ plugin: emitter, config: {} }]));
+    expect(errors).toHaveLength(2);
+    expect(errors[0]).toContain("budget.function");
+    expect(errors[1]).toContain("budget.cycle");
+
+    await test.dispose();
+  });
+
+  it("attributes hook emits to the emitting plugin and its conversation", async () => {
+    const seen: Seen[] = [];
+    const own: PluginEvent[] = [];
+    const emitter = definePlugin("h", () => ({
+      tools: [
+        defineTool({
+          name: "echo",
+          description: "Echo.",
+          parameters: Type.Object({}),
+          async execute() {
+            return "echoed";
+          },
+        }),
+      ],
+      hooks: {
+        async beforeTool({ name }, ctx) {
+          if (name === "echo") ctx.emit("hook.beforeTool", { name });
+        },
+        async onPluginEvent(event) {
+          own.push(event);
+        },
+      },
+    }));
+    const consumer = definePlugin("b", () => ({
+      hooks: {
+        async onPluginEvent(event, ctx) {
+          seen.push({ event, ctx });
+        },
+      },
+    }));
+
+    const test = await startTestAgent(
+      definition([
+        { plugin: emitter, config: {} },
+        { plugin: consumer, config: {} },
+      ]),
+    );
+    test.model.respond([toolCall("echo"), text("done")]);
+    const { id } = await test.agent.host.createConversation();
+    await test.agent.host.submitInput(id, "go");
+
+    const delivered = await eventually(() => seen[0]);
+    expect(delivered.event).toMatchObject({
+      name: "hook.beforeTool",
+      plugin: "h",
+      conversationId: id,
+    });
+    expect(delivered.ctx.conversationId).toBe(id);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(own).toEqual([]);
+
+    await test.dispose();
+  });
+
+  it("discards emits from a round that was aborted, never delivering them later", async () => {
+    let started = false;
+    const seen: string[] = [];
+    const emitter = definePlugin("a", () => ({
+      tools: [
+        defineTool({
+          name: "hang",
+          description: "Emit, then wait for the run to be aborted.",
+          parameters: Type.Object({}),
+          async execute(_args, ctx) {
+            ctx.emit("hang.emitted", {});
+            started = true;
+            await new Promise<void>((resolve) => {
+              if (ctx.signal.aborted) resolve();
+              else ctx.signal.addEventListener("abort", () => resolve(), { once: true });
+            });
+            ctx.emit("hang.after.abort", {});
+            return "aborted";
+          },
+        }),
+        defineTool({
+          name: "ok",
+          description: "Emit from a committed round.",
+          parameters: Type.Object({}),
+          async execute(_args, ctx) {
+            ctx.emit("ok.emitted", {});
+            return "ok";
+          },
+        }),
+      ],
+    }));
+    const consumer = definePlugin("b", () => ({
+      hooks: {
+        async onPluginEvent(event) {
+          seen.push(event.name);
+        },
+      },
+    }));
+
+    const test = await startTestAgent(
+      definition([
+        { plugin: emitter, config: {} },
+        { plugin: consumer, config: {} },
+      ]),
+    );
+    test.model.respond([toolCall("hang"), toolCall("ok"), text("done")]);
+    const { id } = await test.agent.host.createConversation();
+    await test.agent.host.submitInput(id, "go");
+    await eventually(() => started);
+    await test.agent.host.abort(id);
+
+    await test.agent.host.submitInput(id, "again");
+    await eventually(() => seen.includes("ok.emitted"));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(seen).toEqual(["ok.emitted"]);
+
+    await test.dispose();
+  });
+
+  it("validates event names and payload size", async () => {
+    const errors: string[] = [];
+    const delivered: string[] = [];
+    const validName = "x".repeat(128);
+    const emitter = definePlugin("a", () => ({
+      setup(ctx) {
+        const emit = (name: string, data: unknown) => {
+          try {
+            ctx.emit(name, data as never);
+          } catch (error) {
+            errors.push(error instanceof Error ? error.message : String(error));
+          }
+        };
+        emit(validName, { ok: true });
+        emit("bad\nname", {});
+        emit("x".repeat(129), {});
+        emit("", {});
+        emit("budget.big", { text: "x".repeat(256 * 1024) });
+      },
+    }));
+    const consumer = definePlugin("b", () => ({
+      hooks: {
+        async onPluginEvent(event) {
+          delivered.push(event.name);
+        },
+      },
+    }));
+
+    const test = await startTestAgent(
+      definition([
+        { plugin: emitter, config: {} },
+        { plugin: consumer, config: {} },
+      ]),
+    );
+    await eventually(() => delivered.length > 0);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(delivered).toEqual([validName]);
+    expect(errors).toHaveLength(4);
+    expect(errors[0]).toContain("control");
+    expect(errors[1]).toContain("128");
+    expect(errors[2]).toContain("non-empty");
+    expect(errors[3]).toContain("budget.big");
+    expect(errors[3]).toContain("256 KB");
+
+    await test.dispose();
+  });
+
+  it("cuts a reaction chain at depth 8 and logs a warning", async () => {
+    const seen: string[] = [];
+    const warnings: string[] = [];
+    const spy = vi.spyOn(console, "warn").mockImplementation((...args) => {
+      warnings.push(args.join(" "));
+    });
+    const react = (n: number) => {
+      if (n < 10) return { n: n + 1 } as const;
+      return undefined;
+    };
+    const emitter = definePlugin("a", () => ({
+      tools: [
+        defineTool({
+          name: "start",
+          description: "Start a chain.",
+          parameters: Type.Object({}),
+          async execute(_args, ctx) {
+            ctx.emit("chain", { n: 0 });
+            return "started";
+          },
+        }),
+      ],
+      hooks: {
+        async onPluginEvent(event, ctx) {
+          seen.push(event.name);
+          const next = react((event.data as { n: number }).n);
+          if (next) ctx.emit("chain", next);
+        },
+      },
+    }));
+    const reactor = definePlugin("b", () => ({
+      hooks: {
+        async onPluginEvent(event, ctx) {
+          seen.push(event.name);
+          const next = react((event.data as { n: number }).n);
+          if (next) ctx.emit("chain", next);
+        },
+      },
+    }));
+
+    const test = await startTestAgent(
+      definition([
+        { plugin: emitter, config: {} },
+        { plugin: reactor, config: {} },
+      ]),
+    );
+    test.model.respond([toolCall("start"), text("done")]);
+    const { id } = await test.agent.host.createConversation();
+    await test.agent.host.submitInput(id, "go");
+    await eventually(() => seen.length >= 8);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    spy.mockRestore();
+
+    expect(seen).toHaveLength(8);
+    expect(warnings.join("\n")).toContain("chain");
+    expect(warnings.join("\n")).toContain("depth 8");
+
+    await test.dispose();
+  });
+
+  it("delivers a committed afterTool emit after the commit", async () => {
+    let afterToolReturned = false;
+    const delivered: boolean[] = [];
+    const emitter = definePlugin("a", () => ({
+      tools: [
+        defineTool({
+          name: "emitAfter",
+          description: "Run a tool whose afterTool emits.",
+          parameters: Type.Object({}),
+          async execute() {
+            return "ran";
+          },
+        }),
+      ],
+      hooks: {
+        async afterTool(call, _result, ctx) {
+          if (call.name !== "emitAfter") return;
+          ctx.emit("after.tool", {});
+          await new Promise((resolve) => setTimeout(resolve, 150));
+          afterToolReturned = true;
+        },
+      },
+    }));
+    const consumer = definePlugin("b", () => ({
+      hooks: {
+        async onPluginEvent(event) {
+          if (event.name === "after.tool") delivered.push(afterToolReturned);
+        },
+      },
+    }));
+
+    const test = await startTestAgent(
+      definition([
+        { plugin: emitter, config: {} },
+        { plugin: consumer, config: {} },
+      ]),
+    );
+    test.model.respond([toolCall("emitAfter"), text("done")]);
+    const { id } = await test.agent.host.createConversation();
+    await test.agent.host.submitInput(id, "go");
+
+    await eventually(() => delivered.length > 0);
+    expect(delivered).toEqual([true]);
+
+    await test.dispose();
+  });
+
+  it("discards an afterTool emit from an aborted round", async () => {
+    let afterToolRan = false;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const seen: string[] = [];
+    const emitter = definePlugin("a", () => ({
+      tools: [
+        defineTool({
+          name: "emitAfter",
+          description: "Run a tool whose afterTool emits.",
+          parameters: Type.Object({}),
+          async execute() {
+            return "ran";
+          },
+        }),
+        defineTool({
+          name: "ok",
+          description: "Emit from a committed round.",
+          parameters: Type.Object({}),
+          async execute(_args, ctx) {
+            ctx.emit("ok.emitted", {});
+            return "ok";
+          },
+        }),
+      ],
+      hooks: {
+        async afterTool(call, _result, ctx) {
+          if (call.name !== "emitAfter") return;
+          ctx.emit("after.tool", {});
+          afterToolRan = true;
+          await gate;
+        },
+      },
+    }));
+    const consumer = definePlugin("b", () => ({
+      hooks: {
+        async onPluginEvent(event) {
+          seen.push(event.name);
+        },
+      },
+    }));
+
+    const test = await startTestAgent(
+      definition([
+        { plugin: emitter, config: {} },
+        { plugin: consumer, config: {} },
+      ]),
+    );
+    test.model.respond([toolCall("emitAfter"), toolCall("ok"), text("done")]);
+    const { id } = await test.agent.host.createConversation();
+    await test.agent.host.submitInput(id, "go");
+    await eventually(() => afterToolRan);
+
+    const aborting = test.agent.host.abort(id);
+    release();
+    await aborting;
+    await test.agent.host.submitInput(id, "again");
+    await eventually(() => seen.includes("ok.emitted"));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(seen).toEqual(["ok.emitted"]);
+
+    await test.dispose();
+  });
+});
