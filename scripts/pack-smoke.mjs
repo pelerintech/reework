@@ -192,7 +192,12 @@ test("the v06 contract works from the tarballs", async () => {
   const c = await test.agent.host.getCase(id);
   assert.equal(c.stage, "triaged");
   assert.ok(c.tags.includes("audited"));
-  await test.agent.host.submitDecision({ proposalId: proposal.id, selectedOption: "go", instruction: null });
+  await test.agent.host.submitDecision({
+    proposalId: proposal.id,
+    selectedOption: "go",
+    instruction: null,
+    decidedBy: { kind: "human", name: "Ana" },
+  });
   await waitForIdle(test.agent.host, id);
   const { messages } = await test.agent.host.snapshot(id);
   assert.match(JSON.stringify(messages.at(-1)), /worker restarted/);

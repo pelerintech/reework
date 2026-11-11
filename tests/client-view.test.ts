@@ -126,7 +126,12 @@ describe("the conversation view", () => {
     expect(answers.every((m) => m.type === "message" && !m.streaming)).toBe(true);
 
     model.append([text("applied")]);
-    await client.decide({ proposalId: proposal.id, selectedOption: "yes", instruction: null });
+    await client.decide({
+      proposalId: proposal.id,
+      selectedOption: "yes",
+      instruction: null,
+      decidedBy: { kind: "human", name: "Ana" },
+    });
     await waitFor(() => state.view.proposals.length === 0);
     close();
     await done();

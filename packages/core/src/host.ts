@@ -4,6 +4,7 @@ import type { AgentChange, ConversationId, EntryRecord, TaskId } from "@earendil
 import type { JsonValue } from "@earendil-works/chord";
 import type {
   Author,
+  AuthorKind,
   Case,
   CaseKind,
   CasePatch,
@@ -495,9 +496,13 @@ export class AgentHost {
     ) {
       throw new ProposalNotFound(decision.proposalId);
     }
-    // Only an agent decider is refused, and only by a human gate; a human or an
-    // unnamed decider is admitted on both audiences.
-    if (proposal.audience === "human" && decidedBy?.kind === "agent") {
+    // A gate admits only the deciders its audience names: a human gate a human,
+    // an agent-capable gate a human or an agent. An unnamed or system decision is
+    // never admitted, so an agent principal cannot settle a gate by omitting its
+    // attribution.
+    const admitted: readonly AuthorKind[] =
+      proposal.audience === "human-or-agent" ? ["human", "agent"] : ["human"];
+    if (decidedBy === undefined || !admitted.includes(decidedBy.kind)) {
       throw new GateAudienceRejected(proposal.id, proposal.audience);
     }
     await settleGate(this.engine, {

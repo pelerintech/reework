@@ -113,6 +113,7 @@ describe("case lifecycle", () => {
       proposalId: proposal.id,
       selectedOption: null,
       instruction: null,
+      decidedBy: { kind: "human", name: "Ana" },
     });
     await waitForIdle(test.agent.host, id);
 
@@ -137,6 +138,7 @@ describe("case lifecycle", () => {
       proposalId: proposal.id,
       selectedOption: "go",
       instruction: null,
+      decidedBy: { kind: "human", name: "Ana" },
     });
     await waitForIdle(test.agent.host, id);
 

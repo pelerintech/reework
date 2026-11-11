@@ -370,6 +370,7 @@ describe("named models", () => {
       proposalId: proposal.id,
       selectedOption: "go",
       instruction: null,
+      decidedBy: { kind: "human", name: "Ana" },
     });
     await waitForIdle(test.agent.host, id);
 

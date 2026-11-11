@@ -56,7 +56,12 @@ describe("proposal events on the conversation stream", () => {
       proposal: { id: proposal.id, title: "Deploy?" },
     });
 
-    await client.decide({ proposalId: proposal.id, selectedOption: "go", instruction: null });
+    await client.decide({
+      proposalId: proposal.id,
+      selectedOption: "go",
+      instruction: null,
+      decidedBy: { kind: "human", name: "Ana" },
+    });
     const closed = await waitFor(() => events.find((e) => e.kind === "proposal_closed"));
     expect(closed).toMatchObject({
       proposalId: proposal.id,

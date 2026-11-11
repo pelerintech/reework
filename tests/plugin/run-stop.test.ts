@@ -196,6 +196,7 @@ describe("stopping a run", () => {
       proposalId: proposal.id,
       selectedOption: "go",
       instruction: null,
+      decidedBy: { kind: "human", name: "Ana" },
     });
 
     await eventually(() => ran);

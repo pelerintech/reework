@@ -99,8 +99,9 @@ flowchart TB
 
 **Authors.** Input can say who it is from — `from: { kind: "human" | "system" | "agent", id?, name? }` on
 submit, stored on the entry and shown on messages and snapshots — and gate decisions carry the same author as
-`decidedBy`. Absence means unattributed, never a human; and since any holder of the API token can claim
-`human`, an author records what the caller declared rather than proof, until scoped tokens exist.
+`decidedBy`. Absence means unattributed, never a human; and since the API token is the trusted-operator
+boundary — any holder of it can claim `human` — an author records what the caller declared rather than proof,
+until scoped tokens exist. Channel transports verify their own identities before passing one through.
 
 ## Cases, files, hooks and named models
 

@@ -43,7 +43,12 @@ describe("@reework/client", () => {
       return open.length > 0 ? open : undefined;
     }))!;
     expect(proposal.title).toBe("Deploy?");
-    await client.decide({ proposalId: proposal.id, selectedOption: "go", instruction: null });
+    await client.decide({
+      proposalId: proposal.id,
+      selectedOption: "go",
+      instruction: null,
+      decidedBy: { kind: "human", name: "Ana" },
+    });
 
     await eventually(async () =>
       JSON.stringify(await client.readConversation(conversation.id)).includes("deploy confirmed"),
