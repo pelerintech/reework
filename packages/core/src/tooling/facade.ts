@@ -174,6 +174,7 @@ export interface ModelCompleteResult {
 
 export interface ModelEmbedResult {
   readonly embeddings: number[][];
+  readonly usage?: ModelUsage;
 }
 
 /** The named models a plugin declared, keyed by name. */
@@ -1167,8 +1168,28 @@ export function makePluginModels(
           `plugin ${pluginName}: model "${name}" embeddings request failed with ${response.status}`,
         );
       }
-      const body = (await response.json()) as { data?: { embedding?: number[] }[] };
-      return { embeddings: (body.data ?? []).map((item) => item.embedding ?? []) };
+      const body = (await response.json()) as {
+        data?: { embedding?: number[] }[];
+        usage?: { prompt_tokens?: number; total_tokens?: number };
+      };
+      const embeddings = (body.data ?? []).map((item) => item.embedding ?? []);
+      if (!body.usage) return { embeddings };
+      const usage: ModelUsage = {
+        inputTokens: body.usage.prompt_tokens ?? 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        totalTokens: body.usage.total_tokens ?? body.usage.prompt_tokens ?? 0,
+      };
+      bindings?.modelUsage?.({
+        source: "plugin",
+        plugin: pluginName,
+        model: name,
+        ...(conversationId === undefined ? {} : { conversationId }),
+        usage,
+        at: Date.now(),
+      });
+      return { embeddings, usage };
     },
   };
 }

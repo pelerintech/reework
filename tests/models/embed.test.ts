@@ -3,10 +3,11 @@
 // without embeddings, and honours `beforeModelCall`.
 import { afterEach, describe, expect, it } from "vitest";
 import { Type, definePlugin, defineTool } from "@reework/core";
-import type { AgentDefinition, ModelEmbedResult } from "@reework/core";
+import type { AgentDefinition, ModelEmbedResult, ModelUsageEvent } from "@reework/core";
 import { startFakeEmbeddings } from "../support/fake-embeddings.ts";
 import { startFakeLlm } from "../support/fake-llm.ts";
 import { startTestAgent, testDefinition } from "../support/agent.ts";
+import { eventually } from "../support/wait.ts";
 
 const LLM_ENV = "REEWORK_TEST_EMBED_LLM_KEY";
 const EMBED_ENV = "REEWORK_TEST_EMBED_KEY";
@@ -33,6 +34,16 @@ function definition(
     plugins,
     mission: { role: "You are an embedding test agent." },
   });
+}
+
+function observerPlugin(seen: ModelUsageEvent[]) {
+  return definePlugin("observer", () => ({
+    hooks: {
+      async onModelUsage(event) {
+        seen.push(event);
+      },
+    },
+  }));
 }
 
 describe("ctx.models.embed", () => {
@@ -86,5 +97,109 @@ describe("ctx.models.embed", () => {
       input: ["a", "b"],
     });
     expect(endpoint.requests[0]!.headers.authorization).toBe("Bearer embed-key");
+  });
+
+  it("reports embedding usage like a completion", async () => {
+    const endpoint = await startFakeEmbeddings();
+    endpoint.respond({
+      embeddings: [[0.1, 0.2]],
+      usage: { promptTokens: 12, totalTokens: 12 },
+    });
+    const llm = await startFakeLlm();
+    process.env[LLM_ENV] = "llm-key";
+    process.env[EMBED_ENV] = "embed-key";
+
+    const seenUsage: ModelUsageEvent[] = [];
+    let seen: ModelEmbedResult | undefined;
+    const embedder = definePlugin(
+      "embedder",
+      () => ({
+        tools: [
+          defineTool({
+            name: "embed",
+            description: "embed a passage",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              seen = await ctx.models.embed("embedder", ["a"]);
+              return "embedded";
+            },
+          }),
+        ],
+      }),
+      { models: ["embedder"] },
+    );
+
+    const agent = await startTestAgent(
+      definition(llm.url, endpoint.url, [
+        { plugin: observerPlugin(seenUsage), config: {} },
+        { plugin: embedder, config: {} },
+      ]),
+      { models: undefined },
+    );
+    llm.script({ toolCall: { name: "embed" } }, { text: "done" });
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "go", { wait: true });
+    await eventually(() => seenUsage.some((event) => event.source === "plugin"));
+
+    const usage = seenUsage.find((event) => event.source === "plugin");
+    expect(usage).toMatchObject({
+      source: "plugin",
+      plugin: "embedder",
+      model: "embedder",
+      conversationId: id,
+      usage: {
+        inputTokens: 12,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        totalTokens: 12,
+      },
+    });
+    expect(seen?.usage).toEqual(usage!.usage);
+  });
+
+  it("returns vectors and reports no usage when the response has none", async () => {
+    const endpoint = await startFakeEmbeddings();
+    endpoint.respond({ embeddings: [[1, 2]] });
+    const llm = await startFakeLlm();
+    process.env[LLM_ENV] = "llm-key";
+    process.env[EMBED_ENV] = "embed-key";
+
+    const seenUsage: ModelUsageEvent[] = [];
+    let seen: ModelEmbedResult | undefined;
+    const embedder = definePlugin(
+      "embedder",
+      () => ({
+        tools: [
+          defineTool({
+            name: "embed",
+            description: "embed a passage",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              seen = await ctx.models.embed("embedder", ["a"]);
+              return "embedded";
+            },
+          }),
+        ],
+      }),
+      { models: ["embedder"] },
+    );
+
+    const agent = await startTestAgent(
+      definition(llm.url, endpoint.url, [
+        { plugin: observerPlugin(seenUsage), config: {} },
+        { plugin: embedder, config: {} },
+      ]),
+      { models: undefined },
+    );
+    llm.script({ toolCall: { name: "embed" } }, { text: "done" });
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "go", { wait: true });
+    // The run's own usage event arrives after the embed call's would have.
+    await eventually(() => seenUsage.some((event) => event.source === "run"));
+
+    expect(seen?.embeddings).toEqual([[1, 2]]);
+    expect(seen?.usage).toBeUndefined();
+    expect(seenUsage.filter((event) => event.source === "plugin")).toHaveLength(0);
   });
 });
