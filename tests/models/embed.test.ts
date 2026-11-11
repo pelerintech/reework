@@ -30,6 +30,10 @@ function definition(
         provider: { baseUrl: embedUrl, apiKeyEnv: EMBED_ENV },
         modelId: "text-embedding-3-small",
       },
+      "chat-only": {
+        provider: { baseUrl: embedUrl, apiKeyEnv: EMBED_ENV, api: "anthropic-messages" },
+        modelId: "chat-only-model",
+      },
     },
     plugins,
     mission: { role: "You are an embedding test agent." },
@@ -156,6 +160,48 @@ describe("ctx.models.embed", () => {
       },
     });
     expect(seen?.usage).toEqual(usage!.usage);
+  });
+
+  it("refuses a model whose protocol has no embeddings, sending nothing", async () => {
+    const endpoint = await startFakeEmbeddings();
+    const llm = await startFakeLlm();
+    process.env[LLM_ENV] = "llm-key";
+    process.env[EMBED_ENV] = "embed-key";
+
+    let seenError: unknown;
+    const embedder = definePlugin(
+      "embedder",
+      () => ({
+        tools: [
+          defineTool({
+            name: "embed",
+            description: "embed with a chat-only model",
+            parameters: Type.Object({}),
+            async execute(_args, ctx) {
+              try {
+                await ctx.models.embed("chat-only", ["a"]);
+              } catch (error) {
+                seenError = error;
+              }
+              return "done";
+            },
+          }),
+        ],
+      }),
+      { models: ["chat-only"] },
+    );
+
+    const agent = await startTestAgent(
+      definition(llm.url, endpoint.url, [{ plugin: embedder, config: {} }]),
+      { models: undefined },
+    );
+    llm.script({ toolCall: { name: "embed" } }, { text: "done" });
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "go", { wait: true });
+
+    expect((seenError as Error).name).toBe("ModelHasNoEmbeddings");
+    expect((seenError as Error).message).toContain("chat-only");
+    expect(endpoint.requests).toHaveLength(0);
   });
 
   it("returns vectors and reports no usage when the response has none", async () => {

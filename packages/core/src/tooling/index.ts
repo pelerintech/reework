@@ -20,6 +20,7 @@ export {
   isReeworkTool,
   markGatedTool,
   ModelCallRefused,
+  ModelHasNoEmbeddings,
   section,
   toDurableTool,
   toExtension,

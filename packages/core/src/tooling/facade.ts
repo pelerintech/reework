@@ -1148,6 +1148,9 @@ export function makePluginModels(
     },
     embed: async (name, texts) => {
       const { catalog, model } = resolve(name);
+      if (model.api !== "openai-completions" && model.api !== "openai-responses") {
+        throw new ModelHasNoEmbeddings(name);
+      }
       const auth = await catalog.getAuth(model);
       const baseUrl = (auth?.auth.baseUrl ?? model.baseUrl ?? "").replace(/\/+$/, "");
       if (!baseUrl) {
@@ -1692,6 +1695,17 @@ export function buildPluginEventFlushHook(bindings?: PluginBindings): HookRegist
       bindings?.flushEmits?.(String(api.conversationId), taskIds);
     },
   });
+}
+
+/** A named model whose protocol has no OpenAI-compatible embeddings endpoint. */
+export class ModelHasNoEmbeddings extends Error {
+  readonly model: string;
+
+  constructor(model: string) {
+    super(`model "${model}" has no embeddings`);
+    this.name = "ModelHasNoEmbeddings";
+    this.model = model;
+  }
 }
 
 /** A named-model call a plugin refused; the caller receives it as an error. */

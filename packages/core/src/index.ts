@@ -50,6 +50,7 @@ export {
   isReeworkTool,
   markGatedTool,
   ModelCallRefused,
+  ModelHasNoEmbeddings,
   section,
   Type,
 } from "./tooling/index.ts";
