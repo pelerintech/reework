@@ -22,6 +22,10 @@ export function cardLines(proposal: Proposal, focus: CardFocus): CardLine[] {
   const lines: CardLine[] = [
     { text: proposal.title, style: "title" },
     { text: `conversation ${proposal.conversationId}`, style: "meta" },
+    {
+      text: proposal.audience === "human-or-agent" ? "humans or agents" : "humans only",
+      style: "meta",
+    },
   ];
   (proposal.attachments ?? []).forEach((attachment, i) => {
     const marker = focus.open === i ? "▾" : "▸";
