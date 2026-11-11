@@ -23,6 +23,7 @@ import { protocolErrorResponse, requireToken } from "../server/app.ts";
 import {
   buildModelCallHooks,
   buildModelHooks,
+  buildPluginEventFlushHook,
   buildToolHooks,
   buildUsageHooks,
   makeEventContext,
@@ -35,6 +36,7 @@ import {
 import type {
   BuiltPlugin,
   PluginBindings,
+  PluginEvent,
   PluginHooks,
   PluginRouteContext,
   ReeworkTool,
@@ -182,6 +184,12 @@ export async function startAgent(
     );
     if (usageHooks)
       registry.install(defineExtension({ name: "reework.usageHooks", hooks: [usageHooks] }));
+    registry.install(
+      defineExtension({
+        name: "reework.pluginEvents",
+        hooks: [buildPluginEventFlushHook(bindings)],
+      }),
+    );
     // The engine and host exist only once boot opens them (before any run resumes).
     const budget = budgetExtension(
       agent.limits,
@@ -265,6 +273,20 @@ async function boot(
   bindings.modelUsage = (event) => events.enqueue("onModelUsage", event.conversationId, event);
   bindings.emit = (plugin, event) =>
     events.enqueue("onPluginEvent", event.conversationId, event, plugin);
+  const pendingEmits = new Map<string, PluginEvent[]>();
+  bindings.bufferEmit = (event) => {
+    const id = event.conversationId;
+    if (id === undefined) return;
+    pendingEmits.set(id, [...(pendingEmits.get(id) ?? []), event]);
+  };
+  bindings.flushEmits = (id) => {
+    const pending = pendingEmits.get(id);
+    if (pending === undefined) return;
+    pendingEmits.delete(id);
+    for (const event of pending) {
+      events.enqueue("onPluginEvent", event.conversationId, event, event.plugin);
+    }
+  };
   secrets.setOnUse((event) => events.enqueue("onSecretUse", event.conversationId, event));
   onProposalOpen(engine, (proposal) => {
     events.enqueue("onProposalOpened", proposal.conversationId, { proposal });

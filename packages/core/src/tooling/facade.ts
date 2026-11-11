@@ -726,7 +726,7 @@ function buildToolContext(
   const made: ToolContext = {
     conversationId: String(api.conversationId),
     signal,
-    emit: makePluginEmit(pluginName, bindings, String(api.conversationId)),
+    emit: makePluginEmit(pluginName, bindings, String(api.conversationId), true),
     output: (chunk) => api.output(chunk),
     store: createPluginStore(backend, pluginName, api.conversationId),
     secrets: makePluginSecrets(pluginName, bindings, String(api.conversationId)),
@@ -999,6 +999,10 @@ export interface PluginBindings {
   modelUsage?: (event: ModelUsageEvent) => void;
   /** Queue a plugin's emitted event; filled once the agent's event queue exists. */
   emit?: (plugin: string, event: PluginEvent) => void;
+  /** Hold a tool call's emitted events until its round's tools have committed. */
+  bufferEmit?: (event: PluginEvent) => void;
+  /** Queue the events a conversation's tool calls emitted once their round committed. */
+  flushEmits?: (conversationId: string) => void;
   /**
    * The coordinator list of `beforeModelCall` hooks, in plugin declaration order:
    * resolves the first refusal, or undefined when no hook refused. Built from the
@@ -1029,19 +1033,26 @@ export function makePluginEmit(
   pluginName: string,
   bindings?: PluginBindings,
   conversationId?: string,
+  defer = false,
 ): (name: string, data: JsonValue) => void {
   return (name, data) => {
     if (typeof name !== "string" || name.trim() === "") {
       throw new Error(`plugin "${pluginName}" event name must be a non-empty string`);
     }
-    if (!bindings?.emit) throw new Error("plugin events are not wired in this build");
-    bindings.emit(pluginName, {
+    const event: PluginEvent = {
       name,
       data,
       plugin: pluginName,
       ...(conversationId === undefined ? {} : { conversationId }),
       at: Date.now(),
-    });
+    };
+    if (defer) {
+      if (!bindings?.bufferEmit) throw new Error("plugin events are not wired in this build");
+      bindings.bufferEmit(event);
+      return;
+    }
+    if (!bindings?.emit) throw new Error("plugin events are not wired in this build");
+    bindings.emit(pluginName, event);
   };
 }
 
@@ -1549,6 +1560,15 @@ export function buildUsageHooks(
         at: Date.now(),
       });
       return undefined;
+    },
+  });
+}
+
+/** Build the afterTools hook that queues a round's tool emits once the tools committed. */
+export function buildPluginEventFlushHook(bindings?: PluginBindings): HookRegistration {
+  return hook(GenerationTask, {
+    afterTools(_assistant, _results, api) {
+      bindings?.flushEmits?.(String(api.conversationId));
     },
   });
 }

@@ -178,4 +178,61 @@ describe("plugin events", () => {
 
     await test.dispose();
   });
+
+  it("queues tool emits post-commit, without delaying the caller, in emit order", async () => {
+    let executeReturned = false;
+    let release!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const order: string[] = [];
+    const committedAtReceive: boolean[] = [];
+    const emitter = definePlugin("a", () => ({
+      tools: [
+        defineTool({
+          name: "announce",
+          description: "Announce two events.",
+          parameters: Type.Object({}),
+          async execute(_args, ctx) {
+            ctx.emit("first", { n: 1 });
+            ctx.emit("second", { n: 2 });
+            await new Promise((resolve) => setTimeout(resolve, 150));
+            executeReturned = true;
+            return "done";
+          },
+        }),
+      ],
+    }));
+    const consumer = definePlugin("b", () => ({
+      hooks: {
+        async onPluginEvent(event) {
+          committedAtReceive.push(executeReturned);
+          order.push(event.name);
+          if (event.name === "first") await deferred;
+        },
+      },
+    }));
+
+    const test = await startTestAgent(
+      definition([
+        { plugin: emitter, config: {} },
+        { plugin: consumer, config: {} },
+      ]),
+    );
+    test.model.respond([toolCall("announce"), text("done")]);
+    const { id } = await test.agent.host.createConversation();
+
+    const begun = Date.now();
+    await test.agent.host.submitInput(id, "go");
+    expect(Date.now() - begun).toBeLessThan(150);
+
+    await eventually(() => order[0]);
+    expect(committedAtReceive).toEqual([true]);
+    release();
+    await eventually(() => order.length === 2);
+    expect(order).toEqual(["first", "second"]);
+    expect(committedAtReceive).toEqual([true, true]);
+
+    await test.dispose();
+  });
 });
