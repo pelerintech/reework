@@ -1043,6 +1043,14 @@ export function makePluginEmit(
     if (typeof name !== "string" || name.trim() === "") {
       throw new Error(`plugin "${pluginName}" event name must be a non-empty string`);
     }
+    if (name.length > 128) {
+      throw new Error(`plugin "${pluginName}" event name must be at most 128 characters`);
+    }
+    if (!/^[\x20-\x7E]+$/.test(name)) {
+      throw new Error(
+        `plugin "${pluginName}" event "${name}" name must be printable characters without control characters`,
+      );
+    }
     let copied: JsonValue;
     try {
       copied = copyJson(data);
@@ -1051,6 +1059,12 @@ export function makePluginEmit(
       throw new Error(`plugin "${pluginName}" event "${name}" data must be JSON: ${message}`, {
         cause: error,
       });
+    }
+    const bytes = Buffer.byteLength(JSON.stringify(copied), "utf8");
+    if (bytes > 256 * 1024) {
+      throw new Error(
+        `plugin "${pluginName}" event "${name}" payload must be at most 256 KB (got ${bytes} bytes)`,
+      );
     }
     const event: PluginEvent = {
       name,

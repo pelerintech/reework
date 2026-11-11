@@ -374,4 +374,51 @@ describe("plugin events", () => {
 
     await test.dispose();
   });
+
+  it("validates event names and payload size", async () => {
+    const errors: string[] = [];
+    const delivered: string[] = [];
+    const validName = "x".repeat(128);
+    const emitter = definePlugin("a", () => ({
+      setup(ctx) {
+        const emit = (name: string, data: unknown) => {
+          try {
+            ctx.emit(name, data as never);
+          } catch (error) {
+            errors.push(error instanceof Error ? error.message : String(error));
+          }
+        };
+        emit(validName, { ok: true });
+        emit("bad\nname", {});
+        emit("x".repeat(129), {});
+        emit("", {});
+        emit("budget.big", { text: "x".repeat(256 * 1024) });
+      },
+    }));
+    const consumer = definePlugin("b", () => ({
+      hooks: {
+        async onPluginEvent(event) {
+          delivered.push(event.name);
+        },
+      },
+    }));
+
+    const test = await startTestAgent(
+      definition([
+        { plugin: emitter, config: {} },
+        { plugin: consumer, config: {} },
+      ]),
+    );
+    await eventually(() => delivered.length > 0);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(delivered).toEqual([validName]);
+    expect(errors).toHaveLength(4);
+    expect(errors[0]).toContain("control");
+    expect(errors[1]).toContain("128");
+    expect(errors[2]).toContain("non-empty");
+    expect(errors[3]).toContain("budget.big");
+    expect(errors[3]).toContain("256 KB");
+
+    await test.dispose();
+  });
 });

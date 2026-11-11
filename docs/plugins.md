@@ -266,8 +266,9 @@ export const journal = definePlugin("journal", () => ({
 
 A plugin can announce its own moment with `ctx.emit(name, data)`, and every other plugin that provides
 `onPluginEvent(event, ctx)` receives it. `name` is a free-form string the emitting plugin chooses
-(`budget.warning`, `secrets-gateway.use`, `library.proposal`); core keeps no registry or schema. `data` must be
-strict JSON — an emit with a function, a cycle or another non-JSON value throws, naming the event.
+(`budget.warning`, `secrets-gateway.use`, `library.proposal`), 1–128 printable characters without control
+characters; core keeps no registry or schema. `data` must be strict JSON, serialized at most 256 KB — an emit with a
+function, a cycle, another non-JSON value or an oversized payload throws, naming the event.
 
 The event is `{ name, data, plugin, conversationId?, at }`: `plugin` is the emitter, and `conversationId` is the
 emitting context's conversation (absent from `setup` and routes). Delivery goes through the same per-agent FIFO
