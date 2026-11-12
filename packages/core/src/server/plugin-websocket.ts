@@ -240,9 +240,10 @@ function logFailure(pluginName: string, error: unknown): void {
 /** Run one handler, logging a synchronous throw or an async rejection. */
 function safe(pluginName: string, call: () => unknown): void {
   try {
-    const result = call();
-    if (result instanceof Promise) {
-      void result.catch((error) => logFailure(pluginName, error));
+    const result = call() as PromiseLike<unknown> | undefined;
+    // A handler may return any thenable, not only a real Promise.
+    if (typeof result?.then === "function") {
+      void Promise.resolve(result).catch((error) => logFailure(pluginName, error));
     }
   } catch (error) {
     logFailure(pluginName, error);

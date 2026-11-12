@@ -438,4 +438,51 @@ describe("plugin websockets: handler errors", () => {
     expect(health.status).toBe(200);
     spy.mockRestore();
   });
+
+  it("logs a thenable handler's rejection", async () => {
+    const errors: string[] = [];
+    const spy = vi
+      .spyOn(console, "error")
+      .mockImplementation((...args) => errors.push(args.map(String).join(" ")));
+    const plugin = definePlugin("thenable", () => ({
+      routes(app, ctx) {
+        app.get(
+          "/thenable",
+          ctx.upgradeWebSocket(() => ({
+            onMessage(
+              data: string | Uint8Array,
+              socket: { send(data: string | Uint8Array): void },
+            ) {
+              if (data === "thenable") {
+                /* oxlint-disable unicorn/no-thenable */
+                return {
+                  then(_resolve: (value: void) => void, reject: (error: Error) => void) {
+                    setTimeout(() => reject(new Error("thenable boom")), 0);
+                  },
+                } as unknown as Promise<void>;
+                /* oxlint-enable unicorn/no-thenable */
+              }
+              socket.send("ok");
+            },
+          })),
+        );
+      },
+    }));
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }));
+    const { port } = await agent.listen(0);
+    const socket = await open(`ws://127.0.0.1:${port}/plugins/thenable/thenable`, authHeaders);
+
+    socket.send("thenable");
+    await eventually(() => errors.some((entry) => entry.includes("thenable boom")));
+    expect(
+      errors.some(
+        (entry) => entry.includes('plugin "thenable"') && entry.includes("socket failed"),
+      ),
+    ).toBe(true);
+
+    const after = nextMessage(socket);
+    socket.send("after");
+    expect(await after).toBe("ok");
+    spy.mockRestore();
+  });
 });
