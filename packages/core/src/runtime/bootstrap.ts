@@ -19,7 +19,11 @@ import { CONTEXT, Engine } from "../engine.ts";
 import { installHITL } from "../hitl/gate.ts";
 import { AgentHost } from "../host.ts";
 import { createServer } from "../server/index.ts";
-import { createPluginSocketRegistry, pluginUpgradeWebSocket } from "../server/plugin-websocket.ts";
+import {
+  createPluginSocketRegistry,
+  installPluginSocketOptions,
+  pluginUpgradeWebSocket,
+} from "../server/plugin-websocket.ts";
 import type { PluginSocketRegistry } from "../server/plugin-websocket.ts";
 import { protocolErrorResponse, requireToken } from "../server/app.ts";
 import {
@@ -427,7 +431,9 @@ async function boot(
     }
   }
   const { app, nodeWebSocket } = createServer(host, { token, name: agent.name });
-  // Every upgrade, plugin or protocol, is tracked so stop can close it.
+  // Every upgrade, plugin or protocol, is tracked so stop can close it; plugin
+  // sockets also hand their message limit to ws as `maxPayload`.
+  installPluginSocketOptions(nodeWebSocket, pluginSockets);
   nodeWebSocket.wss.on("connection", (socket, request) => pluginSockets.adopt(request, socket));
   mountPluginRoutes(
     app,

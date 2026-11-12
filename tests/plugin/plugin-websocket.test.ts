@@ -181,6 +181,24 @@ describe("plugin websockets: limits", () => {
     expect(messages).toBe(0);
   });
 
+  it("refuses a frame past ws's own ceiling with the required reason", async () => {
+    const plugin = definePlugin("limited", () => ({
+      routes(app, ctx) {
+        app.get(
+          "/big",
+          ctx.upgradeWebSocket(() => ({})),
+        );
+      },
+    }));
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }));
+    const { port } = await agent.listen(0);
+    const socket = await open(`ws://127.0.0.1:${port}/plugins/limited/big`, authHeaders);
+
+    const closed = closedWith(socket);
+    socket.send(Buffer.alloc(101 * 1024 * 1024));
+    expect(await closed).toEqual({ code: 1009, reason: "message too big" });
+  });
+
   it("lets a route set a smaller message limit", async () => {
     const plugin = definePlugin("limited", () => ({
       routes(app, ctx) {

@@ -23,6 +23,7 @@ interface Reservation {
   plugin: string;
   request: IncomingMessage;
   rawSocket: Socket;
+  maxMessageBytes: number;
   onAbort: () => void;
   settled: boolean;
 }
@@ -34,9 +35,16 @@ export interface PluginSocketRegistry {
    * upgrade counts like an open socket, so concurrent handshakes cannot bypass
    * the cap. False means the plugin is at its cap.
    */
-  reserve(pluginName: string, maxSockets: number, request: IncomingMessage): boolean;
+  reserve(
+    pluginName: string,
+    maxSockets: number,
+    request: IncomingMessage,
+    maxMessageBytes: number,
+  ): boolean;
   /** Release a reservation whose upgrade was refused or failed. */
   release(request: IncomingMessage): void;
+  /** The message limit `ws` should enforce while receiving this upgrade. */
+  maxPayloadFor(request: IncomingMessage): number | undefined;
   /** Record an upgraded socket, plugin or protocol, once `ws` opened it. */
   adopt(request: IncomingMessage, socket: NodeWs): void;
   add(pluginName: string, socket: NodeWs): void;
@@ -52,6 +60,15 @@ export interface PluginSocketRegistry {
   hasUpgraded(): boolean;
   /** True from the first close on stop; later upgrades are refused or closed. */
   isStopping(): boolean;
+}
+
+/** Give ws's own oversize abort the reason the contract requires. */
+function patchOversizeClose(socket: NodeWs): void {
+  const close = socket.close.bind(socket);
+  socket.close = (code?: number, data?: string | Buffer) => {
+    const reason = code === 1009 && (data === undefined || data === "") ? "message too big" : data;
+    close(code, reason);
+  };
 }
 
 export function createPluginSocketRegistry(): PluginSocketRegistry {
@@ -125,7 +142,7 @@ export function createPluginSocketRegistry(): PluginSocketRegistry {
   };
 
   return {
-    reserve(pluginName, maxSockets, request) {
+    reserve(pluginName, maxSockets, request, maxMessageBytes) {
       if (
         (byPlugin.get(pluginName)?.size ?? 0) + (pendingByPlugin.get(pluginName)?.size ?? 0) >=
         maxSockets
@@ -137,6 +154,7 @@ export function createPluginSocketRegistry(): PluginSocketRegistry {
         plugin: pluginName,
         request,
         rawSocket,
+        maxMessageBytes,
         onAbort: () => settle(reservation),
         settled: false,
       };
@@ -151,11 +169,15 @@ export function createPluginSocketRegistry(): PluginSocketRegistry {
       const reservation = reservations.get(request);
       if (reservation) settle(reservation);
     },
+    maxPayloadFor(request) {
+      return reservations.get(request)?.maxMessageBytes;
+    },
     adopt(request, socket) {
       const reservation = reservations.get(request);
       if (reservation) {
         settle(reservation);
         addSocket(reservation.plugin, socket);
+        patchOversizeClose(socket);
       } else {
         track(socket);
       }
@@ -229,10 +251,6 @@ function messageOf(raw: WSMessageReceive): string | Uint8Array {
   return new Uint8Array(raw as ArrayBufferLike);
 }
 
-function messageBytes(data: string | Uint8Array): number {
-  return typeof data === "string" ? Buffer.byteLength(data) : data.byteLength;
-}
-
 /** The raw request the node WebSocket helper upgrades, when this is a real upgrade. */
 function incomingOf(c: Context): IncomingMessage | undefined {
   return (c.env as { incoming?: IncomingMessage }).incoming;
@@ -243,7 +261,6 @@ function adaptEvents(
   pluginName: string,
   registry: PluginSocketRegistry,
   events: PluginWebSocketEvents,
-  maxMessageBytes: number,
 ): WSEvents<NodeWs> {
   return {
     onOpen: (_evt, ws) => {
@@ -251,12 +268,7 @@ function adaptEvents(
       safe(pluginName, () => events.onOpen?.(socketOf(ws)));
     },
     onMessage: (evt, ws) => {
-      const data = messageOf(evt.data);
-      if (messageBytes(data) > maxMessageBytes) {
-        ws.close(1009, "message too big");
-        return;
-      }
-      safe(pluginName, () => events.onMessage?.(data, socketOf(ws)));
+      safe(pluginName, () => events.onMessage?.(messageOf(evt.data), socketOf(ws)));
     },
     onClose: (evt, ws) => {
       safe(pluginName, () => events.onClose?.(evt.code, evt.reason, socketOf(ws)));
@@ -267,6 +279,28 @@ function adaptEvents(
         events.onError?.(error instanceof Error ? error : new Error(String(error)), socketOf(ws)),
       );
     },
+  };
+}
+
+/**
+ * Pass each plugin upgrade's message limit to `ws` as its `maxPayload`, so an
+ * oversized frame is refused while it is received, not after it is buffered.
+ */
+export function installPluginSocketOptions(
+  nodeWebSocket: NodeWebSocket,
+  registry: PluginSocketRegistry,
+): void {
+  const wss = nodeWebSocket.wss;
+  const handleUpgrade = wss.handleUpgrade.bind(wss);
+  wss.handleUpgrade = (request, socket, head, callback) => {
+    const maxPayload = registry.maxPayloadFor(request);
+    const previous = wss.options.maxPayload;
+    if (maxPayload !== undefined) wss.options.maxPayload = maxPayload;
+    try {
+      handleUpgrade(request, socket, head, callback);
+    } finally {
+      wss.options.maxPayload = previous;
+    }
   };
 }
 
@@ -290,7 +324,7 @@ export function pluginUpgradeWebSocket(
     }
     const request = incomingOf(c);
     if (!request) return c.json({ error: "websocket_upgrade_required" }, 426);
-    if (!registry.reserve(pluginName, maxSockets, request)) {
+    if (!registry.reserve(pluginName, maxSockets, request, maxMessageBytes)) {
       return c.json({ error: "too_many_sockets" }, 429);
     }
     let result: PluginWebSocketEvents | Response;
@@ -309,7 +343,7 @@ export function pluginUpgradeWebSocket(
       registry.release(request);
       return c.json({ error: "agent_stopping" }, 503);
     }
-    const events = adaptEvents(pluginName, registry, result, maxMessageBytes);
+    const events = adaptEvents(pluginName, registry, result);
     try {
       return nodeWebSocket.upgradeWebSocket(c, events, {
         onError: (error) => logFailure(pluginName, error),
