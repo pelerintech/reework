@@ -286,6 +286,29 @@ describe("plugin websockets: limits", () => {
     for (const result of opened) (result as PromiseFulfilledResult<WebSocket>).value.close();
   });
 
+  it("rejects limits that are not positive integers at the upgrade call", async () => {
+    const cases = [
+      { maxSockets: 1.5 },
+      { maxSockets: 0 },
+      { maxSockets: -3 },
+      { maxMessageBytes: 0 },
+      { maxMessageBytes: 1.5 },
+    ];
+    for (const limits of cases) {
+      const plugin = definePlugin("bad", () => ({
+        routes(app, ctx) {
+          app.get(
+            "/bad",
+            ctx.upgradeWebSocket(() => ({}), limits),
+          );
+        },
+      }));
+      await expect(
+        startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] })),
+      ).rejects.toThrow(/positive integer/);
+    }
+  });
+
   it("clamps a per-call cap to the plugin ceiling", async () => {
     const plugin = definePlugin("limited", () => ({
       routes(app, ctx) {

@@ -18,6 +18,22 @@ const DEFAULT_MAX_SOCKETS = 8;
 /** The ceiling a plugin may never exceed, however its routes name their caps. */
 const PLUGIN_SOCKET_CEILING = 64;
 
+/** A limit is a positive integer; anything else is a plugin bug, not a clamp. */
+function positiveLimit(
+  pluginName: string,
+  name: string,
+  value: number | undefined,
+  fallback: number,
+): number {
+  if (value === undefined) return fallback;
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(
+      `plugin "${pluginName}" WebSocket limit ${name} must be a positive integer (got ${String(value)})`,
+    );
+  }
+  return value;
+}
+
 /** An upgrade that reserved a slot and has not opened (or failed) yet. */
 interface Reservation {
   plugin: string;
@@ -316,8 +332,16 @@ export function pluginUpgradeWebSocket(
   factory: PluginWebSocketFactory,
   limits?: PluginWebSocketLimits,
 ): (c: Context) => Promise<Response> {
-  const maxMessageBytes = limits?.maxMessageBytes ?? DEFAULT_MAX_MESSAGE_BYTES;
-  const maxSockets = Math.min(limits?.maxSockets ?? DEFAULT_MAX_SOCKETS, PLUGIN_SOCKET_CEILING);
+  const maxMessageBytes = positiveLimit(
+    pluginName,
+    "maxMessageBytes",
+    limits?.maxMessageBytes,
+    DEFAULT_MAX_MESSAGE_BYTES,
+  );
+  const maxSockets = Math.min(
+    positiveLimit(pluginName, "maxSockets", limits?.maxSockets, DEFAULT_MAX_SOCKETS),
+    PLUGIN_SOCKET_CEILING,
+  );
   return async (c) => {
     if (c.req.header("upgrade")?.toLowerCase() !== "websocket") {
       return c.json({ error: "websocket_upgrade_required" }, 426);
