@@ -746,8 +746,10 @@ Handlers use reework shapes: `onOpen(socket)`, `onMessage(data, socket)` with `d
 `426 { "error": "websocket_upgrade_required" }`.
 
 Limits apply per upgrade call: `maxMessageBytes` (default 1 MiB) closes an oversized message with code `1009` and
-reason `message too big` before the handler runs; `maxSockets` (default 8) refuses a connection past the plugin's
+reason `message too big` while it is received; `maxSockets` (default 8) refuses a connection past the plugin's
 concurrent count with `429 { "error": "too_many_sockets" }`, and is clamped to the plugin-wide ceiling of 64.
+Backpressure is the plugin's business: core bounds a message's acceptance but not a slow reader's outbound buffering,
+so a plugin sending large volumes should bound its own.
 
 When the agent stops, open plugin sockets close with code `1001` and reason `agent stopping` before the servers
 close, and their close shares the stop deadline; a socket that does not confirm is terminated and named as
