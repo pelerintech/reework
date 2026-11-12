@@ -3,6 +3,7 @@
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { definePlugin } from "@reework/core";
+import type { RouteContext } from "@reework/core";
 import { authHeaders, authedApp, startTestAgent, testDefinition } from "../support/agent.ts";
 import { eventually } from "../support/wait.ts";
 
@@ -13,6 +14,17 @@ function open(url: string, headers: Record<string, string> = {}): Promise<WebSoc
     socket.once("open", () => resolve(socket));
     socket.once("error", reject);
   });
+}
+
+/** Try a handshake that must fail; closes the socket if it unexpectedly opens. */
+async function refusal(url: string, headers: Record<string, string> = {}): Promise<Error> {
+  try {
+    const socket = await open(url, headers);
+    socket.close();
+    throw new Error("the handshake was accepted");
+  } catch (error) {
+    return error as Error;
+  }
 }
 
 /** The next frame as text (text and binary frames alike). */
@@ -97,5 +109,35 @@ describe("plugin websockets: upgrade behind the token", () => {
     expect(response.status).toBe(426);
     expect(await response.json()).toEqual({ error: "websocket_upgrade_required" });
     expect(factory).not.toHaveBeenCalled();
+  });
+});
+
+describe("plugin websockets: the /open/ gate", () => {
+  it("lets the plugin's async factory refuse the handshake with a response", async () => {
+    const factory = vi.fn(async (c: RouteContext) => {
+      if (c.req.query("secret") !== "s3") return c.json({ error: "unauthorized" }, 401);
+      return {
+        onMessage(data: string | Uint8Array, socket: { send(data: string | Uint8Array): void }) {
+          socket.send(`echo:${typeof data === "string" ? data : data.byteLength}`);
+        },
+      };
+    });
+    const plugin = definePlugin("hookin", () => ({
+      routes(app, ctx) {
+        app.get("/open/inbound", ctx.upgradeWebSocket(factory));
+      },
+    }));
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }));
+    const { port } = await agent.listen(0);
+    const url = `ws://127.0.0.1:${port}/plugins/hookin/open/inbound`;
+
+    expect((await refusal(url)).message).toMatch(/401/);
+    expect(factory).toHaveBeenCalledTimes(1);
+
+    const socket = await open(`${url}?secret=s3`);
+    const echo = nextMessage(socket);
+    socket.send("hi");
+    expect(await echo).toBe("echo:hi");
+    socket.close();
   });
 });
