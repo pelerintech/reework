@@ -197,10 +197,22 @@ export async function openPluginWebSocket(
     headers,
     handshakeTimeout: options.timeoutMs ?? 5000,
   });
-  await new Promise<void>((resolve, reject) => {
-    socket.once("open", () => resolve());
-    socket.once("error", reject);
-  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", () => resolve());
+      socket.once("error", reject);
+    });
+  } catch (error) {
+    // A refused or timed-out handshake leaves no client to close the listener.
+    socket.on("error", () => {});
+    try {
+      socket.close();
+    } catch {}
+    // Closing stops new connections at once; awaiting would hang while a
+    // pending upgrade's factory never settles.
+    void closeServer().catch(() => {});
+    throw error;
+  }
   let closed = false;
   return {
     socket,
