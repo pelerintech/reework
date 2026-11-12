@@ -1,6 +1,6 @@
 {
   "name": "@reework/core",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Build durable, human-in-the-loop AI agents on pi-durable: plugins, gated actions, an HTTP/WS protocol and a testing kit.",
   "keywords": [
     "agent",

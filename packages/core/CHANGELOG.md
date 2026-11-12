@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.4.0](https://github.com/pelerintech/reework/compare/core-v1.3.0...core-v1.4.0) (2026-11-12)
+
+
+### Features
+
+* **core:** close plugin sockets on stop ([27971c4](https://github.com/pelerintech/reework/commit/27971c4d3667da117187f4f8f1c570c9e79f18d9))
+* **core:** count plugin sockets in shutdown ([8cdd27c](https://github.com/pelerintech/reework/commit/8cdd27c6fd5fd5a33dad4d0a20395bf05ba87c29))
+* **core:** isolate plugin socket handler errors ([0c18100](https://github.com/pelerintech/reework/commit/0c181004fedeb0e8160cd364a9a415754dabf2ce))
+* **core:** plugin route WebSocket upgrade ([295fe00](https://github.com/pelerintech/reework/commit/295fe000c8158719b4726d422a368805bd0ad440))
+* **core:** plugin WebSocket limits ([5a04470](https://github.com/pelerintech/reework/commit/5a044706bdd22a5b17415b480ed0f9d547d84c41))
+* **core:** plugin WebSocket routes (v18) ([7e620da](https://github.com/pelerintech/reework/commit/7e620daaebfdd2b84e4ef70f0cbc7632f2ef43cb))
+* **testing:** open plugin WebSockets ([dd1643b](https://github.com/pelerintech/reework/commit/dd1643b2c863797dea7a32de6a687491e1199f57))
+
+
+### Bug Fixes
+
+* **core:** await thenable plugin handlers ([0a1b722](https://github.com/pelerintech/reework/commit/0a1b722bab4dbd47a7384899af8b67e96cd18c0d))
+* **core:** enforce plugin message limits while receiving ([15e1504](https://github.com/pelerintech/reework/commit/15e150403f6245bc9977746dca884989b695add3))
+* **core:** refuse upgrades in flight when stopping ([96e1bff](https://github.com/pelerintech/reework/commit/96e1bffe1fb2e16800c1c696dffbe32f5b1218cc))
+* **core:** require Connection: Upgrade on plugin sockets ([fff337b](https://github.com/pelerintech/reework/commit/fff337b7f24f6974bcc180224a170d52d7765bb6))
+* **core:** reserve plugin socket slots before awaiting factories ([5c8d598](https://github.com/pelerintech/reework/commit/5c8d5980a91cc8839d2e62484e370144b57178f6))
+* **core:** settle stop within its deadline with upgraded sockets ([b1d6271](https://github.com/pelerintech/reework/commit/b1d6271cf660839e00847456eca1cf68d17373b3))
+* **core:** validate plugin WebSocket limits ([2ba1904](https://github.com/pelerintech/reework/commit/2ba1904693b25db1b88659cf6321e0363a8ad466))
+* **testing:** close the listener on a failed plugin socket handshake ([a87f9fd](https://github.com/pelerintech/reework/commit/a87f9fddf770cf0d25ba53140f5828ae41627803))
+* **testing:** honour an authorization header on plugin sockets ([31c74b9](https://github.com/pelerintech/reework/commit/31c74b929ff0d0e702eae0065fb9b6ba65456200))
+
 ## [1.3.0](https://github.com/pelerintech/reework/compare/core-v1.2.3...core-v1.3.0) (2026-11-11)
 
 
