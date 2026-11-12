@@ -11,6 +11,40 @@ import type {
 
 /** Largest incoming message a plugin socket accepts when it names no limit. */
 const DEFAULT_MAX_MESSAGE_BYTES = 1_048_576;
+/** Most sockets one plugin may hold when an upgrade call names no cap. */
+const DEFAULT_MAX_SOCKETS = 8;
+/** The ceiling a plugin may never exceed, however its routes name their caps. */
+const PLUGIN_SOCKET_CEILING = 64;
+
+/** The open plugin sockets of one agent, keyed by plugin name. */
+export interface PluginSocketRegistry {
+  add(pluginName: string, socket: NodeWs): void;
+  count(pluginName: string): number;
+  entries(): { plugin: string; socket: NodeWs }[];
+}
+
+export function createPluginSocketRegistry(): PluginSocketRegistry {
+  const byPlugin = new Map<string, Set<NodeWs>>();
+  return {
+    add(pluginName, socket) {
+      const sockets = byPlugin.get(pluginName) ?? new Set<NodeWs>();
+      byPlugin.set(pluginName, sockets);
+      sockets.add(socket);
+      socket.once("close", () => {
+        sockets.delete(socket);
+        if (sockets.size === 0) byPlugin.delete(pluginName);
+      });
+    },
+    count(pluginName) {
+      return byPlugin.get(pluginName)?.size ?? 0;
+    },
+    entries() {
+      return [...byPlugin].flatMap(([plugin, sockets]) =>
+        [...sockets].map((socket) => ({ plugin, socket })),
+      );
+    },
+  };
+}
 
 /** A socket handler's failure is logged with its plugin and never fails the server. */
 function logFailure(pluginName: string, error: unknown): void {
@@ -42,11 +76,13 @@ function messageBytes(data: string | Uint8Array): number {
 /** Adapt a plugin's handlers to Hono's node WebSocket events. */
 function adaptEvents(
   pluginName: string,
+  registry: PluginSocketRegistry,
   events: PluginWebSocketEvents,
   maxMessageBytes: number,
 ): WSEvents<NodeWs> {
   return {
     onOpen: (_evt, ws) => {
+      if (ws.raw) registry.add(pluginName, ws.raw);
       void events.onOpen?.(socketOf(ws));
     },
     onMessage: (evt, ws) => {
@@ -78,17 +114,22 @@ function adaptEvents(
 export function pluginUpgradeWebSocket(
   nodeWebSocket: NodeWebSocket,
   pluginName: string,
+  registry: PluginSocketRegistry,
   factory: PluginWebSocketFactory,
   limits?: PluginWebSocketLimits,
 ): (c: Context) => Promise<Response> {
   const maxMessageBytes = limits?.maxMessageBytes ?? DEFAULT_MAX_MESSAGE_BYTES;
+  const maxSockets = Math.min(limits?.maxSockets ?? DEFAULT_MAX_SOCKETS, PLUGIN_SOCKET_CEILING);
   return async (c) => {
     if (c.req.header("upgrade")?.toLowerCase() !== "websocket") {
       return c.json({ error: "websocket_upgrade_required" }, 426);
     }
+    if (registry.count(pluginName) >= maxSockets) {
+      return c.json({ error: "too_many_sockets" }, 429);
+    }
     const result = await factory(c);
     if (result instanceof Response) return result;
-    const events = adaptEvents(pluginName, result, maxMessageBytes);
+    const events = adaptEvents(pluginName, registry, result, maxMessageBytes);
     return nodeWebSocket.upgradeWebSocket(c, events, {
       onError: (error) => logFailure(pluginName, error),
     });

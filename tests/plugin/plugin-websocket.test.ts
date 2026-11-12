@@ -141,3 +141,114 @@ describe("plugin websockets: the /open/ gate", () => {
     socket.close();
   });
 });
+
+/** The next close frame. */
+function closedWith(socket: WebSocket): Promise<{ code: number; reason: string }> {
+  return new Promise((resolve) => {
+    socket.once("close", (code, reason) => resolve({ code, reason: reason.toString() }));
+  });
+}
+
+describe("plugin websockets: limits", () => {
+  it("closes an oversized message with 1009 and does not call the handler", async () => {
+    let messages = 0;
+    const plugin = definePlugin("limited", () => ({
+      routes(app, ctx) {
+        app.get(
+          "/big",
+          ctx.upgradeWebSocket(() => ({
+            onMessage(_data, socket) {
+              messages += 1;
+              socket.send("seen");
+            },
+          })),
+        );
+      },
+    }));
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }));
+    const { port } = await agent.listen(0);
+    const socket = await open(`ws://127.0.0.1:${port}/plugins/limited/big`, authHeaders);
+
+    const closed = closedWith(socket);
+    socket.send("x".repeat(1_048_577));
+    expect(await closed).toEqual({ code: 1009, reason: "message too big" });
+    expect(messages).toBe(0);
+  });
+
+  it("lets a route set a smaller message limit", async () => {
+    const plugin = definePlugin("limited", () => ({
+      routes(app, ctx) {
+        app.get(
+          "/small",
+          ctx.upgradeWebSocket(
+            () => ({
+              onMessage(data, socket) {
+                socket.send(`got:${typeof data === "string" ? data : data.byteLength}`);
+              },
+            }),
+            { maxMessageBytes: 4 },
+          ),
+        );
+      },
+    }));
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }));
+    const { port } = await agent.listen(0);
+    const socket = await open(`ws://127.0.0.1:${port}/plugins/limited/small`, authHeaders);
+
+    const echo = nextMessage(socket);
+    socket.send("abcd");
+    expect(await echo).toBe("got:abcd");
+
+    const closed = closedWith(socket);
+    socket.send("abcde");
+    expect(await closed).toEqual({ code: 1009, reason: "message too big" });
+  });
+
+  it("caps concurrent sockets per plugin and frees a slot", async () => {
+    const plugin = definePlugin("limited", () => ({
+      routes(app, ctx) {
+        app.get(
+          "/one",
+          ctx.upgradeWebSocket(() => ({}), { maxSockets: 1 }),
+        );
+      },
+    }));
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }));
+    const { port } = await agent.listen(0);
+    const url = `ws://127.0.0.1:${port}/plugins/limited/one`;
+
+    const first = await open(url, authHeaders);
+    expect((await refusal(url, authHeaders)).message).toMatch(/429/);
+
+    const firstClosed = closedWith(first);
+    first.close();
+    await firstClosed;
+
+    const third = await eventually(async () => {
+      try {
+        return await open(url, authHeaders);
+      } catch {
+        return undefined;
+      }
+    });
+    third?.close();
+  });
+
+  it("clamps a per-call cap to the plugin ceiling", async () => {
+    const plugin = definePlugin("limited", () => ({
+      routes(app, ctx) {
+        app.get(
+          "/spread",
+          ctx.upgradeWebSocket(() => ({}), { maxSockets: 70 }),
+        );
+      },
+    }));
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }));
+    const { port } = await agent.listen(0);
+    const url = `ws://127.0.0.1:${port}/plugins/limited/spread`;
+
+    const sockets = await Promise.all(Array.from({ length: 64 }, () => open(url, authHeaders)));
+    expect((await refusal(url, authHeaders)).message).toMatch(/429/);
+    for (const socket of sockets) socket.close();
+  });
+});
