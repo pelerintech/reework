@@ -59,7 +59,12 @@ export {
 export type {
   BuiltPlugin,
   RouteApp,
+  RouteContext,
   PluginRouteContext,
+  PluginWebSocket,
+  PluginWebSocketEvents,
+  PluginWebSocketLimits,
+  PluginWebSocketFactory,
   PluginSetupContext,
   PluginHooks,
   PluginHookContext,

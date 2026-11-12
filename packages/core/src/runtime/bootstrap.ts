@@ -19,6 +19,12 @@ import { CONTEXT, Engine } from "../engine.ts";
 import { installHITL } from "../hitl/gate.ts";
 import { AgentHost } from "../host.ts";
 import { createServer } from "../server/index.ts";
+import {
+  createPluginSocketRegistry,
+  installPluginSocketOptions,
+  pluginUpgradeWebSocket,
+} from "../server/plugin-websocket.ts";
+import type { PluginSocketRegistry } from "../server/plugin-websocket.ts";
 import { protocolErrorResponse, requireToken } from "../server/app.ts";
 import {
   buildModelCallHooks,
@@ -308,6 +314,7 @@ async function boot(
     if (!proposal) return;
     events.enqueue("onDecision", proposal.conversationId, { proposal, decision });
   });
+  const pluginSockets = createPluginSocketRegistry();
   const host = new AgentHost(
     engine,
     agentChange,
@@ -424,6 +431,10 @@ async function boot(
     }
   }
   const { app, nodeWebSocket } = createServer(host, { token, name: agent.name });
+  // Every upgrade, plugin or protocol, is tracked so stop can close it; plugin
+  // sockets also hand their message limit to ws as `maxPayload`.
+  installPluginSocketOptions(nodeWebSocket, pluginSockets);
+  nodeWebSocket.wss.on("connection", (socket, request) => pluginSockets.adopt(request, socket));
   mountPluginRoutes(
     app,
     built,
@@ -433,6 +444,8 @@ async function boot(
     token,
     options.storagePath,
     bindings,
+    nodeWebSocket,
+    pluginSockets,
   );
   const beforeAgentRoutes = app.routes.length;
   agent.routes?.(app, host);
@@ -451,6 +464,8 @@ async function boot(
       server.close(() => resolve());
       (server as { closeAllConnections?: () => void }).closeAllConnections?.();
     });
+  const closeServers = () =>
+    Promise.all([...servers].map(closeServer)).then(() => "closed" as const);
 
   const running: RunningAgent & { engine: Engine } = {
     agent,
@@ -473,7 +488,33 @@ async function boot(
         timer = setTimeout(() => resolve("timeout"), timeoutMs);
       });
       try {
-        await Promise.all([...servers].map(closeServer));
+        // Every upgraded socket closes with a reason before the servers, whose
+        // closeAllConnections would otherwise abort them without one.
+        const socketsClosed = await Promise.race([
+          pluginSockets.closeAll(1001, "agent stopping").then(() => "closed" as const),
+          timedOut,
+        ]);
+        if (socketsClosed === "timeout") {
+          const pending = pluginSockets.pending();
+          const upgraded = pluginSockets.hasUpgraded();
+          pluginSockets.terminateAll();
+          await Promise.race([closeServers(), timedOut]);
+          void engine.close().catch(() => {});
+          const running = pending[0]
+            ? `plugin socket "${pending[0]}"`
+            : upgraded
+              ? "upgraded socket"
+              : "server connections";
+          throw new Error(`agent did not stop within ${timeoutMs} ms; still running: ${running}`);
+        }
+        const serversClosed = await Promise.race([closeServers(), timedOut]);
+        if (serversClosed === "timeout") {
+          pluginSockets.terminateAll();
+          void engine.close().catch(() => {});
+          throw new Error(
+            `agent did not stop within ${timeoutMs} ms; still running: server connections`,
+          );
+        }
         lifecycle.abort();
         // Steps 3-5 (drain, plugin stops, engine close) share one deadline.
         const drained = await Promise.race([
@@ -529,6 +570,8 @@ function mountPluginRoutes(
   token: string,
   storagePath: string,
   bindings: PluginBindings,
+  nodeWebSocket: ReturnType<typeof createServer>["nodeWebSocket"],
+  pluginSockets: PluginSocketRegistry,
 ): void {
   for (const plugin of built) {
     if (!plugin.built.routes) continue;
@@ -543,6 +586,8 @@ function mountPluginRoutes(
       dataDir: pluginDataDir(storagePath, plugin.name),
       models: makePluginModels(plugin.name, bindings, undefined, undefined, signal),
       emit: makePluginEmit(plugin.name, bindings),
+      upgradeWebSocket: (factory, limits) =>
+        pluginUpgradeWebSocket(nodeWebSocket, plugin.name, pluginSockets, factory, limits),
     };
     try {
       plugin.built.routes(subApp, ctx);

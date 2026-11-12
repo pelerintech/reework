@@ -5,6 +5,7 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import WebSocket from "ws";
 import { createModels } from "@earendil-works/pi-ai/models";
 import type { Models, MutableModels } from "@earendil-works/pi-ai/models";
 import {
@@ -159,6 +160,83 @@ export async function startTestAgent(
       disposed = true;
       await agent.stop();
       if (!options.storagePath) rmSync(dirname(storagePath), { recursive: true, force: true });
+    },
+  };
+}
+
+/** A header's value regardless of the caller's casing. */
+function headerNamed(headers: Record<string, string>, name: string): string | undefined {
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === name) return headers[key];
+  }
+  return undefined;
+}
+
+/** A plugin WebSocket opened against a running agent. */
+export interface PluginWebSocketClient {
+  readonly socket: WebSocket;
+  /** The ephemeral port the helper listened on. */
+  readonly port: number;
+  /** Close the socket and the listener this helper opened. */
+  close(): Promise<void>;
+}
+
+/**
+ * Open a plugin WebSocket against a real listener: the helper listens on an
+ * ephemeral port, sends the test agent's token when it has one, and resolves
+ * once the handshake completed.
+ */
+export async function openPluginWebSocket(
+  target: TestAgent | RunningAgent,
+  path: string,
+  options: {
+    readonly token?: string;
+    readonly headers?: Record<string, string>;
+    readonly timeoutMs?: number;
+  } = {},
+): Promise<PluginWebSocketClient> {
+  const test = "dispose" in target ? (target as TestAgent) : undefined;
+  const running = test ? test.agent : (target as RunningAgent);
+  const token = options.token ?? test?.token;
+  const { port, close: closeServer } = await running.listen(0);
+  const headers: Record<string, string> = { ...options.headers };
+  if (headerNamed(headers, "authorization") === undefined && token !== undefined) {
+    headers.authorization = `Bearer ${token}`;
+  }
+  const socket = new WebSocket(`ws://127.0.0.1:${port}${path}`, {
+    headers,
+    handshakeTimeout: options.timeoutMs ?? 5000,
+  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", () => resolve());
+      socket.once("error", reject);
+    });
+  } catch (error) {
+    // A refused or timed-out handshake leaves no client to close the listener.
+    socket.on("error", () => {});
+    try {
+      socket.close();
+    } catch {}
+    // Closing stops new connections at once; awaiting would hang while a
+    // pending upgrade's factory never settles.
+    void closeServer().catch(() => {});
+    throw error;
+  }
+  let closed = false;
+  return {
+    socket,
+    port,
+    async close() {
+      if (closed) return;
+      closed = true;
+      if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+        await new Promise<void>((resolve) => {
+          socket.once("close", () => resolve());
+          socket.close();
+        });
+      }
+      await closeServer();
     },
   };
 }
