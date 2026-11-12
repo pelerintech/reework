@@ -304,6 +304,11 @@ export function pluginUpgradeWebSocket(
       registry.release(request);
       return result;
     }
+    // An upgrade whose factory resolved after stop began must not open.
+    if (registry.isStopping()) {
+      registry.release(request);
+      return c.json({ error: "agent_stopping" }, 503);
+    }
     const events = adaptEvents(pluginName, registry, result, maxMessageBytes);
     try {
       return nodeWebSocket.upgradeWebSocket(c, events, {

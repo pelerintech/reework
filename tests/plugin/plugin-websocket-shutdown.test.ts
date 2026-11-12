@@ -118,6 +118,40 @@ describe("plugin websockets: shutdown", () => {
     expect(watch.readyState).not.toBe(WebSocket.OPEN);
   });
 
+  it("refuses an upgrade still in flight when stop starts", async () => {
+    const plugin = definePlugin("slow", () => ({
+      routes(app, ctx) {
+        app.get(
+          "/slow",
+          ctx.upgradeWebSocket(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 400));
+            return {};
+          }),
+        );
+      },
+    }));
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }));
+    const { port } = await agent.listen(0);
+    const url = `ws://127.0.0.1:${port}/plugins/slow/slow`;
+
+    const opening = new Promise<WebSocket | Error>((resolve) => {
+      const socket = new WebSocket(url, { headers: authHeaders });
+      socket.once("open", () => resolve(socket));
+      socket.once("error", (error) => resolve(error));
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const stop = agent.stop({ timeoutMs: 1000 });
+    await settlesWithin(stop, 3000);
+    untrack(agent);
+
+    const client = await opening;
+    if (client instanceof WebSocket) client.close();
+    expect(client).toBeInstanceOf(Error);
+    expect((client as Error).message).toMatch(/503/);
+    expect(existsSync(`${engineOf(agent).path}.lock`)).toBe(false);
+  });
+
   it("terminates plugin sockets and settles when a watch socket is also open", async () => {
     const plugin = definePlugin("a", () => ({
       routes(app, ctx) {
