@@ -1,3 +1,5 @@
+import type { IncomingMessage } from "node:http";
+import type { Socket } from "node:net";
 import type { NodeWebSocket } from "@hono/node-ws";
 import type { Context } from "hono";
 import type { WSEvents, WSContext, WSMessageReceive } from "hono/ws";
@@ -16,8 +18,25 @@ const DEFAULT_MAX_SOCKETS = 8;
 /** The ceiling a plugin may never exceed, however its routes name their caps. */
 const PLUGIN_SOCKET_CEILING = 64;
 
-/** The open plugin sockets of one agent, keyed by plugin name. */
+/** An upgrade that reserved a slot and has not opened (or failed) yet. */
+interface Reservation {
+  plugin: string;
+  request: IncomingMessage;
+  rawSocket: Socket;
+  onAbort: () => void;
+  settled: boolean;
+}
+
+/** The plugin sockets of one agent, keyed by plugin name. */
 export interface PluginSocketRegistry {
+  /**
+   * Reserve one of a plugin's slots before the factory is awaited. A pending
+   * upgrade counts like an open socket, so concurrent handshakes cannot bypass
+   * the cap. False means the plugin is at its cap.
+   */
+  reserve(pluginName: string, maxSockets: number, request: IncomingMessage): boolean;
+  /** Release a reservation whose upgrade was refused or failed. */
+  release(request: IncomingMessage): void;
   add(pluginName: string, socket: NodeWs): void;
   count(pluginName: string): number;
   entries(): { plugin: string; socket: NodeWs }[];
@@ -25,28 +44,74 @@ export interface PluginSocketRegistry {
   closeAll(code: number, reason: string): Promise<void>;
   /** Force the remaining sockets closed, without a handshake. */
   terminateAll(): void;
-  /** The plugins still holding a socket. */
+  /** The plugins still holding an open socket or a pending upgrade. */
   pending(): string[];
 }
 
 export function createPluginSocketRegistry(): PluginSocketRegistry {
   const byPlugin = new Map<string, Set<NodeWs>>();
+  const reservations = new WeakMap<IncomingMessage, Reservation>();
+  const pendingByPlugin = new Map<string, Set<Reservation>>();
   const entries = () =>
     [...byPlugin].flatMap(([plugin, sockets]) =>
       [...sockets].map((socket) => ({ plugin, socket })),
     );
+
+  const settle = (reservation: Reservation) => {
+    if (reservation.settled) return;
+    reservation.settled = true;
+    const pending = pendingByPlugin.get(reservation.plugin);
+    pending?.delete(reservation);
+    if (pending?.size === 0) pendingByPlugin.delete(reservation.plugin);
+    reservations.delete(reservation.request);
+    reservation.rawSocket.off("close", reservation.onAbort);
+  };
+
+  const settleOne = (pluginName: string) => {
+    const pending = pendingByPlugin.get(pluginName);
+    const first = pending?.values().next().value;
+    if (first) settle(first);
+  };
+
   return {
+    reserve(pluginName, maxSockets, request) {
+      if (
+        (byPlugin.get(pluginName)?.size ?? 0) + (pendingByPlugin.get(pluginName)?.size ?? 0) >=
+        maxSockets
+      ) {
+        return false;
+      }
+      const rawSocket = request.socket;
+      const reservation = {
+        plugin: pluginName,
+        request,
+        rawSocket,
+        onAbort: () => settle(reservation),
+        settled: false,
+      };
+      reservations.set(request, reservation);
+      const pending = pendingByPlugin.get(pluginName) ?? new Set<Reservation>();
+      pendingByPlugin.set(pluginName, pending);
+      pending.add(reservation);
+      rawSocket.once("close", reservation.onAbort);
+      return true;
+    },
+    release(request) {
+      const reservation = reservations.get(request);
+      if (reservation) settle(reservation);
+    },
     add(pluginName, socket) {
       const sockets = byPlugin.get(pluginName) ?? new Set<NodeWs>();
       byPlugin.set(pluginName, sockets);
       sockets.add(socket);
+      settleOne(pluginName);
       socket.once("close", () => {
         sockets.delete(socket);
         if (sockets.size === 0) byPlugin.delete(pluginName);
       });
     },
     count(pluginName) {
-      return byPlugin.get(pluginName)?.size ?? 0;
+      return (byPlugin.get(pluginName)?.size ?? 0) + (pendingByPlugin.get(pluginName)?.size ?? 0);
     },
     entries,
     closeAll(code, reason) {
@@ -64,7 +129,7 @@ export function createPluginSocketRegistry(): PluginSocketRegistry {
       for (const { socket } of entries()) socket.terminate();
     },
     pending() {
-      return [...new Set(entries().map(({ plugin }) => plugin))];
+      return [...new Set([...entries().map(({ plugin }) => plugin), ...pendingByPlugin.keys()])];
     },
   };
 }
@@ -106,6 +171,11 @@ function messageOf(raw: WSMessageReceive): string | Uint8Array {
 
 function messageBytes(data: string | Uint8Array): number {
   return typeof data === "string" ? Buffer.byteLength(data) : data.byteLength;
+}
+
+/** The raw request the node WebSocket helper upgrades, when this is a real upgrade. */
+function incomingOf(c: Context): IncomingMessage | undefined {
+  return (c.env as { incoming?: IncomingMessage }).incoming;
 }
 
 /** Adapt a plugin's handlers to Hono's node WebSocket events. */
@@ -158,14 +228,30 @@ export function pluginUpgradeWebSocket(
     if (c.req.header("upgrade")?.toLowerCase() !== "websocket") {
       return c.json({ error: "websocket_upgrade_required" }, 426);
     }
-    if (registry.count(pluginName) >= maxSockets) {
+    const request = incomingOf(c);
+    if (!request) return c.json({ error: "websocket_upgrade_required" }, 426);
+    if (!registry.reserve(pluginName, maxSockets, request)) {
       return c.json({ error: "too_many_sockets" }, 429);
     }
-    const result = await factory(c);
-    if (result instanceof Response) return result;
+    let result: PluginWebSocketEvents | Response;
+    try {
+      result = await factory(c);
+    } catch (error) {
+      registry.release(request);
+      throw error;
+    }
+    if (result instanceof Response) {
+      registry.release(request);
+      return result;
+    }
     const events = adaptEvents(pluginName, registry, result, maxMessageBytes);
-    return nodeWebSocket.upgradeWebSocket(c, events, {
-      onError: (error) => logFailure(pluginName, error),
-    });
+    try {
+      return nodeWebSocket.upgradeWebSocket(c, events, {
+        onError: (error) => logFailure(pluginName, error),
+      });
+    } catch (error) {
+      registry.release(request);
+      throw error;
+    }
   };
 }

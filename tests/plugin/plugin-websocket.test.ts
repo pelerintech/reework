@@ -240,6 +240,34 @@ describe("plugin websockets: limits", () => {
     third?.close();
   });
 
+  it("counts handshakes still in flight against the cap", async () => {
+    const plugin = definePlugin("limited", () => ({
+      routes(app, ctx) {
+        app.get(
+          "/slow",
+          ctx.upgradeWebSocket(
+            async () => {
+              await new Promise((resolve) => setTimeout(resolve, 150));
+              return {};
+            },
+            { maxSockets: 1 },
+          ),
+        );
+      },
+    }));
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }));
+    const { port } = await agent.listen(0);
+    const url = `ws://127.0.0.1:${port}/plugins/limited/slow`;
+
+    const results = await Promise.allSettled([open(url, authHeaders), open(url, authHeaders)]);
+    const opened = results.filter((result) => result.status === "fulfilled");
+    const refused = results.filter((result) => result.status === "rejected");
+    expect(opened).toHaveLength(1);
+    expect(refused).toHaveLength(1);
+    expect((refused[0] as PromiseRejectedResult).reason.message).toMatch(/429/);
+    for (const result of opened) (result as PromiseFulfilledResult<WebSocket>).value.close();
+  });
+
   it("clamps a per-call cap to the plugin ceiling", async () => {
     const plugin = definePlugin("limited", () => ({
       routes(app, ctx) {
