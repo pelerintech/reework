@@ -736,8 +736,9 @@ A plugin route can accept a WebSocket with `ctx.upgradeWebSocket(factory, limits
 instance the agent's server already injects — there is no second listener or port. The route keeps the HTTP rules:
 outside `/plugins/<name>/open/` the API token is checked at the handshake (a token-less or wrong-token client sees a
 failed handshake and the factory never runs); under `/open/` the plugin gates the handshake itself. The factory
-receives the request context and returns the socket's handlers, or a `Response` to refuse the upgrade as-is — so an
-`/open/` route verifies its own auth before accepting. The factory may be async.
+receives the request context and returns the socket's handlers, or a `Response` to refuse the upgrade — so an
+`/open/` route verifies its own auth before accepting. A refusal keeps only its status: the upgrade path drops its
+body and headers, so a plugin cannot send an explanatory refusal body. The factory may be async.
 
 Handlers use reework shapes: `onOpen(socket)`, `onMessage(data, socket)` with `data` as `string` for text frames and
 `Uint8Array` for binary frames, `onClose(code, reason, socket)` and `onError(error, socket)`; `socket` has `send`,
