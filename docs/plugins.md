@@ -727,7 +727,63 @@ export const reader = definePlugin("reader", () => ({
 ```
 
 Mounting happens after every `setup` and before `defineAgent.routes` and the engine resumes, so a handler can rely
-on what `setup` prepared. `ctx` carries `host`, `store`, `config`, `signal`, `dataDir` and `models`.
+on what `setup` prepared. `ctx` carries `host`, `store`, `config`, `signal`, `dataDir`, `models` and
+`upgradeWebSocket`.
+
+## Plugin WebSockets
+
+A plugin route can accept a WebSocket with `ctx.upgradeWebSocket(factory, limits?)`, using the node WebSocket
+instance the agent's server already injects — there is no second listener or port. The route keeps the HTTP rules:
+outside `/plugins/<name>/open/` the API token is checked at the handshake (a token-less or wrong-token client sees a
+failed handshake and the factory never runs); under `/open/` the plugin gates the handshake itself. The factory
+receives the request context and returns the socket's handlers, or a `Response` to refuse the upgrade as-is — so an
+`/open/` route verifies its own auth before accepting. The factory may be async.
+
+Handlers use reework shapes: `onOpen(socket)`, `onMessage(data, socket)` with `data` as `string` for text frames and
+`Uint8Array` for binary frames, `onClose(code, reason, socket)` and `onError(error, socket)`; `socket` has `send`,
+`close` and `readyState`. A request to the route without `Upgrade: websocket` answers
+`426 { "error": "websocket_upgrade_required" }`.
+
+Limits apply per upgrade call: `maxMessageBytes` (default 1 MiB) closes an oversized message with code `1009` and
+reason `message too big` before the handler runs; `maxSockets` (default 8) refuses a connection past the plugin's
+concurrent count with `429 { "error": "too_many_sockets" }`, and is clamped to the plugin-wide ceiling of 64.
+
+When the agent stops, open plugin sockets close with code `1001` and reason `agent stopping` before the servers
+close, and their close shares the stop deadline; a socket that does not confirm is terminated and named as
+`still running: plugin socket "<name>"`. A handler that throws or rejects is logged as
+`plugin "<name>" socket failed:` and leaves the socket and the server running.
+
+```ts
+import { definePlugin } from "@reework/core";
+
+export const echo = definePlugin("echo", () => ({
+  routes(app, ctx) {
+    app.get(
+      "/echo",
+      ctx.upgradeWebSocket(
+        (c) => {
+          if (c.req.query("secret") !== "let-me-in") return c.json({ error: "unauthorized" }, 401);
+          return {
+            onOpen(socket) {
+              socket.send("hello");
+            },
+            onMessage(data, socket) {
+              socket.send(typeof data === "string" ? data : `bytes:${data.byteLength}`);
+            },
+            onClose(code, reason) {
+              // release per-socket state
+            },
+          };
+        },
+        { maxMessageBytes: 65_536, maxSockets: 4 },
+      ),
+    );
+  },
+}));
+```
+
+The testing kit opens one against a real listener: `openPluginWebSocket(test, "/plugins/echo/echo")` resolves with
+`{ socket, port, close() }`, sends the test agent's token and rejects when the handshake is refused.
 
 ## Plugin data directory
 
