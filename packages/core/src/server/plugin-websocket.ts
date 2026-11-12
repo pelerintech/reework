@@ -272,6 +272,13 @@ function incomingOf(c: Context): IncomingMessage | undefined {
   return (c.env as { incoming?: IncomingMessage }).incoming;
 }
 
+/** A real upgrade carries both `Upgrade: websocket` and `Connection: upgrade`. */
+function isWebSocketUpgrade(c: Context): boolean {
+  if (c.req.header("upgrade")?.toLowerCase() !== "websocket") return false;
+  const connection = c.req.header("connection")?.toLowerCase();
+  return connection?.split(",").some((token) => token.trim() === "upgrade") ?? false;
+}
+
 /** Adapt a plugin's handlers to Hono's node WebSocket events. */
 function adaptEvents(
   pluginName: string,
@@ -343,7 +350,7 @@ export function pluginUpgradeWebSocket(
     PLUGIN_SOCKET_CEILING,
   );
   return async (c) => {
-    if (c.req.header("upgrade")?.toLowerCase() !== "websocket") {
+    if (!isWebSocketUpgrade(c)) {
       return c.json({ error: "websocket_upgrade_required" }, 426);
     }
     const request = incomingOf(c);

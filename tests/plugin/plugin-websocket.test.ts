@@ -1,5 +1,6 @@
 // Plugin WebSockets: a plugin route upgrades a request through the agent's own
 // listener, behind the same token as its HTTP routes.
+import { request } from "node:http";
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { definePlugin } from "@reework/core";
@@ -31,6 +32,23 @@ async function refusal(url: string, headers: Record<string, string> = {}): Promi
   } catch (error) {
     return error as Error;
   }
+}
+
+/** One plain HTTP GET against the listener. */
+function httpGet(
+  port: number,
+  path: string,
+  headers: Record<string, string>,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port, path, headers }, (res) => {
+      let body = "";
+      res.on("data", (chunk) => (body += chunk));
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+    });
+    req.on("error", reject);
+    req.end();
+  });
 }
 
 /** The next frame as text (text and binary frames alike). */
@@ -114,6 +132,25 @@ describe("plugin websockets: upgrade behind the token", () => {
     const response = await authedApp(agent).request("/plugins/echo/echo");
     expect(response.status).toBe(426);
     expect(await response.json()).toEqual({ error: "websocket_upgrade_required" });
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  it("answers 426 when the request lacks Connection: Upgrade", async () => {
+    const factory = vi.fn(() => ({}));
+    const plugin = definePlugin("echo", () => ({
+      routes(app, ctx) {
+        app.get("/echo", ctx.upgradeWebSocket(factory));
+      },
+    }));
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }));
+    const { port } = await agent.listen(0);
+
+    const response = await httpGet(port, "/plugins/echo/echo", {
+      authorization: authHeaders.authorization,
+      upgrade: "websocket",
+    });
+    expect(response.status).toBe(426);
+    expect(JSON.parse(response.body)).toEqual({ error: "websocket_upgrade_required" });
     expect(factory).not.toHaveBeenCalled();
   });
 });
