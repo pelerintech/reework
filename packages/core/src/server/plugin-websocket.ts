@@ -37,25 +37,48 @@ export interface PluginSocketRegistry {
   reserve(pluginName: string, maxSockets: number, request: IncomingMessage): boolean;
   /** Release a reservation whose upgrade was refused or failed. */
   release(request: IncomingMessage): void;
+  /** Record an upgraded socket, plugin or protocol, once `ws` opened it. */
+  adopt(request: IncomingMessage, socket: NodeWs): void;
   add(pluginName: string, socket: NodeWs): void;
   count(pluginName: string): number;
   entries(): { plugin: string; socket: NodeWs }[];
-  /** Close every open socket with a reason and resolve once they all closed. */
+  /** Close every upgraded socket with a reason and resolve once they all closed. */
   closeAll(code: number, reason: string): Promise<void>;
   /** Force the remaining sockets closed, without a handshake. */
   terminateAll(): void;
   /** The plugins still holding an open socket or a pending upgrade. */
   pending(): string[];
+  /** Whether any upgraded socket, or an upgrade in flight, is still around. */
+  hasUpgraded(): boolean;
+  /** True from the first close on stop; later upgrades are refused or closed. */
+  isStopping(): boolean;
 }
 
 export function createPluginSocketRegistry(): PluginSocketRegistry {
   const byPlugin = new Map<string, Set<NodeWs>>();
   const reservations = new WeakMap<IncomingMessage, Reservation>();
   const pendingByPlugin = new Map<string, Set<Reservation>>();
+  const upgraded = new Set<NodeWs>();
+  let stopping = false;
+  let idleWaiters: (() => void)[] = [];
   const entries = () =>
     [...byPlugin].flatMap(([plugin, sockets]) =>
       [...sockets].map((socket) => ({ plugin, socket })),
     );
+  const pendingReservations = () => [...pendingByPlugin.values()].flatMap((set) => [...set]);
+  const isIdle = () => upgraded.size === 0 && pendingReservations().length === 0;
+  const notify = () => {
+    if (!isIdle()) return;
+    const waiters = idleWaiters;
+    idleWaiters = [];
+    for (const resolve of waiters) resolve();
+  };
+  const whenIdle = () =>
+    isIdle()
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => {
+          idleWaiters.push(resolve);
+        });
 
   const settle = (reservation: Reservation) => {
     if (reservation.settled) return;
@@ -65,12 +88,40 @@ export function createPluginSocketRegistry(): PluginSocketRegistry {
     if (pending?.size === 0) pendingByPlugin.delete(reservation.plugin);
     reservations.delete(reservation.request);
     reservation.rawSocket.off("close", reservation.onAbort);
+    notify();
   };
 
   const settleOne = (pluginName: string) => {
     const pending = pendingByPlugin.get(pluginName);
     const first = pending?.values().next().value;
     if (first) settle(first);
+  };
+
+  const track = (socket: NodeWs) => {
+    if (socket.readyState === 3 || upgraded.has(socket)) return;
+    upgraded.add(socket);
+    socket.once("close", () => {
+      upgraded.delete(socket);
+      notify();
+    });
+  };
+
+  const addSocket = (pluginName: string, socket: NodeWs) => {
+    const sockets = byPlugin.get(pluginName) ?? new Set<NodeWs>();
+    byPlugin.set(pluginName, sockets);
+    if (!sockets.has(socket)) {
+      sockets.add(socket);
+      socket.once("close", () => {
+        sockets.delete(socket);
+        if (sockets.size === 0) byPlugin.delete(pluginName);
+      });
+    }
+    track(socket);
+  };
+
+  const closeSocket = (socket: NodeWs, code: number, reason: string) => {
+    if (socket.readyState === 3) return;
+    socket.close(code, reason);
   };
 
   return {
@@ -100,36 +151,45 @@ export function createPluginSocketRegistry(): PluginSocketRegistry {
       const reservation = reservations.get(request);
       if (reservation) settle(reservation);
     },
+    adopt(request, socket) {
+      const reservation = reservations.get(request);
+      if (reservation) {
+        settle(reservation);
+        addSocket(reservation.plugin, socket);
+      } else {
+        track(socket);
+      }
+      if (stopping && socket.readyState !== 3) socket.terminate();
+    },
     add(pluginName, socket) {
-      const sockets = byPlugin.get(pluginName) ?? new Set<NodeWs>();
-      byPlugin.set(pluginName, sockets);
-      sockets.add(socket);
+      addSocket(pluginName, socket);
       settleOne(pluginName);
-      socket.once("close", () => {
-        sockets.delete(socket);
-        if (sockets.size === 0) byPlugin.delete(pluginName);
-      });
     },
     count(pluginName) {
       return (byPlugin.get(pluginName)?.size ?? 0) + (pendingByPlugin.get(pluginName)?.size ?? 0);
     },
     entries,
     closeAll(code, reason) {
-      const waits = entries().map(
-        ({ socket }) =>
-          new Promise<void>((resolve) => {
-            if (socket.readyState === 3) return resolve();
-            socket.once("close", () => resolve());
-            socket.close(code, reason);
-          }),
-      );
-      return Promise.all(waits).then(() => {});
+      stopping = true;
+      for (const socket of upgraded) closeSocket(socket, code, reason);
+      return whenIdle();
     },
     terminateAll() {
-      for (const { socket } of entries()) socket.terminate();
+      stopping = true;
+      for (const socket of upgraded) socket.terminate();
+      for (const reservation of pendingReservations()) {
+        reservation.rawSocket.destroy();
+        settle(reservation);
+      }
     },
     pending() {
       return [...new Set([...entries().map(({ plugin }) => plugin), ...pendingByPlugin.keys()])];
+    },
+    hasUpgraded() {
+      return upgraded.size > 0 || pendingReservations().length > 0;
+    },
+    isStopping() {
+      return stopping;
     },
   };
 }

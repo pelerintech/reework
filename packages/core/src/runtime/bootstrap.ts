@@ -427,6 +427,8 @@ async function boot(
     }
   }
   const { app, nodeWebSocket } = createServer(host, { token, name: agent.name });
+  // Every upgrade, plugin or protocol, is tracked so stop can close it.
+  nodeWebSocket.wss.on("connection", (socket, request) => pluginSockets.adopt(request, socket));
   mountPluginRoutes(
     app,
     built,
@@ -456,6 +458,8 @@ async function boot(
       server.close(() => resolve());
       (server as { closeAllConnections?: () => void }).closeAllConnections?.();
     });
+  const closeServers = () =>
+    Promise.all([...servers].map(closeServer)).then(() => "closed" as const);
 
   const running: RunningAgent & { engine: Engine } = {
     agent,
@@ -478,7 +482,7 @@ async function boot(
         timer = setTimeout(() => resolve("timeout"), timeoutMs);
       });
       try {
-        // Plugin sockets close with a reason before the servers, whose
+        // Every upgraded socket closes with a reason before the servers, whose
         // closeAllConnections would otherwise abort them without one.
         const socketsClosed = await Promise.race([
           pluginSockets.closeAll(1001, "agent stopping").then(() => "closed" as const),
@@ -486,16 +490,25 @@ async function boot(
         ]);
         if (socketsClosed === "timeout") {
           const pending = pluginSockets.pending();
+          const upgraded = pluginSockets.hasUpgraded();
           pluginSockets.terminateAll();
-          await Promise.all([...servers].map(closeServer));
+          await Promise.race([closeServers(), timedOut]);
+          void engine.close().catch(() => {});
+          const running = pending[0]
+            ? `plugin socket "${pending[0]}"`
+            : upgraded
+              ? "upgraded socket"
+              : "server connections";
+          throw new Error(`agent did not stop within ${timeoutMs} ms; still running: ${running}`);
+        }
+        const serversClosed = await Promise.race([closeServers(), timedOut]);
+        if (serversClosed === "timeout") {
+          pluginSockets.terminateAll();
           void engine.close().catch(() => {});
           throw new Error(
-            `agent did not stop within ${timeoutMs} ms; still running: plugin socket "${
-              pending[0] ?? "unknown"
-            }"`,
+            `agent did not stop within ${timeoutMs} ms; still running: server connections`,
           );
         }
-        await Promise.all([...servers].map(closeServer));
         lifecycle.abort();
         // Steps 3-5 (drain, plugin stops, engine close) share one deadline.
         const drained = await Promise.race([

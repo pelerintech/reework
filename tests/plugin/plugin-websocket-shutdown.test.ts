@@ -6,9 +6,16 @@ import { request } from "node:http";
 import type { IncomingMessage } from "node:http";
 import type { Socket } from "node:net";
 import { describe, expect, it } from "vitest";
+import WebSocket from "ws";
 import { definePlugin } from "@reework/core";
 import { engineOf } from "@reework/core/internal";
-import { TEST_TOKEN, startTestAgent, testDefinition, untrack } from "../support/agent.ts";
+import {
+  TEST_TOKEN,
+  authHeaders,
+  startTestAgent,
+  testDefinition,
+  untrack,
+} from "../support/agent.ts";
 import { eventually } from "../support/wait.ts";
 
 /** Complete a WebSocket handshake with a raw socket that reads nothing afterwards. */
@@ -33,6 +40,33 @@ function rawUpgrade(
     req.on("error", reject);
     req.end();
   });
+}
+
+/** Settle a promise within `ms`, so a hung stop fails the test instead of hanging it. */
+async function settlesWithin<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`did not settle within ${ms} ms`)), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Open a protocol `conversations.watch` socket against the listening agent. */
+async function openWatch(port: number, conversationId: string): Promise<WebSocket> {
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/conversations/${conversationId}/ws`, {
+    headers: authHeaders,
+  });
+  await new Promise<void>((resolve, reject) => {
+    socket.once("open", () => resolve());
+    socket.once("error", reject);
+  });
+  return socket;
 }
 
 describe("plugin websockets: shutdown", () => {
@@ -60,5 +94,64 @@ describe("plugin websockets: shutdown", () => {
     socket.resume();
     await eventually(() => socket.destroyed);
     socket.destroy();
+  });
+
+  it("settles stop within its deadline with a watch socket open", async () => {
+    const agent = await startTestAgent(testDefinition());
+    const { port } = await agent.listen(0);
+    const { id } = await agent.host.createConversation();
+    const watch = await openWatch(port, id);
+
+    const stop = agent.stop({ timeoutMs: 800 });
+    let failure: Error | undefined;
+    try {
+      await settlesWithin(stop, 3000);
+    } catch (error) {
+      failure = error as Error;
+    }
+    watch.close();
+    untrack(agent);
+    await settlesWithin(stop, 3000).catch(() => {});
+    if (failure) throw failure;
+
+    expect(existsSync(`${engineOf(agent).path}.lock`)).toBe(false);
+    expect(watch.readyState).not.toBe(WebSocket.OPEN);
+  });
+
+  it("terminates plugin sockets and settles when a watch socket is also open", async () => {
+    const plugin = definePlugin("a", () => ({
+      routes(app, ctx) {
+        app.get(
+          "/stuck",
+          ctx.upgradeWebSocket(() => ({})),
+        );
+      },
+    }));
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }));
+    const { port } = await agent.listen(0);
+    const { id } = await agent.host.createConversation();
+
+    const { response, socket } = await rawUpgrade(port, "/plugins/a/stuck");
+    expect(response.statusCode).toBe(101);
+    socket.pause();
+    const watch = await openWatch(port, id);
+
+    const stop = agent.stop({ timeoutMs: 500 });
+    const outcome = await settlesWithin(
+      stop.then(
+        () => undefined,
+        (error: Error) => error,
+      ),
+      3000,
+    ).catch((error: Error) => error);
+    watch.close();
+    socket.resume();
+    socket.destroy();
+    untrack(agent);
+    await settlesWithin(stop, 3000).catch(() => {});
+
+    expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as Error).message).toMatch(/still running: plugin socket "a"/);
+    expect(existsSync(`${engineOf(agent).path}.lock`)).toBe(false);
   });
 });
