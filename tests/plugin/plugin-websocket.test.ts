@@ -286,3 +286,50 @@ describe("plugin websockets: stop", () => {
     expect(closedByPlugin).toEqual({ code: 1001, reason: "agent stopping" });
   });
 });
+
+describe("plugin websockets: handler errors", () => {
+  it("logs a failing handler and keeps the server serving", async () => {
+    const errors: string[] = [];
+    const spy = vi
+      .spyOn(console, "error")
+      .mockImplementation((...args) => errors.push(args.map(String).join(" ")));
+    const plugin = definePlugin("boom", () => ({
+      routes(app, ctx) {
+        app.get(
+          "/boom",
+          ctx.upgradeWebSocket(() => ({
+            onMessage(
+              data: string | Uint8Array,
+              socket: { send(data: string | Uint8Array): void },
+            ) {
+              if (data === "throw") throw new Error("sync boom");
+              if (data === "reject") return Promise.reject(new Error("async boom"));
+              socket.send(`ok:${typeof data === "string" ? data : data.byteLength}`);
+            },
+          })),
+        );
+      },
+    }));
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }));
+    const { port } = await agent.listen(0);
+    const socket = await open(`ws://127.0.0.1:${port}/plugins/boom/boom`, authHeaders);
+
+    socket.send("throw");
+    await eventually(() => errors.some((entry) => entry.includes("sync boom")));
+    expect(
+      errors.some((entry) => entry.includes('plugin "boom"') && entry.includes("socket failed")),
+    ).toBe(true);
+
+    const after = nextMessage(socket);
+    socket.send("after");
+    expect(await after).toBe("ok:after");
+
+    socket.send("reject");
+    await eventually(() => errors.some((entry) => entry.includes("async boom")));
+    expect(errors.filter((entry) => entry.includes("socket failed"))).toHaveLength(2);
+
+    const health = await authedApp(agent).request("/health");
+    expect(health.status).toBe(200);
+    spy.mockRestore();
+  });
+});

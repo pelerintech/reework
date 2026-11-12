@@ -74,6 +74,18 @@ function logFailure(pluginName: string, error: unknown): void {
   console.error(`[reework] plugin "${pluginName}" socket failed:`, error);
 }
 
+/** Run one handler, logging a synchronous throw or an async rejection. */
+function safe(pluginName: string, call: () => unknown): void {
+  try {
+    const result = call();
+    if (result instanceof Promise) {
+      void result.catch((error) => logFailure(pluginName, error));
+    }
+  } catch (error) {
+    logFailure(pluginName, error);
+  }
+}
+
 /** The reework shape of one socket: send, close and the ready state, no raw `ws`. */
 function socketOf(ws: WSContext<NodeWs>): PluginWebSocket {
   return {
@@ -106,7 +118,7 @@ function adaptEvents(
   return {
     onOpen: (_evt, ws) => {
       if (ws.raw) registry.add(pluginName, ws.raw);
-      void events.onOpen?.(socketOf(ws));
+      safe(pluginName, () => events.onOpen?.(socketOf(ws)));
     },
     onMessage: (evt, ws) => {
       const data = messageOf(evt.data);
@@ -114,16 +126,15 @@ function adaptEvents(
         ws.close(1009, "message too big");
         return;
       }
-      void events.onMessage?.(data, socketOf(ws));
+      safe(pluginName, () => events.onMessage?.(data, socketOf(ws)));
     },
     onClose: (evt, ws) => {
-      void events.onClose?.(evt.code, evt.reason, socketOf(ws));
+      safe(pluginName, () => events.onClose?.(evt.code, evt.reason, socketOf(ws)));
     },
     onError: (evt, ws) => {
       const error = (evt as unknown as { error?: unknown }).error;
-      void events.onError?.(
-        error instanceof Error ? error : new Error(String(error)),
-        socketOf(ws),
+      safe(pluginName, () =>
+        events.onError?.(error instanceof Error ? error : new Error(String(error)), socketOf(ws)),
       );
     },
   };
