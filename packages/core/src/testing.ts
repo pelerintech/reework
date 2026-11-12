@@ -164,6 +164,14 @@ export async function startTestAgent(
   };
 }
 
+/** A header's value regardless of the caller's casing. */
+function headerNamed(headers: Record<string, string>, name: string): string | undefined {
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === name) return headers[key];
+  }
+  return undefined;
+}
+
 /** A plugin WebSocket opened against a running agent. */
 export interface PluginWebSocketClient {
   readonly socket: WebSocket;
@@ -192,7 +200,9 @@ export async function openPluginWebSocket(
   const token = options.token ?? test?.token;
   const { port, close: closeServer } = await running.listen(0);
   const headers: Record<string, string> = { ...options.headers };
-  if (token !== undefined) headers.authorization = `Bearer ${token}`;
+  if (headerNamed(headers, "authorization") === undefined && token !== undefined) {
+    headers.authorization = `Bearer ${token}`;
+  }
   const socket = new WebSocket(`ws://127.0.0.1:${port}${path}`, {
     headers,
     handshakeTimeout: options.timeoutMs ?? 5000,

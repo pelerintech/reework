@@ -116,6 +116,39 @@ describe("testing kit: plugin websockets", () => {
     await test.dispose();
   });
 
+  it("honours an authorization header over the test agent's token", async () => {
+    const plugin = definePlugin("echo", () => ({
+      routes(app, ctx) {
+        app.get(
+          "/echo",
+          ctx.upgradeWebSocket(() => ({
+            onMessage(
+              data: string | Uint8Array,
+              socket: { send(data: string | Uint8Array): void },
+            ) {
+              socket.send(`echo:${typeof data === "string" ? data : data.byteLength}`);
+            },
+          })),
+        );
+      },
+    }));
+    const test = await startTestAgent(definition([{ plugin, config: {} }]));
+    let client: Awaited<ReturnType<typeof openPluginWebSocket>> | undefined;
+    try {
+      try {
+        client = await openPluginWebSocket(test, "/plugins/echo/echo", {
+          headers: { authorization: "Bearer wrong" },
+        });
+      } catch (error) {
+        expect((error as Error).message).toMatch(/401/);
+      }
+      if (client) throw new Error("the wrong token was overwritten by the agent token");
+    } finally {
+      await client?.close().catch(() => {});
+      await test.dispose();
+    }
+  });
+
   it("closes its listener when the handshake is refused", async () => {
     const plugin = definePlugin("hookin", () => ({
       routes(app, ctx) {
