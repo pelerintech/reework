@@ -480,7 +480,21 @@ async function boot(
       try {
         // Plugin sockets close with a reason before the servers, whose
         // closeAllConnections would otherwise abort them without one.
-        await pluginSockets.closeAll(1001, "agent stopping");
+        const socketsClosed = await Promise.race([
+          pluginSockets.closeAll(1001, "agent stopping").then(() => "closed" as const),
+          timedOut,
+        ]);
+        if (socketsClosed === "timeout") {
+          const pending = pluginSockets.pending();
+          pluginSockets.terminateAll();
+          await Promise.all([...servers].map(closeServer));
+          void engine.close().catch(() => {});
+          throw new Error(
+            `agent did not stop within ${timeoutMs} ms; still running: plugin socket "${
+              pending[0] ?? "unknown"
+            }"`,
+          );
+        }
         await Promise.all([...servers].map(closeServer));
         lifecycle.abort();
         // Steps 3-5 (drain, plugin stops, engine close) share one deadline.
