@@ -22,7 +22,7 @@ import type {
 } from "@earendil-works/pi-durable";
 import type { AssistantMessage, Message, Usage } from "@earendil-works/pi-ai";
 import type { Models } from "@earendil-works/pi-ai/models";
-import type { Hono } from "hono";
+import type { Context as RouteContext, Hono } from "hono";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { copyJson } from "@earendil-works/chord";
 import type {
@@ -62,6 +62,9 @@ import type { StoreBackend } from "./plugin-store.ts";
 
 /** A plugin's route app; plugins never import hono themselves. */
 export type { Hono as RouteApp };
+
+/** The request context a route handler receives; plugins never import hono themselves. */
+export type { Context as RouteContext } from "hono";
 
 /** The schema builder for tool parameters, so plugins need not import pi-ai. */
 export { Type };
@@ -567,6 +570,35 @@ export interface PluginSetupContext<TConfig> {
   emit(this: void, name: string, data: JsonValue): void;
 }
 
+/** A plugin route's WebSocket, in reework shapes (no raw `ws` object). */
+export interface PluginWebSocket {
+  send(data: string | Uint8Array): void;
+  close(code?: number, reason?: string): void;
+  readonly readyState: number;
+}
+
+/** What a plugin's WebSocket handlers receive. */
+export interface PluginWebSocketEvents {
+  onOpen?(socket: PluginWebSocket): void | Promise<void>;
+  /** A text frame as `string`, a binary frame as `Uint8Array`. */
+  onMessage?(data: string | Uint8Array, socket: PluginWebSocket): void | Promise<void>;
+  onClose?(code: number, reason: string, socket: PluginWebSocket): void | Promise<void>;
+  onError?(error: Error, socket: PluginWebSocket): void | Promise<void>;
+}
+
+/** Limits for one upgrade call. */
+export interface PluginWebSocketLimits {
+  /** Largest incoming message accepted, in bytes. Default 1 MiB (1_048_576). */
+  maxMessageBytes?: number;
+  /** Most sockets this plugin may have open at once. Default 8; clamped to the plugin ceiling of 64. */
+  maxSockets?: number;
+}
+
+/** Build a socket's handlers, or refuse the upgrade with a response. */
+export type PluginWebSocketFactory = (
+  c: RouteContext,
+) => PluginWebSocketEvents | Response | Promise<PluginWebSocketEvents | Response>;
+
 /** What a plugin's `routes(app, ctx)` receives. */
 export interface PluginRouteContext<TConfig> {
   readonly host: AgentHost;
@@ -582,6 +614,14 @@ export interface PluginRouteContext<TConfig> {
   readonly models: PluginModels;
   /** Announce this plugin's own event; it reaches consumers agent-level (no conversation). */
   emit(this: void, name: string, data: JsonValue): void;
+  /**
+   * Accept a WebSocket on the plugin's own route, through the agent's own listener.
+   * Returns a handler for `app.get(...)`; a factory returning a `Response` refuses.
+   */
+  upgradeWebSocket(
+    factory: PluginWebSocketFactory,
+    limits?: PluginWebSocketLimits,
+  ): (c: RouteContext) => Promise<Response>;
 }
 
 /** What a plugin factory returns for one config. */

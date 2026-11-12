@@ -19,6 +19,7 @@ import { CONTEXT, Engine } from "../engine.ts";
 import { installHITL } from "../hitl/gate.ts";
 import { AgentHost } from "../host.ts";
 import { createServer } from "../server/index.ts";
+import { pluginUpgradeWebSocket } from "../server/plugin-websocket.ts";
 import { protocolErrorResponse, requireToken } from "../server/app.ts";
 import {
   buildModelCallHooks,
@@ -433,6 +434,7 @@ async function boot(
     token,
     options.storagePath,
     bindings,
+    nodeWebSocket,
   );
   const beforeAgentRoutes = app.routes.length;
   agent.routes?.(app, host);
@@ -529,6 +531,7 @@ function mountPluginRoutes(
   token: string,
   storagePath: string,
   bindings: PluginBindings,
+  nodeWebSocket: ReturnType<typeof createServer>["nodeWebSocket"],
 ): void {
   for (const plugin of built) {
     if (!plugin.built.routes) continue;
@@ -543,6 +546,8 @@ function mountPluginRoutes(
       dataDir: pluginDataDir(storagePath, plugin.name),
       models: makePluginModels(plugin.name, bindings, undefined, undefined, signal),
       emit: makePluginEmit(plugin.name, bindings),
+      upgradeWebSocket: (factory, limits) =>
+        pluginUpgradeWebSocket(nodeWebSocket, plugin.name, factory, limits),
     };
     try {
       plugin.built.routes(subApp, ctx);
