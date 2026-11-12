@@ -4,7 +4,13 @@ import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { definePlugin } from "@reework/core";
 import type { RouteContext } from "@reework/core";
-import { authHeaders, authedApp, startTestAgent, testDefinition } from "../support/agent.ts";
+import {
+  authHeaders,
+  authedApp,
+  startTestAgent,
+  testDefinition,
+  untrack,
+} from "../support/agent.ts";
 import { eventually } from "../support/wait.ts";
 
 /** Connect a real `ws` client; resolves once the handshake completes. */
@@ -250,5 +256,33 @@ describe("plugin websockets: limits", () => {
     const sockets = await Promise.all(Array.from({ length: 64 }, () => open(url, authHeaders)));
     expect((await refusal(url, authHeaders)).message).toMatch(/429/);
     for (const socket of sockets) socket.close();
+  });
+});
+
+describe("plugin websockets: stop", () => {
+  it("closes open sockets with a reason before stopping", async () => {
+    let closedByPlugin: { code: number; reason: string } | undefined;
+    const plugin = definePlugin("echo", () => ({
+      routes(app, ctx) {
+        app.get(
+          "/echo",
+          ctx.upgradeWebSocket(() => ({
+            onClose(code: number, reason: string) {
+              closedByPlugin = { code, reason };
+            },
+          })),
+        );
+      },
+    }));
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }));
+    const { port } = await agent.listen(0);
+    const socket = await open(`ws://127.0.0.1:${port}/plugins/echo/echo`, authHeaders);
+
+    const clientClose = closedWith(socket);
+    const stopping = agent.stop();
+    expect(await clientClose).toEqual({ code: 1001, reason: "agent stopping" });
+    await stopping;
+    untrack(agent);
+    expect(closedByPlugin).toEqual({ code: 1001, reason: "agent stopping" });
   });
 });

@@ -21,10 +21,20 @@ export interface PluginSocketRegistry {
   add(pluginName: string, socket: NodeWs): void;
   count(pluginName: string): number;
   entries(): { plugin: string; socket: NodeWs }[];
+  /** Close every open socket with a reason and resolve once they all closed. */
+  closeAll(code: number, reason: string): Promise<void>;
+  /** Force the remaining sockets closed, without a handshake. */
+  terminateAll(): void;
+  /** The plugins still holding a socket. */
+  pending(): string[];
 }
 
 export function createPluginSocketRegistry(): PluginSocketRegistry {
   const byPlugin = new Map<string, Set<NodeWs>>();
+  const entries = () =>
+    [...byPlugin].flatMap(([plugin, sockets]) =>
+      [...sockets].map((socket) => ({ plugin, socket })),
+    );
   return {
     add(pluginName, socket) {
       const sockets = byPlugin.get(pluginName) ?? new Set<NodeWs>();
@@ -38,10 +48,23 @@ export function createPluginSocketRegistry(): PluginSocketRegistry {
     count(pluginName) {
       return byPlugin.get(pluginName)?.size ?? 0;
     },
-    entries() {
-      return [...byPlugin].flatMap(([plugin, sockets]) =>
-        [...sockets].map((socket) => ({ plugin, socket })),
+    entries,
+    closeAll(code, reason) {
+      const waits = entries().map(
+        ({ socket }) =>
+          new Promise<void>((resolve) => {
+            if (socket.readyState === 3) return resolve();
+            socket.once("close", () => resolve());
+            socket.close(code, reason);
+          }),
       );
+      return Promise.all(waits).then(() => {});
+    },
+    terminateAll() {
+      for (const { socket } of entries()) socket.terminate();
+    },
+    pending() {
+      return [...new Set(entries().map(({ plugin }) => plugin))];
     },
   };
 }
