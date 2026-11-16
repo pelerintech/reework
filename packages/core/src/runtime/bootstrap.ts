@@ -333,7 +333,26 @@ async function boot(
   // The hub exists before setup so a plugin's setup model call reaches it (and
   // is dropped as agent-level usage).
   const activityHub = new ActivityHub(host, options.activity);
+  const enqueueUsage = bindings.modelUsage;
+  bindings.modelUsage = (event) => {
+    enqueueUsage?.(event);
+    activityHub.publishUsage(event);
+  };
   host.onCaseUpdated((c) => activityHub.publishCase(c));
+  onProposalOpen(engine, (proposal) => {
+    activityHub.publishProposalOpened(proposal);
+    void host
+      .getCase(proposal.conversationId)
+      .then((c) => activityHub.publishCase(c))
+      .catch(() => {});
+  });
+  onProposalSettled(engine, (settled) => {
+    activityHub.publishProposalSettled(settled);
+    void host
+      .getCase(settled.conversationId)
+      .then((c) => activityHub.publishCase(c))
+      .catch(() => {});
+  });
 
   bindings.case = {
     get: (id) => host.getCase(id),

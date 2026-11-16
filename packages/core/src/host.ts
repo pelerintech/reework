@@ -19,6 +19,8 @@ import type {
   ActivityFilter,
   ActivitySnapshot,
   ActivityRun,
+  ActivityProposal,
+  ActivityCase,
 } from "@reework/types";
 import { isAuthor, normalizeAuthor } from "@reework/types";
 import type { Engine } from "./engine.ts";
@@ -543,16 +545,44 @@ export class AgentHost {
         caseKind: record.kind ?? "case",
       });
     }
-    const proposals = open.filter((proposal) => {
-      const record = byId.get(proposal.conversationId);
-      return record !== undefined && activityMatches(record, filter);
-    });
-    const cases = conversations
+    const proposals: ActivityProposal[] = open
+      .filter((proposal) => {
+        const record = byId.get(proposal.conversationId);
+        return record !== undefined && activityMatches(record, filter);
+      })
+      .map((proposal) => {
+        const record = byId.get(proposal.conversationId)!;
+        return {
+          conversationId: proposal.conversationId,
+          ...(record.key === undefined ? {} : { key: record.key }),
+          caseKind: record.kind ?? "case",
+          proposalId: proposal.id,
+          title: proposal.title,
+          audience: proposal.audience,
+          options: proposal.options.map((option) => ({ id: option.id, label: option.label })),
+          createdAt: proposal.createdAt,
+        };
+      });
+    const cases: ActivityCase[] = conversations
       .filter((record) => {
         const count = openCount.get(record.id) ?? 0;
         return count > 0 && activityMatches(record, filter);
       })
-      .map((record) => toCase(record, openCount.get(record.id) ?? 0));
+      .map((record) => {
+        const c = toCase(record, openCount.get(record.id) ?? 0);
+        return {
+          conversationId: record.id,
+          ...(record.key === undefined ? {} : { key: record.key }),
+          caseKind: c.kind,
+          ...(c.title === undefined ? {} : { title: c.title }),
+          status: c.status,
+          ...(c.stage === undefined ? {} : { stage: c.stage }),
+          priority: c.priority,
+          ...(c.owner === undefined ? {} : { owner: c.owner }),
+          needsHuman: c.needsHuman,
+          openProposals: c.openProposals,
+        };
+      });
     return {
       ...(filter === undefined ? {} : { filter }),
       runs,

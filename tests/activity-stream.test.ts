@@ -11,6 +11,7 @@ import {
   testDefinition,
   untrack,
 } from "./support/agent.ts";
+import { startFakeLlm } from "./support/fake-llm.ts";
 import { eventually } from "./support/wait.ts";
 
 interface ActivityClient {
@@ -166,7 +167,7 @@ describe("the activity stream", () => {
     expect(typeof snapshot.runs[0]!.runId).toBe("string");
     expect(snapshot.proposals).toContainEqual(
       expect.objectContaining({
-        id: proposal.id,
+        proposalId: proposal.id,
         conversationId: b.id,
         title: "Deploy?",
         audience: "human",
@@ -174,7 +175,7 @@ describe("the activity stream", () => {
       }),
     );
     expect(snapshot.cases).toContainEqual(
-      expect.objectContaining({ id: b.id, needsHuman: true, openProposals: 1 }),
+      expect.objectContaining({ conversationId: b.id, needsHuman: true, openProposals: 1 }),
     );
     slow.release();
     await client.close();
@@ -408,6 +409,372 @@ describe("the activity stream", () => {
       expect(event).not.toHaveProperty("arguments");
       expect(event).not.toHaveProperty("output");
       expect(event).not.toHaveProperty("result");
+    }
+    await client.close();
+  });
+
+  it("never carries conversation or gate content", async () => {
+    const plugin = definePlugin("content", () => ({
+      tools: [
+        defineTool({
+          name: "lookup",
+          description: "Look something up.",
+          parameters: Type.Object({ q: Type.String() }),
+          execute: async () => "OUT-MARKER",
+        }),
+        gatedAction({
+          name: "deploy",
+          gate: {
+            title: "Deploy?",
+            description: "DESCRIPTION-MARKER",
+            options: [{ id: "go", label: "Go" }],
+            attachments: [{ kind: "diff", content: "ATTACHMENT-MARKER" }],
+          },
+          run: async () => "deployed",
+        }),
+      ],
+    }));
+    const faux = fauxModels();
+    faux.respond([
+      fauxAssistantMessage(
+        [fauxToolCall("lookup", { q: "ARG-MARKER" }), fauxToolCall("deploy", {})],
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage("done"),
+    ]);
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }), {
+      models: faux.models,
+    });
+    const { port } = await agent.listen(0);
+    const conversation = await agent.host.createConversation({
+      key: "content/1",
+      case: { title: "Visible title" },
+    });
+
+    const live = await connectActivity(port, "/activity/ws");
+    await live.next();
+    await agent.host.submitInput(conversation.id, "TEXT-MARKER", { wait: true });
+    const proposal = await waitForProposal(agent.host, conversation.id);
+    await agent.host.updateCase(conversation.id, {
+      summary: "SUMMARY-MARKER",
+      tags: ["private-tag"],
+    });
+    await eventually(() =>
+      live.frames.some((frame) => frame.kind === "event" && frame.event.kind === "proposal_opened"),
+    );
+
+    const replay = await connectActivity(port, "/activity/ws");
+    const snapshotFrame = await replay.next();
+    if (snapshotFrame.kind !== "snapshot") throw new Error("expected a snapshot frame");
+    const snapshot = snapshotFrame.snapshot;
+    const frames = [...live.frames, ...replay.frames];
+    const serialized = JSON.stringify(frames);
+    for (const marker of [
+      "TEXT-MARKER",
+      "ARG-MARKER",
+      "OUT-MARKER",
+      "SUMMARY-MARKER",
+      "DESCRIPTION-MARKER",
+      "ATTACHMENT-MARKER",
+    ]) {
+      expect(serialized).not.toContain(marker);
+    }
+
+    const opened = live.frames.find(
+      (frame): frame is Extract<ActivityFrame, { kind: "event" }> =>
+        frame.kind === "event" && frame.event.kind === "proposal_opened",
+    );
+    expect(opened?.event).toMatchObject({
+      proposalId: proposal.id,
+      title: "Deploy?",
+      options: [{ id: "go", label: "Go" }],
+      audience: "human",
+    });
+    expect(opened?.event).not.toHaveProperty("description");
+    expect(opened?.event).not.toHaveProperty("attachments");
+
+    const snapshotProposal = snapshot.proposals.find((p) => p.proposalId === proposal.id);
+    expect(snapshotProposal).toMatchObject({
+      proposalId: proposal.id,
+      title: "Deploy?",
+      options: [{ id: "go", label: "Go" }],
+    });
+    expect(snapshotProposal).not.toHaveProperty("description");
+    expect(snapshotProposal).not.toHaveProperty("attachments");
+
+    const snapshotCase = snapshot.cases.find((c) => c.conversationId === conversation.id);
+    expect(snapshotCase).toMatchObject({
+      title: "Visible title",
+      status: "open",
+      priority: "normal",
+      needsHuman: true,
+      openProposals: 1,
+    });
+    expect(snapshotCase).not.toHaveProperty("summary");
+    expect(snapshotCase).not.toHaveProperty("tags");
+
+    const caseEvents = live.frames
+      .filter(
+        (frame): frame is Extract<ActivityFrame, { kind: "event" }> =>
+          frame.kind === "event" && frame.event.kind === "case_changed",
+      )
+      .map((frame) => frame.event);
+    expect(caseEvents.length).toBeGreaterThan(0);
+    for (const event of caseEvents) {
+      expect(event).not.toHaveProperty("title");
+      expect(event).not.toHaveProperty("summary");
+      expect(event).not.toHaveProperty("tags");
+    }
+    await live.close();
+    await replay.close();
+  });
+
+  it("announces a proposal opening and settling", async () => {
+    const plugin = definePlugin("ops", () => ({
+      tools: [
+        gatedAction({
+          name: "deploy",
+          gate: { title: "Deploy?", options: [{ id: "go", label: "Deploy" }] },
+          run: async () => "deployed",
+        }),
+      ],
+    }));
+    const faux = fauxModels();
+    faux.respond([
+      fauxAssistantMessage([fauxToolCall("deploy", {})], { stopReason: "toolUse" }),
+      fauxAssistantMessage("waiting on you"),
+    ]);
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }), {
+      models: faux.models,
+    });
+    const { port } = await agent.listen(0);
+    const conversation = await agent.host.createConversation({ key: "gate/1" });
+    const client = await connectActivity(port, "/activity/ws");
+    await client.next();
+
+    await agent.host.submitInput(conversation.id, "deploy it");
+    const proposal = await waitForProposal(agent.host, conversation.id);
+    expect(await nextEvent(client, conversation.id, "proposal_opened")).toMatchObject({
+      proposalId: proposal.id,
+      conversationId: conversation.id,
+      key: "gate/1",
+      caseKind: "case",
+      title: "Deploy?",
+      options: [{ id: "go", label: "Deploy" }],
+      audience: "human",
+    });
+
+    await agent.host.submitDecision({
+      proposalId: proposal.id,
+      selectedOption: "go",
+      instruction: "INSTRUCTION-MARKER",
+      decidedBy: { kind: "human", name: "Ana" },
+    });
+    expect(await nextEvent(client, conversation.id, "proposal_settled")).toMatchObject({
+      proposalId: proposal.id,
+      audience: "human",
+      selectedOption: "go",
+      decidedBy: { kind: "human", name: "Ana" },
+    });
+    expect(JSON.stringify(client.frames)).not.toContain("INSTRUCTION-MARKER");
+    await client.close();
+  });
+
+  it("announces case fields and the human need proposals create", async () => {
+    const plugin = definePlugin("ops", () => ({
+      tools: [
+        gatedAction({
+          name: "deploy",
+          gate: { title: "Deploy?", options: [{ id: "go", label: "Deploy" }] },
+          run: async () => "deployed",
+        }),
+      ],
+    }));
+    const faux = fauxModels();
+    faux.respond([
+      fauxAssistantMessage([fauxToolCall("deploy", {})], { stopReason: "toolUse" }),
+      fauxAssistantMessage("waiting on you"),
+    ]);
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }), {
+      models: faux.models,
+    });
+    const { port } = await agent.listen(0);
+    const conversation = await agent.host.createConversation();
+    const client = await connectActivity(port, "/activity/ws");
+    await client.next();
+
+    await agent.host.updateCase(conversation.id, {
+      status: "waiting",
+      stage: "triage",
+      priority: "high",
+      owner: { kind: "human", name: "Ana" },
+    });
+    const updated = await nextEvent(client, conversation.id, "case_changed");
+    expect(updated).toMatchObject({
+      status: "waiting",
+      stage: "triage",
+      priority: "high",
+      owner: { kind: "human", name: "Ana" },
+      needsHuman: false,
+      openProposals: 0,
+    });
+    expect(updated).not.toHaveProperty("title");
+    expect(updated).not.toHaveProperty("summary");
+    expect(updated).not.toHaveProperty("tags");
+
+    await agent.host.submitInput(conversation.id, "deploy it");
+    const proposal = await waitForProposal(agent.host, conversation.id);
+    await nextEvent(client, conversation.id, "case_changed");
+    await nextEvent(client, conversation.id, "proposal_opened");
+    expect(await nextEvent(client, conversation.id, "case_changed")).toMatchObject({
+      needsHuman: true,
+      openProposals: 1,
+    });
+
+    await agent.host.submitDecision({
+      proposalId: proposal.id,
+      selectedOption: "go",
+      instruction: null,
+      decidedBy: { kind: "human", name: "Ana" },
+    });
+    await nextEvent(client, conversation.id, "proposal_settled");
+    expect(await nextEvent(client, conversation.id, "case_changed")).toMatchObject({
+      needsHuman: false,
+      openProposals: 0,
+    });
+    await client.close();
+  });
+
+  it("reports model usage per conversation and never agent-level", async () => {
+    const llm = await startFakeLlm();
+    process.env.REEWORK_TEST_LLM_KEY = "k";
+    const helper = definePlugin(
+      "helper",
+      () => ({
+        async setup(ctx) {
+          await ctx.models.complete("fast", { messages: "setup" });
+        },
+        routes(app, ctx) {
+          app.post("/usage", async (c) => {
+            await ctx.models.complete("fast", { messages: "route" });
+            return c.json({ ok: true });
+          });
+        },
+      }),
+      { models: ["fast"] },
+    );
+    llm.script(
+      { text: "setup", usage: { input: 1, output: 1 } },
+      { text: "route", usage: { input: 2, output: 2 } },
+      { text: "done", usage: { input: 120, output: 30 } },
+    );
+    const definition = testDefinition({
+      model: {
+        provider: { baseUrl: llm.url, apiKeyEnv: "REEWORK_TEST_LLM_KEY" },
+        modelId: "m1",
+      },
+      models: {
+        fast: {
+          provider: { baseUrl: llm.url, apiKeyEnv: "REEWORK_TEST_LLM_KEY" },
+          modelId: "fast-model",
+        },
+      },
+      plugins: [{ plugin: helper, config: {} }],
+    });
+    const agent = await startTestAgent(definition, { models: undefined });
+    const { port } = await agent.listen(0);
+    const conversation = await agent.host.createConversation();
+    const client = await connectActivity(port, "/activity/ws");
+    await client.next();
+
+    const route = await agent.app.request("/plugins/helper/usage", {
+      method: "POST",
+      headers: { authorization: authHeaders.authorization },
+    });
+    expect(route.status).toBe(200);
+    await agent.host.submitInput(conversation.id, "go", { wait: true });
+    await eventually(() =>
+      client.frames.some(
+        (frame) =>
+          frame.kind === "event" &&
+          frame.event.kind === "model_usage" &&
+          frame.event.conversationId === conversation.id,
+      ),
+    );
+    const usageEvents = client.frames
+      .filter((frame): frame is Extract<ActivityFrame, { kind: "event" }> => frame.kind === "event")
+      .map((frame) => frame.event)
+      .filter((event) => event.kind === "model_usage");
+    expect(usageEvents).toHaveLength(1);
+    expect(usageEvents[0]).toMatchObject({
+      conversationId: conversation.id,
+      source: "run",
+      model: "main",
+      usage: { inputTokens: 120, outputTokens: 30 },
+    });
+    expect(JSON.stringify(client.frames)).not.toContain('"source":"plugin"');
+    await client.close();
+  });
+
+  it("scopes the snapshot and the stream by key prefix", async () => {
+    const slow = slowTool();
+    const plugin = definePlugin("ops", () => ({ tools: [slow.tool, deployTool()] }));
+    const faux = fauxModels();
+    faux.respond([
+      fauxAssistantMessage([fauxToolCall("slow", {}), fauxToolCall("deploy", {})], {
+        stopReason: "toolUse",
+      }),
+      fauxAssistantMessage([fauxToolCall("deploy", {})], { stopReason: "toolUse" }),
+      fauxAssistantMessage("waiting"),
+      fauxAssistantMessage([fauxToolCall("deploy", {})], { stopReason: "toolUse" }),
+      fauxAssistantMessage("waiting"),
+      fauxAssistantMessage("done"),
+    ]);
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }), {
+      models: faux.models,
+    });
+    const { port } = await agent.listen(0);
+    const a = await agent.host.createConversation({ key: "team/a" });
+    const b = await agent.host.createConversation({ key: "desk/private" });
+    const c = await agent.host.createConversation();
+    await agent.host.submitInput(a.id, "run and propose");
+    await eventually(() => slow.started() === 1);
+    const proposalA = await waitForProposal(agent.host, a.id);
+    await agent.host.submitInput(b.id, "deploy b", { wait: true });
+    const proposalB = await waitForProposal(agent.host, b.id);
+    await agent.host.submitInput(c.id, "deploy c", { wait: true });
+    const proposalC = await waitForProposal(agent.host, c.id);
+
+    const client = await connectActivity(port, "/activity/ws?keyPrefix=team%2F");
+    const frame = await client.next();
+    if (frame.kind !== "snapshot") throw new Error("expected a snapshot frame");
+    expect(frame.snapshot.filter).toEqual({ keyPrefix: "team/" });
+    expect(frame.snapshot.runs).toEqual([
+      expect.objectContaining({ conversationId: a.id, key: "team/a" }),
+    ]);
+    expect(frame.snapshot.proposals).toEqual([
+      expect.objectContaining({ conversationId: a.id, proposalId: proposalA.id }),
+    ]);
+    expect(frame.snapshot.cases).toEqual([expect.objectContaining({ conversationId: a.id })]);
+
+    await agent.host.updateCase(b.id, { status: "waiting" });
+    await agent.host.updateCase(c.id, { status: "waiting" });
+    slow.release();
+    expect(await nextEvent(client, a.id, "run_ended")).toMatchObject({ outcome: "completed" });
+    const serialized = JSON.stringify(client.frames);
+    for (const other of ["desk/private", proposalB.id, proposalC.id]) {
+      expect(serialized).not.toContain(other);
+    }
+    for (const id of [b.id, c.id]) {
+      expect(serialized).not.toContain(`"conversationId":"${id}"`);
+    }
+    const events = client.frames
+      .filter((f): f is Extract<ActivityFrame, { kind: "event" }> => f.kind === "event")
+      .map((f) => f.event);
+    expect(events.length).toBeGreaterThan(0);
+    for (const event of events) {
+      expect(event.conversationId).toBe(a.id);
+      expect(event.key).toBe("team/a");
     }
     await client.close();
   });

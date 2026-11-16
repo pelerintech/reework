@@ -354,9 +354,8 @@ export interface ActivitySnapshot {
   /** The filter the connection applied; absent for an unfiltered stream. */
   readonly filter?: ActivityFilter;
   readonly runs: readonly ActivityRun[];
-  /** The full reads for now; narrowed to lean shapes by the content-free task. */
-  readonly proposals: readonly Proposal[];
-  readonly cases: readonly Case[];
+  readonly proposals: readonly ActivityProposal[];
+  readonly cases: readonly ActivityCase[];
 }
 
 export type ActivityEventKind =

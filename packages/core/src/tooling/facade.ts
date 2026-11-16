@@ -1869,7 +1869,11 @@ export function buildUsageHooks(
   plugins: readonly { readonly name: string; readonly hooks?: PluginHooks }[],
   bindings?: PluginBindings,
 ): HookRegistration | undefined {
-  if (!plugins.some((p) => typeof p.hooks?.onModelUsage === "function")) return undefined;
+  // A plugin may observe usage through the hook; the agent's activity stream
+  // needs the same callback even when no plugin declares `onModelUsage`.
+  if (!bindings && !plugins.some((p) => typeof p.hooks?.onModelUsage === "function")) {
+    return undefined;
+  }
   return hook(GenerationTask, {
     afterResponse(message, api) {
       const usage = usageOf(message);

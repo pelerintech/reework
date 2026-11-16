@@ -15,6 +15,7 @@ import type {
   ActivityFrame,
   AgentEvent,
   Case,
+  Proposal,
 } from "@reework/types";
 import type { AgentHost } from "../host.ts";
 import { CONTEXT } from "../engine.ts";
@@ -26,6 +27,8 @@ import {
   recordOfCase,
 } from "../protocol/activity.ts";
 import type { ConversationRecord } from "../protocol/conversations.ts";
+import type { SettledProposal } from "../hitl/gate.ts";
+import type { ModelUsageEvent } from "../tooling/facade.ts";
 
 /** The deployment bounds of an activity connection's queue. */
 export interface ActivityOptions {
@@ -126,6 +129,57 @@ export class ActivityHub {
   /** The watchers the hub currently holds (the testing kit's test-visible seam). */
   watcherCount(): number {
     return this.watchers.size;
+  }
+
+  /** A proposal opened: publish its lean question and attach a matching watcher. */
+  publishProposalOpened(proposal: Proposal): void {
+    const record = this.records.get(proposal.conversationId);
+    if (!record) return;
+    this.publishEvent({
+      kind: "proposal_opened",
+      ...activityConversation(record),
+      proposalId: proposal.id,
+      title: proposal.title,
+      audience: proposal.audience,
+      options: proposal.options.map((option) => ({ id: option.id, label: option.label })),
+      timestamp: Date.now(),
+    });
+    void this.refreshWatchers();
+  }
+
+  /** A proposal settled: publish its lean decision and attach a matching watcher. */
+  publishProposalSettled(settled: SettledProposal): void {
+    const record = this.records.get(settled.conversationId);
+    if (!record) return;
+    this.publishEvent({
+      kind: "proposal_settled",
+      ...activityConversation(record),
+      proposalId: settled.proposalId,
+      audience: settled.proposal?.audience ?? "human",
+      selectedOption: settled.decision.selectedOption,
+      ...(settled.decision.decidedBy === undefined
+        ? {}
+        : { decidedBy: settled.decision.decidedBy }),
+      timestamp: Date.now(),
+    });
+    void this.refreshWatchers();
+  }
+
+  /** A conversation-scoped model call's usage; agent-level calls are dropped. */
+  publishUsage(event: ModelUsageEvent): void {
+    if (event.conversationId === undefined) return;
+    const record = this.records.get(event.conversationId);
+    if (!record) return;
+    this.publishEvent({
+      kind: "model_usage",
+      ...activityConversation(record),
+      source: event.source,
+      ...(event.plugin === undefined ? {} : { plugin: event.plugin }),
+      model: event.model,
+      usage: event.usage,
+      timestamp: event.at,
+    });
+    void this.refreshWatchers();
   }
 
   /** A case write: update membership, publish the change, and re-evaluate watchers. */
