@@ -3,6 +3,7 @@
 import WebSocket from "ws";
 import { ROUTES } from "@reework/types";
 import type {
+  ActivityFrame,
   AgentEvent,
   Author,
   Case,
@@ -281,6 +282,27 @@ export function createClient(options: ClientOptions) {
           body,
         });
       }
+    },
+
+    /** Watch agent-wide activity: the snapshot first, then one frame per event. */
+    async watchActivity(
+      onFrame: (frame: ActivityFrame) => void,
+      filter: { keyPrefix?: string; tag?: readonly string[] } = {},
+    ): Promise<{ close(): void }> {
+      const params = new URLSearchParams();
+      if (filter.keyPrefix) params.set("keyPrefix", filter.keyPrefix);
+      for (const tag of filter.tag ?? []) params.append("tag", tag);
+      const query = params.toString();
+      const url = `${baseUrl.replace(/^http/, "ws")}${pathOf("activity.watch")}${query ? `?${query}` : ""}`;
+      const socket = new WebSocket(url, { headers: auth });
+      socket.on("message", (data) => {
+        onFrame(JSON.parse((data as Buffer).toString("utf8")) as ActivityFrame);
+      });
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", () => resolve());
+        socket.once("error", reject);
+      });
+      return { close: () => socket.close() };
     },
 
     /** Watch a conversation: `onFrame` gets the snapshot, then live event batches. */

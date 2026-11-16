@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createClient } from "@reework/client";
 import type { WatchFrame } from "@reework/client";
+import type { ActivityFrame } from "@reework/types";
 import { definePlugin, gatedAction } from "@reework/core";
 import { TEST_TOKEN, fauxModels, startTestAgent, testDefinition } from "./support/agent.ts";
 import { eventually } from "./support/wait.ts";
@@ -79,6 +80,54 @@ describe("@reework/client", () => {
     expect(snapshot.kind).toBe("snapshot");
     expect(JSON.stringify(snapshot)).toContain("first answer");
     expect(frames.slice(1).every((f) => f.kind === "events")).toBe(true);
+  });
+});
+
+describe("@reework/client activity", () => {
+  it("watches agent-wide activity with a key prefix and closes", async () => {
+    const client = await listeningAgent([
+      fauxAssistantMessage([fauxToolCall("deploy", {})], { stopReason: "toolUse" }),
+      fauxAssistantMessage("waiting"),
+      fauxAssistantMessage("more done"),
+      fauxAssistantMessage("after done"),
+    ]);
+    const conversation = await client.createConversation({ key: "team/a" });
+    await client.submit(conversation.id, "deploy");
+    await eventually(async () => (await client.listProposals()).length > 0);
+
+    const frames: ActivityFrame[] = [];
+    const watch = await client.watchActivity((frame) => frames.push(frame), {
+      keyPrefix: "team/",
+    });
+    await eventually(() => frames.length > 0);
+    const snapshot = frames[0]!;
+    if (snapshot.kind !== "snapshot") throw new Error("expected a snapshot frame");
+    expect(snapshot.snapshot.filter).toEqual({ keyPrefix: "team/" });
+
+    await client.submit(conversation.id, "more", { wait: true });
+    await eventually(() =>
+      frames.some(
+        (frame) =>
+          frame.kind === "event" &&
+          frame.event.kind === "run_started" &&
+          frame.event.conversationId === conversation.id,
+      ),
+    );
+
+    watch.close();
+    const received = frames.length;
+    await client.submit(conversation.id, "after", { wait: true });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(frames.length).toBe(received);
+  });
+
+  it("rejects a wrong token on watchActivity", async () => {
+    const faux = fauxModels();
+    faux.respond([fauxAssistantMessage("hi")]);
+    const agent = await startTestAgent(testDefinition(), { models: faux.models });
+    const { port } = await agent.listen(0);
+    const client = createClient({ baseUrl: `http://127.0.0.1:${port}`, token: "wrong" });
+    await expect(client.watchActivity(() => {})).rejects.toThrow(/401/);
   });
 });
 
