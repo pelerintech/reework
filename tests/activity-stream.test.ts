@@ -3,8 +3,14 @@ import WebSocket from "ws";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { ActivityFrame } from "@reework/types";
 import { Type, definePlugin, defineTool, gatedAction } from "@reework/core";
-import { waitForProposal } from "@reework/core/testing";
-import { authHeaders, fauxModels, startTestAgent, testDefinition } from "./support/agent.ts";
+import { activityWatcherCount, waitForProposal } from "@reework/core/testing";
+import {
+  authHeaders,
+  fauxModels,
+  startTestAgent,
+  testDefinition,
+  untrack,
+} from "./support/agent.ts";
 import { eventually } from "./support/wait.ts";
 
 interface ActivityClient {
@@ -12,6 +18,23 @@ interface ActivityClient {
   readonly frames: ActivityFrame[];
   next(): Promise<ActivityFrame>;
   close(): Promise<void>;
+}
+
+async function nextEvent(
+  client: ActivityClient,
+  conversationId: string,
+  kind: string,
+): Promise<Extract<ActivityFrame, { kind: "event" }>["event"]> {
+  for (;;) {
+    const frame = await client.next();
+    if (
+      frame.kind === "event" &&
+      frame.event.conversationId === conversationId &&
+      frame.event.kind === kind
+    ) {
+      return frame.event;
+    }
+  }
 }
 
 /** A ws client that collects parsed activity frames and resolves the next one. */
@@ -225,5 +248,97 @@ describe("the activity stream", () => {
       outcome: "unanswered",
     });
     await client.close();
+  });
+
+  it("keeps observing an idle conversation and closes cleanly on stop", async () => {
+    const faux = fauxModels();
+    faux.respond([fauxAssistantMessage("later answer")]);
+    const agent = await startTestAgent(testDefinition(), { models: faux.models });
+    const { port } = await agent.listen(0);
+    const conversation = await agent.host.createConversation({ key: "desk/idle" });
+
+    const client = await connectActivity(port, "/activity/ws");
+    const snapshotFrame = await client.next();
+    if (snapshotFrame.kind !== "snapshot") throw new Error("expected a snapshot frame");
+    expect(snapshotFrame.snapshot.runs).toEqual([]);
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(client.socket.readyState).toBe(WebSocket.OPEN);
+    const pong = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("no pong")), 2000);
+      client.socket.once("pong", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+    client.socket.ping();
+    await pong;
+
+    await agent.host.submitInput(conversation.id, "wake up");
+    const kinds: string[] = [];
+    while (!(kinds.includes("run_started") && kinds.includes("run_ended"))) {
+      const frame = await client.next();
+      if (frame.kind === "event" && frame.event.conversationId === conversation.id) {
+        kinds.push(frame.event.kind);
+      }
+    }
+
+    const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+      client.socket.once("close", (code, reason) => resolve({ code, reason: reason.toString() }));
+    });
+    await agent.stop();
+    untrack(agent);
+    expect(await closed).toEqual({ code: 1001, reason: "agent stopping" });
+  });
+
+  it("watches open work, detaches a closed case and reattaches a reopened one", async () => {
+    const slow = slowTool();
+    const plugin = definePlugin("ops", () => ({ tools: [slow.tool] }));
+    const faux = fauxModels();
+    faux.respond([
+      fauxAssistantMessage("again done"),
+      fauxAssistantMessage([fauxToolCall("slow", {})], { stopReason: "toolUse" }),
+      fauxAssistantMessage("after slow"),
+    ]);
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }), {
+      models: faux.models,
+    });
+    const { port } = await agent.listen(0);
+    const a = await agent.host.createConversation();
+
+    const first = await connectActivity(port, "/activity/ws");
+    await first.next();
+    expect(activityWatcherCount(agent)).toBe(1);
+
+    await agent.host.updateCase(a.id, { status: "closed" });
+    expect(await nextEvent(first, a.id, "case_changed")).toMatchObject({ status: "closed" });
+    expect(activityWatcherCount(agent)).toBe(0);
+
+    await agent.host.submitInput(a.id, "again");
+    await eventually(() => activityWatcherCount(agent) === 1);
+    expect(await nextEvent(first, a.id, "case_changed")).toMatchObject({ status: "open" });
+    expect(await nextEvent(first, a.id, "run_started")).toMatchObject({ caseKind: "case" });
+    expect(await nextEvent(first, a.id, "run_ended")).toMatchObject({ outcome: "completed" });
+
+    await agent.host.submitInput(a.id, "slow run");
+    expect(await nextEvent(first, a.id, "case_changed")).toMatchObject({ status: "open" });
+    await eventually(() => slow.started() === 1);
+    expect(activityWatcherCount(agent)).toBe(1);
+
+    await agent.host.updateCase(a.id, { status: "closed" });
+    expect(await nextEvent(first, a.id, "case_changed")).toMatchObject({ status: "closed" });
+    expect(activityWatcherCount(agent)).toBe(1);
+
+    const second = await connectActivity(port, "/activity/ws");
+    const secondFrame = await second.next();
+    if (secondFrame.kind !== "snapshot") throw new Error("expected a snapshot frame");
+    expect(secondFrame.snapshot.runs).toEqual([]);
+    expect(activityWatcherCount(agent)).toBe(1);
+
+    slow.release();
+    expect(await nextEvent(first, a.id, "run_ended")).toMatchObject({ outcome: "completed" });
+    await eventually(() => activityWatcherCount(agent) === 0);
+    await first.close();
+    await second.close();
   });
 });

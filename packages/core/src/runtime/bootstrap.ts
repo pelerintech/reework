@@ -333,6 +333,7 @@ async function boot(
   // The hub exists before setup so a plugin's setup model call reaches it (and
   // is dropped as agent-level usage).
   const activityHub = new ActivityHub(host, options.activity);
+  host.onCaseUpdated((c) => activityHub.publishCase(c));
 
   bindings.case = {
     get: (id) => host.getCase(id),

@@ -260,6 +260,13 @@ export async function waitFor<T>(
   }
 }
 
+/** The number of watchers the agent's activity hub holds (its test-visible seam). */
+export function activityWatcherCount(target: TestAgent | RunningAgent): number {
+  const running = "dispose" in target ? (target as TestAgent).agent : (target as RunningAgent);
+  const hub = (running as unknown as { activityHub?: { watcherCount(): number } }).activityHub;
+  return hub?.watcherCount() ?? 0;
+}
+
 /** The tools offered to the model for a conversation: names and parameter schemas.
  *  Accepts a `TestAgent` or its `RunningAgent`; honors `mission.tools` narrowing. */
 export function offeredTools(

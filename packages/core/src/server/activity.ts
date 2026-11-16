@@ -9,12 +9,22 @@ import type {
   ConversationId,
   SubmissionId,
 } from "@earendil-works/pi-durable";
-import type { ActivityEvent, ActivityFilter, ActivityFrame } from "@reework/types";
+import type {
+  ActivityEvent,
+  ActivityFilter,
+  ActivityFrame,
+  AgentEvent,
+  Case,
+} from "@reework/types";
 import type { AgentHost } from "../host.ts";
 import { CONTEXT } from "../engine.ts";
 import { createEventMapper } from "../protocol/event-mapper.ts";
-import type { AgentEvent } from "@reework/types";
-import { activityConversation, activityMatches, activityOpenWork } from "../protocol/activity.ts";
+import {
+  activityConversation,
+  activityMatches,
+  activityOpenWork,
+  recordOfCase,
+} from "../protocol/activity.ts";
 import type { ConversationRecord } from "../protocol/conversations.ts";
 
 /** The deployment bounds of an activity connection's queue. */
@@ -116,6 +126,25 @@ export class ActivityHub {
   /** The watchers the hub currently holds (the testing kit's test-visible seam). */
   watcherCount(): number {
     return this.watchers.size;
+  }
+
+  /** A case write: update membership, publish the change, and re-evaluate watchers. */
+  publishCase(c: Case): void {
+    this.records.set(c.id, recordOfCase(c));
+    const record = this.records.get(c.id);
+    if (!record) return;
+    this.publishEvent({
+      kind: "case_changed",
+      ...activityConversation(record),
+      status: c.status,
+      ...(c.stage === undefined ? {} : { stage: c.stage }),
+      priority: c.priority,
+      ...(c.owner === undefined ? {} : { owner: c.owner }),
+      needsHuman: c.needsHuman,
+      openProposals: c.openProposals,
+      timestamp: Date.now(),
+    });
+    void this.refreshWatchers();
   }
 
   /** Refresh the conversation records from the host (new conversations included). */
