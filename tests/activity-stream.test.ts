@@ -52,25 +52,31 @@ function connectActivity(
 
 /** A tool that blocks until released (or the run is aborted). */
 function slowTool() {
-  let release!: () => void;
-  const held = new Promise<void>((resolve) => (release = resolve));
-  let started = false;
+  const waiters: (() => void)[] = [];
+  let starts = 0;
   const tool = defineTool({
     name: "slow",
     description: "Takes a while.",
     parameters: Type.Object({}, { additionalProperties: false }),
     async execute(_args, ctx) {
-      started = true;
+      starts += 1;
       await new Promise<void>((resolve, reject) => {
         ctx.signal.addEventListener("abort", () => reject(new Error("aborted")), {
           once: true,
         });
-        void held.then(resolve);
+        waiters.push(resolve);
       });
       return "slow done";
     },
   });
-  return { tool, release, started: () => started };
+  return {
+    tool,
+    release: () => {
+      for (const waiter of waiters.splice(0)) waiter();
+    },
+    releaseNext: () => waiters.shift()?.(),
+    started: () => starts,
+  };
 }
 
 function deployTool() {
@@ -148,6 +154,76 @@ describe("the activity stream", () => {
       expect.objectContaining({ id: b.id, needsHuman: true, openProposals: 1 }),
     );
     slow.release();
+    await client.close();
+  });
+
+  it("announces a run ending with its identity and outcome", async () => {
+    const slow = slowTool();
+    const plugin = definePlugin("ops", () => ({ tools: [slow.tool] }));
+    const faux = fauxModels();
+    const answer = (context: { messages: { role: string; content: unknown }[] }) => {
+      const prompt = JSON.stringify(context.messages);
+      return prompt.includes("B-run")
+        ? fauxAssistantMessage("", { stopReason: "error", errorMessage: "model down" })
+        : fauxAssistantMessage("done");
+    };
+    faux.respond([
+      fauxAssistantMessage([fauxToolCall("slow", {})], { stopReason: "toolUse" }),
+      fauxAssistantMessage([fauxToolCall("slow", {})], { stopReason: "toolUse" }),
+      answer,
+    ]);
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }), {
+      models: faux.models,
+    });
+    const { port } = await agent.listen(0);
+    const a = await agent.host.createConversation({ key: "run/a" });
+    const b = await agent.host.createConversation({ key: "run/b" });
+    const submittedA = await agent.host.submitInput(a.id, "A-run");
+    const submittedB = await agent.host.submitInput(b.id, "B-run");
+    await eventually(() => slow.started() >= 2);
+
+    const client = await connectActivity(port, "/activity/ws");
+    await client.next();
+
+    slow.releaseNext();
+    let endedA: Extract<ActivityFrame, { kind: "event" }> | undefined;
+    while (endedA === undefined) {
+      const frame = await client.next();
+      if (
+        frame.kind === "event" &&
+        frame.event.kind === "run_ended" &&
+        frame.event.conversationId === a.id
+      ) {
+        endedA = frame;
+      }
+    }
+    expect(endedA.event).toMatchObject({
+      conversationId: a.id,
+      key: "run/a",
+      caseKind: "case",
+      runId: submittedA.submissionId,
+      outcome: "completed",
+    });
+
+    slow.releaseNext();
+    let endedB: Extract<ActivityFrame, { kind: "event" }> | undefined;
+    while (endedB === undefined) {
+      const frame = await client.next();
+      if (
+        frame.kind === "event" &&
+        frame.event.kind === "run_ended" &&
+        frame.event.conversationId === b.id
+      ) {
+        endedB = frame;
+      }
+    }
+    expect(endedB.event).toMatchObject({
+      conversationId: b.id,
+      key: "run/b",
+      caseKind: "case",
+      runId: submittedB.submissionId,
+      outcome: "unanswered",
+    });
     await client.close();
   });
 });
