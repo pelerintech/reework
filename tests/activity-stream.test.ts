@@ -778,4 +778,79 @@ describe("the activity stream", () => {
     }
     await client.close();
   });
+
+  it("scopes the stream by tags and follows tag changes", async () => {
+    const plugin = definePlugin("ops", () => ({
+      tools: [
+        deployTool(),
+        defineTool({
+          name: "lookup",
+          description: "Look something up.",
+          parameters: Type.Object({}),
+          execute: async () => "found",
+        }),
+      ],
+    }));
+    const faux = fauxModels();
+    faux.respond([
+      fauxAssistantMessage([fauxToolCall("deploy", {})], { stopReason: "toolUse" }),
+      fauxAssistantMessage("waiting"),
+      fauxAssistantMessage([fauxToolCall("deploy", {})], { stopReason: "toolUse" }),
+      fauxAssistantMessage("waiting"),
+      fauxAssistantMessage([fauxToolCall("lookup", {})], { stopReason: "toolUse" }),
+      fauxAssistantMessage("done"),
+      fauxAssistantMessage("later done"),
+    ]);
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }), {
+      models: faux.models,
+    });
+    const { port } = await agent.listen(0);
+    const a = await agent.host.createConversation({ key: "team/a" });
+    const b = await agent.host.createConversation({ key: "team/b" });
+    await agent.host.updateCase(a.id, { tags: ["team"] });
+    await agent.host.updateCase(b.id, { tags: ["private"] });
+    await agent.host.submitInput(a.id, "deploy a", { wait: true });
+    await waitForProposal(agent.host, a.id);
+    await agent.host.submitInput(b.id, "deploy b", { wait: true });
+    await waitForProposal(agent.host, b.id);
+
+    const client = await connectActivity(port, "/activity/ws?tag=team");
+    const frame = await client.next();
+    if (frame.kind !== "snapshot") throw new Error("expected a snapshot frame");
+    expect(frame.snapshot.filter).toEqual({ tag: ["team"] });
+    expect(frame.snapshot.proposals).toEqual([expect.objectContaining({ conversationId: a.id })]);
+    expect(frame.snapshot.cases).toEqual([expect.objectContaining({ conversationId: a.id })]);
+
+    await agent.host.updateCase(b.id, { tags: ["team"] });
+    expect(await nextEvent(client, b.id, "case_changed")).toMatchObject({
+      conversationId: b.id,
+    });
+    await agent.host.submitInput(b.id, "lookup now", { wait: true });
+    await eventually(() =>
+      client.frames.some(
+        (f) =>
+          f.kind === "event" &&
+          f.event.kind === "tool_finished" &&
+          f.event.conversationId === b.id &&
+          f.event.name === "lookup",
+      ),
+    );
+    expect(await nextEvent(client, b.id, "run_ended")).toMatchObject({ outcome: "completed" });
+
+    const before = client.frames.length;
+    await agent.host.updateCase(b.id, { tags: ["private"] });
+    await agent.host.submitInput(b.id, "later", { wait: true });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(client.frames.length).toBe(before);
+
+    const twoTags = await connectActivity(port, "/activity/ws?tag=team&tag=eu");
+    const twoFrame = await twoTags.next();
+    if (twoFrame.kind !== "snapshot") throw new Error("expected a snapshot frame");
+    expect(twoFrame.snapshot.filter).toEqual({ tag: ["team", "eu"] });
+    expect(twoFrame.snapshot.proposals).toEqual([]);
+    expect(twoFrame.snapshot.cases).toEqual([]);
+    expect(twoFrame.snapshot.runs).toEqual([]);
+    await client.close();
+    await twoTags.close();
+  });
 });
