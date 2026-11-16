@@ -240,6 +240,27 @@ export class ActivityHub {
         timestamp: mapped.timestamp,
       });
       await this.refreshWatchers();
+    } else if (mapped.kind === "tool_execution_start") {
+      watcher.starts.set(mapped.callId, mapped.timestamp);
+      this.publishEvent({
+        kind: "tool_started",
+        ...conversation,
+        callId: mapped.callId,
+        name: mapped.name,
+        timestamp: mapped.timestamp,
+      });
+    } else if (mapped.kind === "tool_execution_end") {
+      const startedAt = watcher.starts.get(mapped.callId);
+      watcher.starts.delete(mapped.callId);
+      this.publishEvent({
+        kind: "tool_finished",
+        ...conversation,
+        callId: mapped.callId,
+        name: mapped.name,
+        status: mapped.isError ? "error" : "done",
+        ...(startedAt === undefined ? {} : { durationMs: mapped.timestamp - startedAt }),
+        timestamp: mapped.timestamp,
+      });
     }
   }
 

@@ -341,4 +341,74 @@ describe("the activity stream", () => {
     await first.close();
     await second.close();
   });
+
+  it("announces tool starts and finishes without their content", async () => {
+    const plugin = definePlugin("tools", () => ({
+      tools: [
+        defineTool({
+          name: "lookup",
+          description: "Look something up.",
+          parameters: Type.Object({ q: Type.String() }),
+          execute: async () => "OUT-MARKER",
+        }),
+        defineTool({
+          name: "broken",
+          description: "Always fails.",
+          parameters: Type.Object({}, { additionalProperties: false }),
+          execute: async () => {
+            throw new Error("boom");
+          },
+        }),
+      ],
+    }));
+    const faux = fauxModels();
+    faux.respond([
+      fauxAssistantMessage(
+        [fauxToolCall("lookup", { q: "ARG-MARKER" }), fauxToolCall("broken", {})],
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage("done"),
+    ]);
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }), {
+      models: faux.models,
+    });
+    const { port } = await agent.listen(0);
+    const conversation = await agent.host.createConversation();
+    const client = await connectActivity(port, "/activity/ws");
+    await client.next();
+
+    await agent.host.submitInput(conversation.id, "use the tools", { wait: true });
+    await eventually(() =>
+      client.frames.some(
+        (frame) =>
+          frame.kind === "event" &&
+          frame.event.kind === "tool_finished" &&
+          frame.event.name === "broken",
+      ),
+    );
+    const events = client.frames
+      .filter((frame): frame is Extract<ActivityFrame, { kind: "event" }> => frame.kind === "event")
+      .map((frame) => frame.event);
+    const lookupStart = events.find((e) => e.kind === "tool_started" && e.name === "lookup");
+    const lookupCallId = lookupStart?.kind === "tool_started" ? lookupStart.callId : undefined;
+    const lookupEnd = events.find((e) => e.kind === "tool_finished" && e.name === "lookup");
+    const brokenEnd = events.find((e) => e.kind === "tool_finished" && e.name === "broken");
+    expect(lookupStart).toMatchObject({ kind: "tool_started", callId: expect.any(String) });
+    expect(lookupEnd).toMatchObject({
+      kind: "tool_finished",
+      callId: lookupCallId,
+      status: "done",
+    });
+    expect((lookupEnd as { durationMs?: number }).durationMs).toBeGreaterThanOrEqual(0);
+    expect(brokenEnd).toMatchObject({ kind: "tool_finished", status: "error" });
+    expect(JSON.stringify(client.frames)).not.toContain("ARG-MARKER");
+    expect(JSON.stringify(client.frames)).not.toContain("OUT-MARKER");
+    expect(events.some((e) => e.kind.startsWith("message_"))).toBe(false);
+    for (const event of events.filter((e) => e.kind.startsWith("tool_"))) {
+      expect(event).not.toHaveProperty("arguments");
+      expect(event).not.toHaveProperty("output");
+      expect(event).not.toHaveProperty("result");
+    }
+    await client.close();
+  });
 });
