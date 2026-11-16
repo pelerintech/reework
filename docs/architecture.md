@@ -103,6 +103,53 @@ submit, stored on the entry and shown on messages and snapshots — and gate dec
 boundary — any holder of it can claim `human` — an author records what the caller declared rather than proof,
 until scoped tokens exist. Channel transports verify their own identities before passing one through.
 
+## The activity stream
+
+A surface that needs the whole agent rather than one conversation opens `GET /activity/ws` — one socket per agent,
+behind the API token like every built-in route (a token-less or wrong-token handshake fails with 401 and no socket
+opens). The first frame is a snapshot of the agent's open work: runs answering input (`runId`, conversation id,
+`key` when the conversation has one, `caseKind`), open proposals (id, title, audience, option id/label, `createdAt`),
+and cases needing a human (title, status, stage, priority, owner, `needsHuman`, `openProposals`). Every later frame
+is one event; there is no batch buffer, because activity events are small and a fleet surface wants immediacy.
+
+The events are `run_started`/`run_ended` (`runId`, and `completed` or `unanswered` at the end),
+`tool_started`/`tool_finished` (`callId`, tool name, and `done` or `error` with `durationMs` when the stream saw the
+start), `proposal_opened`/`proposal_settled` (the gate's question and the chosen option with its decider),
+`case_changed` (status, stage, priority, owner, `needsHuman`, `openProposals`) and `model_usage` (source `run` or
+`plugin`, the model, and token counts). Every event carries the conversation identity — id, `key` when present, and
+`caseKind`.
+
+**No content.** The stream never carries message text, tool arguments or output, streamed text, proposal
+descriptions or attachments, case summaries or tags, or a decision's free-form instruction. It is state, not
+transcript: a surface that needs the conversation's messages or tool detail opens `conversations.watch` for that
+conversation.
+
+**Filters.** `?keyPrefix=<prefix>` keeps conversations whose key starts with the prefix (a conversation created
+without a key never matches), and `?tag=<tag>` keeps conversations carrying every given tag — repeat the parameter
+or comma-separate tags, as `conversations.list` does. Both together are AND, and the snapshot echoes the filter that
+was applied. Filtering is enforced per subscriber on every publish and in the snapshot, so a filtered stream reveals
+nothing about conversations outside it: not their ids, keys, case fields, proposal ids, run ids or tool call ids. It
+scopes what a surface asks for; it is not authorization (the token is the operator boundary).
+
+**Observation.** A reconnect is a new connection and gets a fresh snapshot of current open work, then live events
+resume; there is no cursor and no replay of events missed while disconnected. The stream stays open until the client
+closes it or the agent stops — no idle timeout and no maximum duration. Keep-alive is the protocol's own: `ws`
+answers ping frames with pong frames. The hub attaches one shared watcher per matching conversation that is a desk
+or an open/waiting case; a closed case is not watched (its in-flight run stays watched until it ends), and it is
+watched again when input reopens it. Conversations created later attach on their first case write, proposal or usage.
+
+**Stop and slow clients.** On `agent.stop()` every activity socket closes with code `1001` and reason
+`agent stopping` before the servers close, under the stop deadline, and the hub stops its watchers. Publishing never
+awaits a socket: each subscriber has a bounded queue (`activity.maxBufferedBytes`, default 1 MiB, and
+`activity.maxPendingEvents`, default 4096) and a flush on `setImmediate` that stops while the socket's buffered amount
+is above the byte bound. A subscriber that overflows closes with code `1008` and reason `slow consumer` and is
+dropped; runs, other subscribers and the server are unaffected. The bounds are set by the deployment through
+`startAgent`'s `activity` option, not by the client.
+
+`@reework/client` exposes `watchActivity(onFrame, { keyPrefix?, tag? })`, which resolves once the socket opened,
+delivers the snapshot first and then event frames, and returns `close()`. `@reework/core/testing` exposes
+`openActivityStream(target, options?)` and `activityWatcherCount(target)` for tests against a real agent.
+
 ## Cases, files, hooks and named models
 
 Every conversation is a **case** or a **desk**: case fields are stored flat on the conversation record,

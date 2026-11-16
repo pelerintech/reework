@@ -856,6 +856,29 @@ await waitForIdle(test.agent.host, id);
 await test.dispose();
 ```
 
+```ts
+import type { AgentDefinition } from "@reework/core";
+import { openActivityStream, startTestAgent, text } from "@reework/core/testing";
+
+const definition: AgentDefinition = {
+  name: "activity-agent",
+  model: { provider: { baseUrl: "http://127.0.0.1:1/v1", apiKeyEnv: "KEY" }, modelId: "m1" },
+  plugins: [],
+  channels: [],
+  mission: { role: "You answer." },
+};
+
+const test = await startTestAgent(definition);
+const conversation = await test.agent.host.createConversation({ key: "team/a" });
+test.model.respond([text("answer")]);
+const stream = await openActivityStream(test, { keyPrefix: "team/" });
+await test.agent.host.submitInput(conversation.id, "go", { wait: true });
+const frame = await stream.next();
+console.log(frame.kind);
+await stream.close();
+await test.dispose();
+```
+
 `scriptedModel` replaces the model with a script (`text`, `toolCall`, `toolCalls`); `test.models.<name>`
 is a scripted model for each declared named model; `addFile` uploads bytes through the host;
 `waitForProposal` returns the open proposal to decide with `agent.host.submitDecision`.
