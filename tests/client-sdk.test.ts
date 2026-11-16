@@ -121,6 +121,36 @@ describe("@reework/client activity", () => {
     expect(frames.length).toBe(received);
   });
 
+  it("sends tags on watchActivity and scopes the snapshot to them", async () => {
+    const client = await listeningAgent([
+      fauxAssistantMessage([fauxToolCall("deploy", {})], { stopReason: "toolUse" }),
+      fauxAssistantMessage("waiting a"),
+      fauxAssistantMessage([fauxToolCall("deploy", {})], { stopReason: "toolUse" }),
+      fauxAssistantMessage("waiting b"),
+    ]);
+    const a = await client.createConversation({ key: "team/a" });
+    const b = await client.createConversation({ key: "team/b" });
+    await client.updateCase(a.id, { tags: ["ops", "eu"] });
+    await client.updateCase(b.id, { tags: ["ops"] });
+    await client.submit(a.id, "deploy a", { wait: true });
+    await client.submit(b.id, "deploy b", { wait: true });
+    await eventually(async () => (await client.listProposals()).length === 2);
+
+    const frames: ActivityFrame[] = [];
+    const watch = await client.watchActivity((frame) => frames.push(frame), {
+      tag: ["ops", "eu"],
+    });
+    await eventually(() => frames.length > 0);
+    const snapshot = frames[0]!;
+    if (snapshot.kind !== "snapshot") throw new Error("expected a snapshot frame");
+    expect(snapshot.snapshot.filter).toEqual({ tag: ["ops", "eu"] });
+    expect(snapshot.snapshot.proposals).toEqual([
+      expect.objectContaining({ conversationId: a.id }),
+    ]);
+    expect(snapshot.snapshot.cases).toEqual([expect.objectContaining({ conversationId: a.id })]);
+    watch.close();
+  });
+
   it("rejects a wrong token on watchActivity", async () => {
     const faux = fauxModels();
     faux.respond([fauxAssistantMessage("hi")]);

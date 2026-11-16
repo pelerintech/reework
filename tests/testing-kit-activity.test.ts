@@ -38,16 +38,18 @@ function acceptsTcp(port: number): Promise<boolean> {
 }
 
 describe("testing kit: the activity stream", () => {
-  it("opens a stream with the test token and filter", async () => {
+  it("opens a stream with the test token and filters, then closes its listener", async () => {
     const test = await startTestAgent(testDefinition());
+    const listener = captureListener(test);
     try {
       const conversation = await test.agent.host.createConversation({ key: "team/a" });
+      await test.agent.host.updateCase(conversation.id, { tags: ["ops"] });
       test.model.respond([text("answer")]);
-      const client = await openActivityStream(test, { keyPrefix: "team/" });
+      const client = await openActivityStream(test, { keyPrefix: "team/", tag: ["ops"] });
       expect(client.port).toBeGreaterThan(0);
       expect(client.frames[0]).toMatchObject({
         kind: "snapshot",
-        snapshot: { filter: { keyPrefix: "team/" } },
+        snapshot: { filter: { keyPrefix: "team/", tag: ["ops"] } },
       });
 
       await test.agent.host.submitInput(conversation.id, "go", { wait: true });
@@ -56,7 +58,13 @@ describe("testing kit: the activity stream", () => {
       if (frame.kind !== "event") throw new Error("expected an event frame");
       expect(frame.event.conversationId).toBe(conversation.id);
       await client.close();
+      const handle = listener();
+      expect(handle).toBeDefined();
+      expect(await acceptsTcp(handle!.port)).toBe(false);
     } finally {
+      await listener()
+        ?.close()
+        .catch(() => {});
       await test.dispose();
     }
   });

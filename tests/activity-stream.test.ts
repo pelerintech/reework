@@ -292,6 +292,58 @@ describe("the activity stream", () => {
     expect(await closed).toEqual({ code: 1001, reason: "agent stopping" });
   });
 
+  it("stops an attach that finishes after agent.stop", async () => {
+    const agent = await startTestAgent(testDefinition());
+    const { port } = await agent.listen(0);
+    await agent.host.createConversation({ key: "desk/attach" });
+    const hub = (
+      agent as unknown as {
+        activityHub: {
+          doAttach: (id: string) => Promise<void>;
+          close: () => Promise<void>;
+        };
+      }
+    ).activityHub;
+
+    let attachEntered!: () => void;
+    const attachEnteredP = new Promise<void>((resolve) => (attachEntered = resolve));
+    let releaseAttach!: () => void;
+    const attachGate = new Promise<void>((resolve) => (releaseAttach = resolve));
+    let attachDone!: () => void;
+    const attachDoneP = new Promise<void>((resolve) => (attachDone = resolve));
+    const originalDoAttach = hub.doAttach.bind(hub);
+    hub.doAttach = async (id) => {
+      attachEntered();
+      await attachGate;
+      const result = await originalDoAttach(id);
+      attachDone();
+      return result;
+    };
+    let closeEntered!: () => void;
+    const closeEnteredP = new Promise<void>((resolve) => (closeEntered = resolve));
+    const originalClose = hub.close.bind(hub);
+    hub.close = async () => {
+      closeEntered();
+      return originalClose();
+    };
+
+    const client = await connectActivity(port, "/activity/ws");
+    const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+      client.socket.once("close", (code, reason) => resolve({ code, reason: reason.toString() }));
+    });
+    await attachEnteredP;
+    const stopping = agent.stop();
+    untrack(agent);
+    await closeEnteredP;
+    releaseAttach();
+    await attachDoneP;
+    expect(activityWatcherCount(agent)).toBe(0);
+    await stopping;
+    expect(await closed).toEqual({ code: 1001, reason: "agent stopping" });
+    expect(activityWatcherCount(agent)).toBe(0);
+    expect(client.frames).toEqual([]);
+  });
+
   it("watches open work, detaches a closed case and reattaches a reopened one", async () => {
     const slow = slowTool();
     const plugin = definePlugin("ops", () => ({ tools: [slow.tool] }));
@@ -852,5 +904,79 @@ describe("the activity stream", () => {
     expect(twoFrame.snapshot.runs).toEqual([]);
     await client.close();
     await twoTags.close();
+  });
+
+  it("applies comma-separated tags with a key prefix and hides other run and tool ids", async () => {
+    const slow = slowTool();
+    const plugin = definePlugin("ops", () => ({ tools: [slow.tool] }));
+    const faux = fauxModels();
+    faux.respond([
+      fauxAssistantMessage([fauxToolCall("slow", {})], { stopReason: "toolUse" }),
+      fauxAssistantMessage([fauxToolCall("slow", {})], { stopReason: "toolUse" }),
+      fauxAssistantMessage([fauxToolCall("slow", {})], { stopReason: "toolUse" }),
+      fauxAssistantMessage("a done"),
+      fauxAssistantMessage("b done"),
+      fauxAssistantMessage("c done"),
+    ]);
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }), {
+      models: faux.models,
+    });
+    const { port } = await agent.listen(0);
+    const a = await agent.host.createConversation({ key: "team/ops/a" });
+    const b = await agent.host.createConversation({ key: "team/ops/b" });
+    const c = await agent.host.createConversation({ key: "desk/private" });
+    await agent.host.updateCase(a.id, { tags: ["ops", "eu"] });
+    await agent.host.updateCase(b.id, { tags: ["ops"] });
+    await agent.host.updateCase(c.id, { tags: ["ops", "eu"] });
+
+    const all = await connectActivity(port, "/activity/ws");
+    await all.next();
+    const runA = await agent.host.submitInput(a.id, "a");
+    const runB = await agent.host.submitInput(b.id, "b");
+    const runC = await agent.host.submitInput(c.id, "c");
+    await eventually(() => slow.started() === 3);
+    const toolIds = new Map<string, string>();
+    await eventually(() => {
+      for (const frame of all.frames) {
+        if (
+          frame.kind === "event" &&
+          frame.event.kind === "tool_started" &&
+          (frame.event.conversationId === b.id || frame.event.conversationId === c.id)
+        ) {
+          toolIds.set(frame.event.conversationId, frame.event.callId);
+        }
+      }
+      return toolIds.has(b.id) && toolIds.has(c.id);
+    });
+    await all.close();
+
+    const filtered = await connectActivity(port, "/activity/ws?keyPrefix=team%2F&tag=ops,eu");
+    const frame = await filtered.next();
+    if (frame.kind !== "snapshot") throw new Error("expected a snapshot frame");
+    expect(frame.snapshot.filter).toEqual({ keyPrefix: "team/", tag: ["ops", "eu"] });
+    expect(frame.snapshot.runs).toEqual([
+      expect.objectContaining({ conversationId: a.id, runId: runA.submissionId }),
+    ]);
+    slow.release();
+    expect(await nextEvent(filtered, a.id, "run_ended")).toMatchObject({
+      runId: runA.submissionId,
+      outcome: "completed",
+    });
+    const serialized = JSON.stringify(filtered.frames);
+    for (const hidden of [runB.submissionId, runC.submissionId]) {
+      expect(serialized).not.toContain(`"runId":"${hidden}"`);
+    }
+    for (const hidden of [toolIds.get(b.id)!, toolIds.get(c.id)!]) {
+      expect(serialized).not.toContain(`"callId":"${hidden}"`);
+    }
+    for (const id of [b.id, c.id]) {
+      expect(serialized).not.toContain(`"conversationId":"${id}"`);
+    }
+    const events = filtered.frames
+      .filter((f): f is Extract<ActivityFrame, { kind: "event" }> => f.kind === "event")
+      .map((f) => f.event);
+    expect(events.length).toBeGreaterThan(0);
+    for (const event of events) expect(event.conversationId).toBe(a.id);
+    await filtered.close();
   });
 });

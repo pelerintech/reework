@@ -116,7 +116,7 @@ export class ActivityHub {
     void this.refreshWatchers();
   }
 
-  /** Stop every subscriber's watcher on agent stop. */
+  /** Stop every subscriber's watcher on agent stop, including attaches in flight. */
   async close(): Promise<void> {
     this.closed = true;
     for (const subscriber of this.subscribers.values()) subscriber.closed = true;
@@ -124,6 +124,9 @@ export class ActivityHub {
     for (const id of this.watchers.keys()) this.detach(id);
     this.records.clear();
     this.runActive.clear();
+    // An attach that was already awaiting watchEvents sees `closed` and stops
+    // its stream; waiting here makes that release part of the agent's stop.
+    await Promise.allSettled(this.attaching.values());
   }
 
   /** The watchers the hub currently holds (the testing kit's test-visible seam). */
@@ -246,10 +249,20 @@ export class ActivityHub {
       Number(id) as unknown as ConversationId,
       CONTEXT,
     );
+    if (this.closed || !this.needsWatcher(id)) {
+      this.stopStream(stream);
+      return;
+    }
     const map = createEventMapper(Number(id) as unknown as ConversationId);
+    const inspect = await this.host.engine.harness.inspect(CONTEXT);
+    // The hub may have closed or lost its last matching subscriber while the
+    // attach was awaiting; a watcher must not outlive either.
+    if (this.closed || !this.needsWatcher(id)) {
+      this.stopStream(stream);
+      return;
+    }
     const watcher: Watcher = { id, stream, map, starts: new Map() };
     this.watchers.set(id, watcher);
-    const inspect = await this.host.engine.harness.inspect(CONTEXT);
     this.runActive.set(
       id,
       inspect.submissions.some(
@@ -259,6 +272,17 @@ export class ActivityHub {
     stream.start(async (events) => {
       for (const event of events) await this.handleDurable(watcher, event);
     });
+  }
+
+  /** Whether an open-work record still has a subscriber that matches it. */
+  private needsWatcher(id: string): boolean {
+    const record = this.records.get(id);
+    if (!record || !this.anySubscriberMatches(record)) return false;
+    return activityOpenWork(record) || this.runActive.get(id) === true;
+  }
+
+  private stopStream(stream: Watcher["stream"]): void {
+    void Promise.resolve(stream.stop()).catch(() => {});
   }
 
   private detach(id: string): void {
@@ -383,6 +407,9 @@ export class ActivityHub {
     subscriber.closed = true;
     this.subscribers.delete(subscriber.ws);
     subscriber.ws.close(1008, "slow consumer");
+    // Dropping the subscriber may have left watchers nobody needs; release them
+    // here so an overflow on the flush path does not wait for a later publish.
+    void this.refreshWatchers();
   }
 
   /** Every subscriber, for publishing. */
