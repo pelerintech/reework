@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import WebSocket from "ws";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { ActivityFrame } from "@reework/types";
-import { authHeaders, startTestAgent, testDefinition } from "./support/agent.ts";
+import { Type, definePlugin, defineTool, gatedAction } from "@reework/core";
+import { waitForProposal } from "@reework/core/testing";
+import { authHeaders, fauxModels, startTestAgent, testDefinition } from "./support/agent.ts";
+import { eventually } from "./support/wait.ts";
 
 interface ActivityClient {
   readonly socket: WebSocket;
@@ -46,6 +50,37 @@ function connectActivity(
   });
 }
 
+/** A tool that blocks until released (or the run is aborted). */
+function slowTool() {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  let started = false;
+  const tool = defineTool({
+    name: "slow",
+    description: "Takes a while.",
+    parameters: Type.Object({}, { additionalProperties: false }),
+    async execute(_args, ctx) {
+      started = true;
+      await new Promise<void>((resolve, reject) => {
+        ctx.signal.addEventListener("abort", () => reject(new Error("aborted")), {
+          once: true,
+        });
+        void held.then(resolve);
+      });
+      return "slow done";
+    },
+  });
+  return { tool, release, started: () => started };
+}
+
+function deployTool() {
+  return gatedAction({
+    name: "deploy",
+    gate: { title: "Deploy?", options: [{ id: "go", label: "Deploy" }] },
+    run: async () => "deployed",
+  });
+}
+
 describe("the activity stream", () => {
   it("answers with a snapshot behind the token", async () => {
     const agent = await startTestAgent(testDefinition());
@@ -62,5 +97,57 @@ describe("the activity stream", () => {
     await expect(
       connectActivity(port, "/activity/ws", { authorization: "Bearer wrong" }),
     ).rejects.toThrow(/401/);
+  });
+
+  it("lists open work in the snapshot and replays it on reconnect", async () => {
+    const slow = slowTool();
+    const plugin = definePlugin("ops", () => ({ tools: [slow.tool, deployTool()] }));
+    const faux = fauxModels();
+    faux.respond([
+      fauxAssistantMessage([fauxToolCall("slow", {})], { stopReason: "toolUse" }),
+      fauxAssistantMessage([fauxToolCall("deploy", {})], { stopReason: "toolUse" }),
+      fauxAssistantMessage("waiting"),
+      fauxAssistantMessage("slow done"),
+    ]);
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }), {
+      models: faux.models,
+    });
+    const { port } = await agent.listen(0);
+    const a = await agent.host.createConversation({ key: "ops/1" });
+    const b = await agent.host.createConversation();
+
+    const before = await connectActivity(port, "/activity/ws");
+    const beforeFrame = await before.next();
+    if (beforeFrame.kind !== "snapshot") throw new Error("expected a snapshot frame");
+    expect(beforeFrame.snapshot).toMatchObject({ runs: [], proposals: [], cases: [] });
+    await before.close();
+
+    await agent.host.submitInput(a.id, "run the slow tool");
+    await eventually(() => slow.started());
+    await agent.host.submitInput(b.id, "deploy it");
+    const proposal = await waitForProposal(agent.host, b.id);
+
+    const client = await connectActivity(port, "/activity/ws");
+    const frame = await client.next();
+    if (frame.kind !== "snapshot") throw new Error("expected a snapshot frame");
+    const snapshot = frame.snapshot;
+    expect(snapshot.runs).toEqual([
+      expect.objectContaining({ conversationId: a.id, key: "ops/1", caseKind: "case" }),
+    ]);
+    expect(typeof snapshot.runs[0]!.runId).toBe("string");
+    expect(snapshot.proposals).toContainEqual(
+      expect.objectContaining({
+        id: proposal.id,
+        conversationId: b.id,
+        title: "Deploy?",
+        audience: "human",
+        options: [{ id: "go", label: "Deploy" }],
+      }),
+    );
+    expect(snapshot.cases).toContainEqual(
+      expect.objectContaining({ id: b.id, needsHuman: true, openProposals: 1 }),
+    );
+    slow.release();
+    await client.close();
   });
 });
