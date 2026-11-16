@@ -43,6 +43,19 @@ async function slowAgent() {
   return { agent, port, conversation, faux };
 }
 
+/** An agent whose per-subscriber queue bound is exceeded before the socket buffer. */
+async function queueBoundAgent() {
+  const faux = fauxModels();
+  faux.respond([fauxAssistantMessage("still runs answer")]);
+  const agent = await startTestAgent(testDefinition(), {
+    models: faux.models,
+    activity: { maxBufferedBytes: 1 },
+  });
+  const { port } = await agent.listen(0);
+  const conversation = await agent.host.createConversation({ key: "queue/a" });
+  return { agent, port, conversation };
+}
+
 /** Hold the snapshot until the client has opened and paused its socket. */
 function holdSnapshot(agent: Awaited<ReturnType<typeof slowAgent>>["agent"]): () => void {
   let release!: () => void;
@@ -131,6 +144,26 @@ describe("the activity stream's slow-client policy", () => {
     expect(activityWatcherCount(agent)).toBe(0);
 
     faux.append([fauxAssistantMessage("still runs answer")]);
+    const fresh = await agent.host.createConversation();
+    const result = await agent.host.submitInput(fresh.id, "still runs", { wait: true });
+    expect(JSON.stringify(result.message)).toContain("still runs answer");
+    const health = await agent.app.request("/health");
+    expect(health.status).toBe(200);
+  }, 15_000);
+
+  it("closes an overflowing queue with 1008 and releases watchers without a later publish", async () => {
+    const { agent, port, conversation } = await queueBoundAgent();
+    const client = await connect(port, false);
+    expect((await client.next()).kind).toBe("snapshot");
+    expect(activityWatcherCount(agent)).toBe(1);
+
+    await agent.host.updateCase(conversation.id, { status: "waiting" });
+    expect(await client.closed).toEqual({ code: 1008, reason: "slow consumer" });
+    await eventually(() => activityWatcherCount(agent) === 0);
+    // No publish after the overflow: the queue bound itself released the watcher.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(activityWatcherCount(agent)).toBe(0);
+
     const fresh = await agent.host.createConversation();
     const result = await agent.host.submitInput(fresh.id, "still runs", { wait: true });
     expect(JSON.stringify(result.message)).toContain("still runs answer");
