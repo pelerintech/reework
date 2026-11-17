@@ -16,6 +16,11 @@ import type {
   Proposal,
   RunStopNotice,
   TranscriptItem,
+  ActivityFilter,
+  ActivitySnapshot,
+  ActivityRun,
+  ActivityProposal,
+  ActivityCase,
 } from "@reework/types";
 import { isAuthor, normalizeAuthor } from "@reework/types";
 import type { Engine } from "./engine.ts";
@@ -24,6 +29,7 @@ import { ConversationsDoc } from "./protocol/conversations.ts";
 import { FilesDoc } from "./protocol/files.ts";
 import { FileStore } from "./files/store.ts";
 import { applyCasePatch, toCase, validateCasePatch } from "./protocol/cases.ts";
+import { activityMatches, activityOpenWork } from "./protocol/activity.ts";
 import { listOpenProposals, listSettledProposals } from "./protocol/proposals.ts";
 import { settleGate } from "./hitl/gate.ts";
 import type { GateDecision } from "@reework/types";
@@ -511,6 +517,78 @@ export class AgentHost {
       instruction: decision.instruction,
       ...(decidedBy === undefined ? {} : { decidedBy }),
     });
+  }
+
+  /**
+   * The agent-wide activity snapshot: open runs, open proposals and cases needing
+   * a human, joined by conversation id and scoped by the same rule as the stream.
+   */
+  async activitySnapshot(filter?: ActivityFilter): Promise<ActivitySnapshot> {
+    const conversations = await this.listConversations();
+    const byId = new Map(conversations.map((c) => [c.id, c]));
+    const open = await listOpenProposals(this.engine);
+    const openCount = new Map<string, number>();
+    for (const proposal of open) {
+      openCount.set(proposal.conversationId, (openCount.get(proposal.conversationId) ?? 0) + 1);
+    }
+    const inspect = await this.engine.harness.inspect(CONTEXT);
+    const runs: ActivityRun[] = [];
+    for (const submission of inspect.submissions) {
+      if (submission.type !== "input" || submission.status !== "placed") continue;
+      const conversationId = String(submission.conversationId);
+      const record = byId.get(conversationId);
+      if (!record || !activityMatches(record, filter) || !activityOpenWork(record)) continue;
+      runs.push({
+        conversationId,
+        runId: String(submission.id),
+        ...(record.key === undefined ? {} : { key: record.key }),
+        caseKind: record.kind ?? "case",
+      });
+    }
+    const proposals: ActivityProposal[] = open
+      .filter((proposal) => {
+        const record = byId.get(proposal.conversationId);
+        return record !== undefined && activityMatches(record, filter);
+      })
+      .map((proposal) => {
+        const record = byId.get(proposal.conversationId)!;
+        return {
+          conversationId: proposal.conversationId,
+          ...(record.key === undefined ? {} : { key: record.key }),
+          caseKind: record.kind ?? "case",
+          proposalId: proposal.id,
+          title: proposal.title,
+          audience: proposal.audience,
+          options: proposal.options.map((option) => ({ id: option.id, label: option.label })),
+          createdAt: proposal.createdAt,
+        };
+      });
+    const cases: ActivityCase[] = conversations
+      .filter((record) => {
+        const count = openCount.get(record.id) ?? 0;
+        return count > 0 && activityMatches(record, filter);
+      })
+      .map((record) => {
+        const c = toCase(record, openCount.get(record.id) ?? 0);
+        return {
+          conversationId: record.id,
+          ...(record.key === undefined ? {} : { key: record.key }),
+          caseKind: c.kind,
+          ...(c.title === undefined ? {} : { title: c.title }),
+          status: c.status,
+          ...(c.stage === undefined ? {} : { stage: c.stage }),
+          priority: c.priority,
+          ...(c.owner === undefined ? {} : { owner: c.owner }),
+          needsHuman: c.needsHuman,
+          openProposals: c.openProposals,
+        };
+      });
+    return {
+      ...(filter === undefined ? {} : { filter }),
+      runs,
+      proposals,
+      cases,
+    };
   }
 
   async snapshot(id: string): Promise<ConversationSnapshot> {

@@ -19,6 +19,8 @@ import { CONTEXT, Engine } from "../engine.ts";
 import { installHITL } from "../hitl/gate.ts";
 import { AgentHost } from "../host.ts";
 import { createServer } from "../server/index.ts";
+import { ActivityHub } from "../server/activity.ts";
+import type { ActivityOptions } from "../server/activity.ts";
 import {
   createPluginSocketRegistry,
   installPluginSocketOptions,
@@ -75,6 +77,8 @@ export interface StartAgentOptions {
   lock?: LockOptions;
   /** Overrides for the harness run policy, merged over the defaults below. */
   settings?: Partial<Pick<HarnessSettings, "stream" | "retry">>;
+  /** The agent-wide activity stream's queue bounds. */
+  activity?: ActivityOptions;
 }
 
 /** Run-policy defaults for real endpoints: bounded streams, retries with backoff. */
@@ -326,6 +330,29 @@ async function boot(
   opened.engine = engine;
   opened.host = host;
   bindings.stopRun = (id, taskId, notice) => host.stopRun(id, taskId, notice);
+  // The hub exists before setup so a plugin's setup model call reaches it (and
+  // is dropped as agent-level usage).
+  const activityHub = new ActivityHub(host, options.activity);
+  const enqueueUsage = bindings.modelUsage;
+  bindings.modelUsage = (event) => {
+    enqueueUsage?.(event);
+    activityHub.publishUsage(event);
+  };
+  host.onCaseUpdated((c) => activityHub.publishCase(c));
+  onProposalOpen(engine, (proposal) => {
+    activityHub.publishProposalOpened(proposal);
+    void host
+      .getCase(proposal.conversationId)
+      .then((c) => activityHub.publishCase(c))
+      .catch(() => {});
+  });
+  onProposalSettled(engine, (settled) => {
+    activityHub.publishProposalSettled(settled);
+    void host
+      .getCase(settled.conversationId)
+      .then((c) => activityHub.publishCase(c))
+      .catch(() => {});
+  });
 
   bindings.case = {
     get: (id) => host.getCase(id),
@@ -430,7 +457,12 @@ async function boot(
       throw new Error(`plugin "${plugin.name}" setup failed: ${message}`, { cause: error });
     }
   }
-  const { app, nodeWebSocket } = createServer(host, { token, name: agent.name });
+  const { app, nodeWebSocket } = createServer(host, {
+    token,
+    name: agent.name,
+    ...(options.activity === undefined ? {} : { activity: options.activity }),
+    activityHub,
+  });
   // Every upgrade, plugin or protocol, is tracked so stop can close it; plugin
   // sockets also hand their message limit to ws as `maxPayload`.
   installPluginSocketOptions(nodeWebSocket, pluginSockets);
@@ -507,6 +539,8 @@ async function boot(
               : "server connections";
           throw new Error(`agent did not stop within ${timeoutMs} ms; still running: ${running}`);
         }
+        // The sockets are closed; stop any watcher the hub still holds.
+        await Promise.race([activityHub.close(), timedOut]);
         const serversClosed = await Promise.race([closeServers(), timedOut]);
         if (serversClosed === "timeout") {
           pluginSockets.terminateAll();
@@ -550,6 +584,9 @@ async function boot(
       }
     },
   };
+  // The testing kit reads the hub through this internal field; it is not part of
+  // the public RunningAgent contract.
+  Object.defineProperty(running, "activityHub", { value: activityHub });
   return running;
 }
 

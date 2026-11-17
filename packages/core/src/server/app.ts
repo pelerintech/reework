@@ -6,6 +6,7 @@ import { watchEvents } from "@earendil-works/pi-durable";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { ROUTES } from "@reework/types";
 import type {
+  ActivityFilter,
   AgentEvent,
   Author,
   CaseKind,
@@ -28,12 +29,29 @@ import {
   ProposalNotFound,
 } from "../host.ts";
 import type { AgentHost } from "../host.ts";
+import { ActivityHub } from "./activity.ts";
+import type { ActivityOptions } from "./activity.ts";
 
 export interface ServerOptions {
   /** Bearer token every route marked `auth: "token"` requires. */
   readonly token: string;
   /** The agent's name, reported by `/health`. */
   readonly name?: string;
+  /** The activity stream's queue bounds. */
+  readonly activity?: ActivityOptions;
+  /** The agent's activity hub, created before plugin setup so setup usage reaches it. */
+  readonly activityHub?: ActivityHub;
+}
+
+/** The activity filter a connection asked for; absent means unfiltered. */
+function activityFilterFrom(c: Context): ActivityFilter | undefined {
+  const keyPrefix = c.req.query("keyPrefix");
+  const tags = (c.req.queries("tag") ?? []).flatMap((tag) => tag.split(",")).filter(Boolean);
+  if (!keyPrefix && tags.length === 0) return undefined;
+  return {
+    ...(keyPrefix ? { keyPrefix } : {}),
+    ...(tags.length === 0 ? {} : { tag: tags }),
+  };
 }
 
 /** Reject requests whose `Authorization: Bearer` header is not `token`. */
@@ -111,6 +129,7 @@ export function createServer(host: AgentHost, options: ServerOptions) {
   const engine = host.engine;
   const app = new Hono();
   const nodeWebSocket = createNodeWebSocket({ app });
+  const activityHub = options.activityHub ?? new ActivityHub(host, options.activity);
 
   app.onError((error, c) => {
     const mapped = protocolErrorResponse(error, c);
@@ -344,6 +363,17 @@ export function createServer(host: AgentHost, options: ServerOptions) {
           for (const off of unsubscribe) off();
           void stream?.stop();
         },
+      };
+    }),
+
+    "activity.watch": nodeWebSocket.upgradeWebSocket((c) => {
+      const filter = activityFilterFrom(c);
+      return {
+        onOpen: (_evt, ws) => {
+          void activityHub.open(ws, filter);
+        },
+        onClose: (_evt, ws) => activityHub.closeSubscriber(ws),
+        onError: (_evt, ws) => activityHub.closeSubscriber(ws),
       };
     }),
 

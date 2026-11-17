@@ -73,7 +73,10 @@ describe("docs examples", () => {
           strict: true,
           noEmit: true,
           skipLibCheck: true,
-          paths: { "@reework/core": [join(DIST, "index.d.ts")] },
+          paths: {
+            "@reework/core": [join(DIST, "index.d.ts")],
+            "@reework/core/testing": [join(DIST, "testing.d.ts")],
+          },
           baseUrl: ".",
         },
         include: files,

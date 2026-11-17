@@ -95,6 +95,7 @@ export function mapDurableEvent(
         kind: "tool_execution_end",
         conversationId: conv,
         callId: event.toolCallId,
+        name: event.toolName,
         isError: toolFailed(event),
         result: event.entry,
         timestamp: ts,

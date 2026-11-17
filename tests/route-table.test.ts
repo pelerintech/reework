@@ -65,6 +65,7 @@ describe("the route table", () => {
       "conversations.proposals": { params: { id: a.id } },
       "conversations.decide": { params: { id: a.id, pid: pa.id }, body: decision },
       "conversations.watch": "websocket",
+      "activity.watch": "websocket",
       "proposals.list": {},
       "proposals.decide": { params: { pid: pb.id }, body: decision },
     };

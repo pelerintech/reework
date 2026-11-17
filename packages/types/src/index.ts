@@ -217,6 +217,8 @@ export interface ToolExecutionUpdateEvent extends AgentEventBase {
 export interface ToolExecutionEndEvent extends AgentEventBase {
   kind: "tool_execution_end";
   callId: string;
+  /** The tool that produced the result. */
+  name: string;
   /** Whether the tool failed (it threw, was blocked, or was interrupted). */
   isError: boolean;
   result?: unknown;
@@ -305,6 +307,147 @@ export interface SnapshotEvent extends AgentEventBase {
   /** The last plugin stop of this conversation's run, when a plugin stopped it. */
   stopNotice?: RunStopNotice;
 }
+
+// ---------------------------------------------------------------------------
+// Activity stream (agent-wide, content-free)
+// ---------------------------------------------------------------------------
+
+/** What an activity connection asks for; both filters together are AND. */
+export interface ActivityFilter {
+  readonly keyPrefix?: string;
+  /** Every tag must be present (the `conversations.list` rule). */
+  readonly tag?: readonly string[];
+}
+
+/** The conversation an activity belongs to. */
+export interface ActivityConversation {
+  readonly conversationId: string;
+  /** Absent for a conversation created without a key. */
+  readonly key?: string;
+  /** The conversation's kind (`case` or `desk`). */
+  readonly caseKind: CaseKind;
+}
+
+export interface ActivityRun extends ActivityConversation {
+  readonly runId: string;
+}
+
+export interface ActivityProposal extends ActivityConversation {
+  readonly proposalId: string;
+  readonly title: string;
+  readonly audience: GateAudience;
+  readonly options: readonly { readonly id: string; readonly label: string }[];
+  readonly createdAt: number;
+}
+
+export interface ActivityCase extends ActivityConversation {
+  readonly title?: string;
+  readonly status: CaseStatus;
+  readonly stage?: string;
+  readonly priority: CasePriority;
+  readonly owner?: Author;
+  readonly needsHuman: boolean;
+  readonly openProposals: number;
+}
+
+export interface ActivitySnapshot {
+  /** The filter the connection applied; absent for an unfiltered stream. */
+  readonly filter?: ActivityFilter;
+  readonly runs: readonly ActivityRun[];
+  readonly proposals: readonly ActivityProposal[];
+  readonly cases: readonly ActivityCase[];
+}
+
+export type ActivityEventKind =
+  | "run_started"
+  | "run_ended"
+  | "tool_started"
+  | "tool_finished"
+  | "proposal_opened"
+  | "proposal_settled"
+  | "case_changed"
+  | "model_usage";
+
+export interface ActivityEventBase extends ActivityConversation {
+  readonly kind: ActivityEventKind;
+  readonly timestamp: number;
+}
+
+export interface ActivityRunStartedEvent extends ActivityEventBase {
+  readonly kind: "run_started";
+  readonly runId: string;
+}
+export interface ActivityRunEndedEvent extends ActivityEventBase {
+  readonly kind: "run_ended";
+  readonly runId: string;
+  readonly outcome: "completed" | "unanswered";
+}
+export interface ActivityToolStartedEvent extends ActivityEventBase {
+  readonly kind: "tool_started";
+  readonly callId: string;
+  readonly name: string;
+}
+export interface ActivityToolFinishedEvent extends ActivityEventBase {
+  readonly kind: "tool_finished";
+  readonly callId: string;
+  readonly name: string;
+  readonly status: "done" | "error";
+  /** Absent when the stream attached after the call started. */
+  readonly durationMs?: number;
+}
+export interface ActivityProposalOpenedEvent extends ActivityEventBase {
+  readonly kind: "proposal_opened";
+  readonly proposalId: string;
+  readonly title: string;
+  readonly audience: GateAudience;
+  readonly options: readonly { readonly id: string; readonly label: string }[];
+}
+export interface ActivityProposalSettledEvent extends ActivityEventBase {
+  readonly kind: "proposal_settled";
+  readonly proposalId: string;
+  readonly audience: GateAudience;
+  readonly selectedOption: string | null;
+  readonly decidedBy?: Author;
+}
+export interface ActivityCaseChangedEvent extends ActivityEventBase {
+  readonly kind: "case_changed";
+  readonly status: CaseStatus;
+  readonly stage?: string;
+  readonly priority: CasePriority;
+  readonly owner?: Author;
+  readonly needsHuman: boolean;
+  readonly openProposals: number;
+}
+export interface ActivityModelUsageEvent extends ActivityEventBase {
+  readonly kind: "model_usage";
+  readonly source: "run" | "plugin";
+  readonly plugin?: string;
+  readonly model: string;
+  readonly usage: ModelUsage;
+}
+
+export type ActivityEvent =
+  | ActivityRunStartedEvent
+  | ActivityRunEndedEvent
+  | ActivityToolStartedEvent
+  | ActivityToolFinishedEvent
+  | ActivityProposalOpenedEvent
+  | ActivityProposalSettledEvent
+  | ActivityCaseChangedEvent
+  | ActivityModelUsageEvent;
+
+/** The snapshot arrives first, exactly once per connection. */
+export interface ActivitySnapshotFrame {
+  readonly kind: "snapshot";
+  readonly snapshot: ActivitySnapshot;
+  readonly timestamp: number;
+}
+/** Each activity is one frame. */
+export interface ActivityEventFrame {
+  readonly kind: "event";
+  readonly event: ActivityEvent;
+}
+export type ActivityFrame = ActivitySnapshotFrame | ActivityEventFrame;
 
 export type AgentEvent =
   | MessageStartEvent
@@ -520,6 +663,13 @@ export const ROUTES = {
     path: "/conversations/:id/ws",
     auth: "token",
     summary: "WebSocket: a snapshot, then live AgentEvents",
+  },
+  "activity.watch": {
+    method: "GET",
+    path: "/activity/ws",
+    auth: "token",
+    summary:
+      "WebSocket: an agent-wide activity snapshot, then content-free activity events; ?keyPrefix= and ?tag= scope it",
   },
   "proposals.list": {
     method: "GET",

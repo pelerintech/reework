@@ -14,7 +14,7 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import type { FauxResponseStep } from "@earendil-works/pi-ai/providers/faux";
-import type { FileRecord, Proposal } from "@reework/types";
+import type { ActivityFrame, FileRecord, Proposal } from "@reework/types";
 import type { AgentDefinition, AgentModel } from "./agent-definition.ts";
 import type { AgentHost } from "./host.ts";
 import { CONTEXT } from "./engine.ts";
@@ -241,6 +241,90 @@ export async function openPluginWebSocket(
   };
 }
 
+/** A client of the agent-wide activity stream, opened by the testing kit. */
+export interface ActivityStreamClient {
+  readonly socket: WebSocket;
+  readonly port: number;
+  /** Every frame received so far, in order. */
+  readonly frames: readonly ActivityFrame[];
+  /** Resolve with the next frame after the last one `next()` returned. */
+  next(options?: WaitOptions): Promise<ActivityFrame>;
+  close(): Promise<void>;
+}
+
+/**
+ * Open the activity stream against a real listener: the helper listens on an
+ * ephemeral port, sends the test agent's token when it has one, applies the
+ * filter, and resolves once the snapshot arrived.
+ */
+export async function openActivityStream(
+  target: TestAgent | RunningAgent,
+  options: {
+    readonly token?: string;
+    readonly keyPrefix?: string;
+    readonly tag?: readonly string[];
+    readonly headers?: Record<string, string>;
+    readonly timeoutMs?: number;
+  } = {},
+): Promise<ActivityStreamClient> {
+  const test = "dispose" in target ? (target as TestAgent) : undefined;
+  const running = test ? test.agent : (target as RunningAgent);
+  const token = options.token ?? test?.token;
+  const { port, close: closeServer } = await running.listen(0);
+  const headers: Record<string, string> = { ...options.headers };
+  if (headerNamed(headers, "authorization") === undefined && token !== undefined) {
+    headers.authorization = `Bearer ${token}`;
+  }
+  const params = new URLSearchParams();
+  if (options.keyPrefix) params.set("keyPrefix", options.keyPrefix);
+  for (const tag of options.tag ?? []) params.append("tag", tag);
+  const query = params.toString();
+  const frames: ActivityFrame[] = [];
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/activity/ws${query ? `?${query}` : ""}`, {
+    headers,
+    handshakeTimeout: options.timeoutMs ?? 5000,
+  });
+  socket.on("message", (data) => {
+    frames.push(JSON.parse((data as Buffer).toString("utf8")) as ActivityFrame);
+  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", () => resolve());
+      socket.once("error", reject);
+    });
+    await waitFor(() => frames.length > 0, { timeoutMs: options.timeoutMs ?? 5000 });
+  } catch (error) {
+    socket.on("error", () => {});
+    try {
+      socket.close();
+    } catch {}
+    void closeServer().catch(() => {});
+    throw error;
+  }
+  let cursor = 1;
+  let closed = false;
+  return {
+    socket,
+    port,
+    frames,
+    async next(wait: WaitOptions = {}) {
+      await waitFor(() => frames.length > cursor, wait);
+      return frames[cursor++]!;
+    },
+    async close() {
+      if (closed) return;
+      closed = true;
+      if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+        await new Promise<void>((resolve) => {
+          socket.once("close", () => resolve());
+          socket.close();
+        });
+      }
+      await closeServer();
+    },
+  };
+}
+
 export interface WaitOptions {
   readonly timeoutMs?: number;
   readonly intervalMs?: number;
@@ -258,6 +342,13 @@ export async function waitFor<T>(
     if (Date.now() >= deadline) throw new Error(`waitFor: condition not met within ${timeoutMs}ms`);
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
+}
+
+/** The number of watchers the agent's activity hub holds (its test-visible seam). */
+export function activityWatcherCount(target: TestAgent | RunningAgent): number {
+  const running = "dispose" in target ? (target as TestAgent).agent : (target as RunningAgent);
+  const hub = (running as unknown as { activityHub?: { watcherCount(): number } }).activityHub;
+  return hub?.watcherCount() ?? 0;
 }
 
 /** The tools offered to the model for a conversation: names and parameter schemas.

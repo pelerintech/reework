@@ -52,28 +52,46 @@ process.on("exit", () => writeFileSync(${JSON.stringify(out)}, JSON.stringify(se
     expect(fromReework).toEqual([]);
   });
 
-  it("runs under node --test", async () => {
+  it("runs under node --test, including openActivityStream", async () => {
     const dir = mkdtempSync(join(tmpdir(), "reework-node-test-"));
     const file = join(dir, "kit.test.mjs");
     writeFileSync(
       file,
       `import { test } from "node:test";
 import assert from "node:assert/strict";
-import { startTestAgent, text } from ${JSON.stringify(pathToFileURL(join(DIST, "testing.js")).href)};
+import { openActivityStream, startTestAgent, text } from ${JSON.stringify(pathToFileURL(join(DIST, "testing.js")).href)};
+const definition = {
+  name: "n", model: { provider: { baseUrl: "http://127.0.0.1:1/v1", apiKeyEnv: "K" }, modelId: "m1" },
+  plugins: [], channels: [], mission: { role: "r" },
+};
 test("an agent answers", async () => {
-  const { agent, model, dispose } = await startTestAgent({
-    name: "n", model: { provider: { baseUrl: "http://127.0.0.1:1/v1", apiKeyEnv: "K" }, modelId: "m1" },
-    plugins: [], channels: [], mission: { role: "r" },
-  });
+  const { agent, model, dispose } = await startTestAgent(definition);
   model.respond([text("pong")]);
   const { id } = await agent.host.createConversation();
   const { message } = await agent.host.submitInput(id, "ping", { wait: true });
   assert.match(JSON.stringify(message), /pong/);
   await dispose();
 });
+test("the activity stream opens", async () => {
+  const test = await startTestAgent(definition);
+  try {
+    const { id } = await test.agent.host.createConversation({ key: "team/a" });
+    test.model.respond([text("pong")]);
+    const client = await openActivityStream(test, { keyPrefix: "team/" });
+    assert.equal(client.frames[0].kind, "snapshot");
+    assert.equal(client.frames[0].snapshot.filter.keyPrefix, "team/");
+    await test.agent.host.submitInput(id, "ping", { wait: true });
+    const frame = await client.next();
+    assert.equal(frame.kind, "event");
+    assert.equal(frame.event.conversationId, id);
+    await client.close();
+  } finally {
+    await test.dispose();
+  }
+});
 `,
     );
     const { stdout } = await run(process.execPath, ["--test", file], { cwd: dir });
-    expect(stdout).toContain("pass 1");
+    expect(stdout).toContain("pass 2");
   }, 60_000);
 });
