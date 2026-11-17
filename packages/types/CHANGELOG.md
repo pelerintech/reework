@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.3.0](https://github.com/pelerintech/reework/compare/types-v1.2.0...types-v1.3.0) (2026-11-17)
+
+
+### Features
+
+* **core:** agent-wide activity stream ([b56280b](https://github.com/pelerintech/reework/commit/b56280b929118165503e51de4ad47099b6882823))
+* **core:** report model usage and scope activity by key prefix ([7ae6551](https://github.com/pelerintech/reework/commit/7ae6551f442688cc65db8c1663225fd7a4ce65f8))
+* **core:** serve an activity snapshot behind the token ([5a1b43c](https://github.com/pelerintech/reework/commit/5a1b43c7df44759b4806afff1d5b9e224d34c03e))
+
 ## [1.2.0](https://github.com/pelerintech/reework/compare/types-v1.1.0...types-v1.2.0) (2026-11-11)
 
 

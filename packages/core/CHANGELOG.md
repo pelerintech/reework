@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.5.0](https://github.com/pelerintech/reework/compare/core-v1.4.0...core-v1.5.0) (2026-11-17)
+
+
+### Features
+
+* **client:** watch activity; feat(testing): open the activity stream ([26af43b](https://github.com/pelerintech/reework/commit/26af43bd41bfb49d9902b2f4d94c19abfa544379))
+* **core:** agent-wide activity stream ([b56280b](https://github.com/pelerintech/reework/commit/b56280b929118165503e51de4ad47099b6882823))
+* **core:** announce run starts and ends on the activity stream ([8ada56c](https://github.com/pelerintech/reework/commit/8ada56c7164573199de49921e6c698307ceb50f6))
+* **core:** announce tool starts and finishes without content ([bbcb825](https://github.com/pelerintech/reework/commit/bbcb825be1b9283b11765b3fbab0e919e9020c3f))
+* **core:** report model usage and scope activity by key prefix ([7ae6551](https://github.com/pelerintech/reework/commit/7ae6551f442688cc65db8c1663225fd7a4ce65f8))
+* **core:** serve an activity snapshot behind the token ([5a1b43c](https://github.com/pelerintech/reework/commit/5a1b43c7df44759b4806afff1d5b9e224d34c03e))
+* **core:** watch open work and detach closed cases ([342df54](https://github.com/pelerintech/reework/commit/342df541d61acee8d237ca3c6f71c4ef204600a2))
+
+
+### Bug Fixes
+
+* **core:** release activity watchers on overflow and late attach ([991dd94](https://github.com/pelerintech/reework/commit/991dd9442b5b82816442f8481f93141e2084769d))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @reework/types bumped to 1.3.0
+
 ## [1.4.0](https://github.com/pelerintech/reework/compare/core-v1.3.0...core-v1.4.0) (2026-11-12)
 
 

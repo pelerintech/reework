@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.2.0](https://github.com/pelerintech/reework/compare/client-v1.1.0...client-v1.2.0) (2026-11-17)
+
+
+### Features
+
+* **client:** watch activity; feat(testing): open the activity stream ([26af43b](https://github.com/pelerintech/reework/commit/26af43bd41bfb49d9902b2f4d94c19abfa544379))
+* **core:** agent-wide activity stream ([b56280b](https://github.com/pelerintech/reework/commit/b56280b929118165503e51de4ad47099b6882823))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @reework/types bumped to 1.3.0
+
 ## [1.1.0](https://github.com/pelerintech/reework/compare/client-v1.0.1...client-v1.1.0) (2026-11-11)
 
 
