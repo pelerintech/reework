@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.1.2](https://github.com/pelerintech/reework/compare/tui-v1.1.1...tui-v1.1.2) (2026-11-24)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @reework/client bumped to 1.2.1
+    * @reework/types bumped to 1.4.0
+
 ## [1.1.1](https://github.com/pelerintech/reework/compare/tui-v1.1.0...tui-v1.1.1) (2026-11-17)
 
 

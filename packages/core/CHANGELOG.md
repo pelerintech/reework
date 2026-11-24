@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.6.0](https://github.com/pelerintech/reework/compare/core-v1.5.0...core-v1.6.0) (2026-11-24)
+
+
+### Features
+
+* **core:** add durable intake pause state ([93c0528](https://github.com/pelerintech/reework/commit/93c0528cbc6b24a1de4256f28373445becc710da))
+* **core:** deliver an agent state event to plugins ([d3f7a25](https://github.com/pelerintech/reework/commit/d3f7a2592b7ca73840223bc7a4bd8cd1f0cfd88d))
+* **core:** drain leftover held input at boot ([fc69053](https://github.com/pelerintech/reework/commit/fc69053c803bab1d3f9c891105ec4347589c4f90))
+* **core:** hold input while intake is paused ([f37de55](https://github.com/pelerintech/reework/commit/f37de55a8c0e09b61a3060c27d0b4c223dd001f6))
+* **core:** keep plugin stop commits and refuse progress while stopping ([8629ff3](https://github.com/pelerintech/reework/commit/8629ff362ccd326c19c0d925d4b0926edab861a9))
+* **core:** pause intake and interrupt tools on a graceful stop ([baf060c](https://github.com/pelerintech/reework/commit/baf060c69d0c8ef47156bf95e9c42989d4588b09))
+* **core:** report rest on the activity stream while paused ([0253854](https://github.com/pelerintech/reework/commit/0253854b11964e5088ff2bf447b41fd935f5a4b5))
+* **types:** add token-guarded pause, resume and status routes ([4e724ab](https://github.com/pelerintech/reework/commit/4e724ab61dbec77433a833261093404b7b28401d))
+* **types:** report agent pause state on the activity stream ([35784c8](https://github.com/pelerintech/reework/commit/35784c8a43220297fe5b99131ea8c7871b9e095c))
+
+
+### Bug Fixes
+
+* **core:** answer 202 for held input submitted with wait ([a8d4a0d](https://github.com/pelerintech/reework/commit/a8d4a0d1f3c3ed6ce1e0bbce19c96492cd874277))
+* **core:** decide intake hold in the commit that stores it ([466e0df](https://github.com/pelerintech/reework/commit/466e0dff382ffd4f2b302e9e2b45a7759c87637b))
+* **core:** interrupt runs before plugin stops ([ff314bf](https://github.com/pelerintech/reework/commit/ff314bf1229d03fd8a954e3345a36513524f8273))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @reework/types bumped to 1.4.0
+
 ## [1.5.0](https://github.com/pelerintech/reework/compare/core-v1.4.0...core-v1.5.0) (2026-11-17)
 
 
