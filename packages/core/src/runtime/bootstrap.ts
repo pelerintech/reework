@@ -593,16 +593,8 @@ async function boot(
             `agent did not stop within ${timeoutMs} ms; still running: queued event hooks`,
           );
         }
-        let stopping: string | undefined;
-        const stops = stopPlugins(built, (name) => (stopping = name));
-        const stopped = await Promise.race([stops.then(() => "stopped" as const), timedOut]);
-        if (stopped === "timeout") {
-          void engine.close().catch(() => {});
-          const name = stopping ?? [...built].reverse()[0]?.name ?? "unknown";
-          throw new Error(
-            `agent did not stop within ${timeoutMs} ms; plugin "${name}" still stopping`,
-          );
-        }
+        // The engine close is the interrupt: it signals every invocation and joins
+        // them without writing an outcome, so the tasks stay pending like a crash.
         const still = await stillRunning(engine);
         const closed = await Promise.race([engine.close().then(() => "closed" as const), timedOut]);
         if (closed === "timeout") {
@@ -610,6 +602,37 @@ async function boot(
             `agent did not stop within ${timeoutMs} ms; still running: ${still || "unknown work"}`,
           );
         }
+        // Progress calls are refused from here; plugin stops may still commit and
+        // read through a stop-only engine over the same storage (no scheduling).
+        host.beginStopping();
+        let stopOnly: Engine | undefined;
+        if (built.some((plugin) => plugin.built.stop !== undefined)) {
+          try {
+            stopOnly = await Engine.open({
+              storagePath: options.storagePath,
+              models,
+              registry,
+              settings,
+              workspaces: true,
+            });
+          } catch (error) {
+            console.error("[reework] stop-only engine failed to open:", error);
+          }
+        }
+        channel.current = stopOnly ?? engine;
+        let stopping: string | undefined;
+        const stops = stopPlugins(built, (name) => (stopping = name));
+        const stopped = await Promise.race([stops.then(() => "stopped" as const), timedOut]);
+        if (stopped === "timeout") {
+          channel.current = engine;
+          await stopOnly?.close().catch(() => {});
+          const name = stopping ?? [...built].reverse()[0]?.name ?? "unknown";
+          throw new Error(
+            `agent did not stop within ${timeoutMs} ms; plugin "${name}" still stopping`,
+          );
+        }
+        channel.current = engine;
+        await stopOnly?.close().catch(() => {});
       } finally {
         clearTimeout(timer);
         unlock();
