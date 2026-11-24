@@ -350,8 +350,9 @@ export const limiter = definePlugin("limiter", () => ({
 (the API, channels, plugin-initiated runs, scheduled prompts that go through core) is accepted and stored
 durably, and no new run starts. Runs in progress continue to completion, a proposal stays answerable, and a
 decision on an existing gate continues that case's run — a decided gate is work reaching rest, not new
-intake. `host.resume()` admits the stored input in arrival order, one run each. Both calls are idempotent, so
-a relay can retry them safely.
+intake. `host.resume()` admits the stored input in arrival order within each conversation, one run each, after any
+continuation already running in that conversation; different conversations run concurrently. Both calls are
+idempotent, so a relay can retry them safely.
 
 A plugin reads the state synchronously in a tick with `host.paused` (an in-memory cache seeded at boot), or
 authoritatively with `await host.status()` (`paused`, `pausedAt`, `resumedAt`, `activeRuns`, `heldInputs`).
@@ -365,7 +366,8 @@ While paused, `submitInput` resolves with `held: true` and no `message`, and its
 input's own id; `wait` is ignored because there is nothing to wait for, and the HTTP route answers `202`.
 `onInput` fires at acceptance with `held: true` (an audit plugin sees the input when it arrives), files are
 resolved into the stored content at acceptance, a repeated `requestId` returns the held input as `duplicate`,
-and a held `mode: "steer"` is not honoured — it runs as a normal input on resume. The routes a relay or
+and a held `mode: "steer"` is not honoured — it runs as a normal input on resume. Held input in one conversation
+runs one at a time in arrival order; held input in different conversations runs concurrently. The routes a relay or
 orchestrator drives are `POST /pause`, `POST /resume` and `GET /status`, all behind the agent token like every
 other built-in route; each answers an `AgentStatus`. `/health` stays the unauthenticated liveness probe and
 carries no pause state.

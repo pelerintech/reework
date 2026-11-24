@@ -2,8 +2,8 @@
 // while paused without starting a run, and a resume that runs it in order.
 import { describe, expect, it } from "vitest";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { Type, definePlugin, defineTool } from "@reework/core";
-import { waitForIdle } from "@reework/core/testing";
+import { Type, definePlugin, defineTool, gatedAction } from "@reework/core";
+import { waitForIdle, waitForProposal } from "@reework/core/testing";
 import { authedApp, fauxModels, startTestAgent, testDefinition } from "./support/agent.ts";
 import { eventually } from "./support/wait.ts";
 
@@ -228,5 +228,187 @@ describe("resuming held input", () => {
         .map(textOf)
         .filter(Boolean),
     ).toEqual(["slow done", "held answer"]);
+  });
+});
+
+describe("held input order is per conversation", () => {
+  it("runs one conversation's held inputs one at a time in arrival order", async () => {
+    const prompts: string[] = [];
+    const answer = (context: { messages: { role: string; content: unknown }[] }) => {
+      const user = [...context.messages].reverse().find((m) => m.role === "user");
+      const prompt = user ? textOf(user) : "";
+      prompts.push(prompt);
+      return fauxAssistantMessage(`${prompt} answer`);
+    };
+    const faux = fauxModels();
+    faux.respond([answer, answer, answer]);
+    const agent = await startTestAgent(testDefinition(), { models: faux.models });
+    const { id } = await agent.host.createConversation();
+    await agent.pause();
+    await agent.host.submitInput(id, "first");
+    await agent.host.submitInput(id, "second");
+    await agent.host.submitInput(id, "third");
+
+    await agent.resume();
+    await waitForIdle(agent.host, id);
+
+    expect(prompts).toEqual(["first", "second", "third"]);
+    const messages = (await agent.host.snapshot(id)).messages;
+    expect(messages.filter((m) => m.role === "user").map(textOf)).toEqual([
+      "first",
+      "second",
+      "third",
+    ]);
+    expect(
+      messages
+        .filter((m) => m.role === "assistant")
+        .map(textOf)
+        .filter(Boolean),
+    ).toEqual(["first answer", "second answer", "third answer"]);
+  });
+
+  it("queues a held input behind a continuation already running in its conversation", async () => {
+    const slow = slowTool();
+    const decisions: string[] = [];
+    const plugin = definePlugin("ops", () => ({
+      tools: [
+        slow.tool,
+        gatedAction({
+          name: "deploy",
+          gate: { title: "Deploy?", options: [{ id: "go", label: "Deploy" }] },
+          async run(_ctx, decision) {
+            decisions.push(decision.selectedOption ?? "none");
+            return "deployed";
+          },
+        }),
+      ],
+    }));
+    const faux = fauxModels();
+    faux.respond([
+      fauxAssistantMessage([fauxToolCall("deploy", {})], { stopReason: "toolUse" }),
+      fauxAssistantMessage("waiting"),
+      fauxAssistantMessage([fauxToolCall("slow", {})], { stopReason: "toolUse" }),
+      fauxAssistantMessage("continuation answer"),
+      fauxAssistantMessage("held answer"),
+    ]);
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }), {
+      models: faux.models,
+    });
+    const { id } = await agent.host.createConversation();
+    await agent.host.submitInput(id, "deploy it");
+    const proposal = await waitForProposal(agent.host, id);
+    await agent.pause();
+    await agent.host.submitInput(id, "held in A");
+
+    await agent.host.submitDecision({
+      proposalId: proposal.id,
+      selectedOption: "go",
+      instruction: null,
+      decidedBy: { kind: "human", name: "Ana" },
+    });
+    await eventually(() => slow.started() >= 1);
+    expect(decisions).toEqual(["go"]);
+    expect((await agent.status()).activeRuns).toBe(1);
+
+    const resumed = await agent.resume();
+    expect(resumed.heldInputs).toBe(0);
+    // The held input is admitted but stays queued behind the continuation.
+    expect((await agent.status()).activeRuns).toBe(1);
+    const before = (await agent.host.snapshot(id)).messages
+      .filter((m) => m.role === "user")
+      .map(textOf);
+    expect(before).not.toContain("held in A");
+
+    slow.release();
+    await waitForIdle(agent.host, id);
+    const messages = (await agent.host.snapshot(id)).messages;
+    const users = messages.filter((m) => m.role === "user").map(textOf);
+    expect(users[0]).toBe("deploy it");
+    expect(users.some((text) => text.includes("[gated action deploy]"))).toBe(true);
+    expect(users[users.length - 1]).toBe("held in A");
+    expect(
+      messages
+        .filter((m) => m.role === "assistant")
+        .map(textOf)
+        .filter(Boolean),
+    ).toEqual(["waiting", "continuation answer", "held answer"]);
+  });
+
+  it("lets another conversation's held input start while A's continuation runs", async () => {
+    const slow = slowTool();
+    const plugin = definePlugin("ops", () => ({
+      tools: [
+        slow.tool,
+        gatedAction({
+          name: "deploy",
+          gate: { title: "Deploy?", options: [{ id: "go", label: "Deploy" }] },
+          async run() {
+            return "deployed";
+          },
+        }),
+      ],
+    }));
+    const afterSlow = (context: { messages: { role: string; content: unknown }[] }) => {
+      const user = [...context.messages].reverse().find((m) => m.role === "user");
+      return fauxAssistantMessage(
+        user && textOf(user).includes("held in B") ? "B answer" : "A continuation answer",
+      );
+    };
+    const faux = fauxModels();
+    faux.respond([
+      fauxAssistantMessage([fauxToolCall("deploy", {})], { stopReason: "toolUse" }),
+      fauxAssistantMessage("waiting"),
+      fauxAssistantMessage([fauxToolCall("slow", {})], { stopReason: "toolUse" }),
+      fauxAssistantMessage([fauxToolCall("slow", {})], { stopReason: "toolUse" }),
+      afterSlow,
+      afterSlow,
+    ]);
+    const agent = await startTestAgent(testDefinition({ plugins: [{ plugin, config: {} }] }), {
+      models: faux.models,
+    });
+    const a = await agent.host.createConversation();
+    const b = await agent.host.createConversation();
+    await agent.host.submitInput(a.id, "deploy in A");
+    const proposal = await waitForProposal(agent.host, a.id);
+    await agent.pause();
+    await agent.host.submitInput(b.id, "held in B");
+
+    await agent.host.submitDecision({
+      proposalId: proposal.id,
+      selectedOption: "go",
+      instruction: null,
+      decidedBy: { kind: "human", name: "Ana" },
+    });
+    await eventually(() => slow.started() >= 1);
+    expect((await agent.status()).activeRuns).toBe(1);
+
+    await agent.resume();
+    await eventually(() => slow.started() >= 2);
+    // B started and is blocked in its own run while A's continuation is still running.
+    expect((await agent.status()).activeRuns).toBe(2);
+    expect((await agent.host.snapshot(a.id)).running).toBe(true);
+    expect((await agent.host.snapshot(b.id)).running).toBe(true);
+
+    slow.release();
+    await waitForIdle(agent.host, a.id);
+    await waitForIdle(agent.host, b.id);
+    expect((await agent.status()).activeRuns).toBe(0);
+
+    const aMessages = (await agent.host.snapshot(a.id)).messages;
+    expect(aMessages.filter((m) => m.role === "user").map(textOf)).not.toContain("held in B");
+    expect(
+      aMessages
+        .filter((m) => m.role === "assistant")
+        .map(textOf)
+        .filter(Boolean),
+    ).toEqual(["waiting", "A continuation answer"]);
+    const bMessages = (await agent.host.snapshot(b.id)).messages;
+    expect(bMessages.filter((m) => m.role === "user").map(textOf)).toEqual(["held in B"]);
+    expect(
+      bMessages
+        .filter((m) => m.role === "assistant")
+        .map(textOf)
+        .filter(Boolean),
+    ).toEqual(["B answer"]);
   });
 });

@@ -113,8 +113,9 @@ and the case reopen happen as today, then while paused the resolved content is a
 own id, author and `requestId`, `onInput` fires at acceptance, and no submission reaches pi-durable: `submitInput`
 answers `{ submissionId, held: true }` with no message, and the HTTP route answers `202`. Runs in progress continue,
 proposals stay answerable, and a decision on an existing gate continues that case's run — a decided gate is work
-reaching rest, not new intake. `agent.resume()` commits the resumed state, then admits held input in arrival order,
-one submission each (`whenBusy: "followUp"`), removing each entry only after admission; a synthesized
+reaching rest, not new intake. `agent.resume()` commits the resumed state, then admits held input in arrival order
+within each conversation, one submission each (`whenBusy: "followUp"`), removing each entry only after admission;
+different conversations run concurrently, as they would had the agent never paused. A synthesized
 `"held:<id>"` requestId closes the crash window, and a not-paused agent with leftover held input drains it at boot.
 `activeRuns` counts every placed input submission agent-wide; `heldInputs` is the held list's length.
 

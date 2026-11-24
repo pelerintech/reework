@@ -145,7 +145,8 @@ await client.decide({ proposalId: proposal.id, selectedOption: "restart", instru
 A running agent can stop admitting new work without cutting off what it is already doing. `POST /pause` (behind
 the API token like every built-in route) accepts and stores every input — API submits, channel messages, plugin
 runs, scheduled prompts — and starts no new run; runs in progress finish, proposals stay answerable, and a
-decision on an existing gate continues that case's run. `POST /resume` runs the stored input in arrival order, and
+decision on an existing gate continues that case's run. `POST /resume` runs the stored input in arrival order within
+each conversation (different conversations run concurrently), and
 `GET /status` reports `{ paused, pausedAt?, resumedAt?, activeRuns, heldInputs }`. Both verbs are idempotent, the
 pause survives a restart, and `agent.pause()` / `agent.resume()` / `agent.status()` do the same in process. A
 drainer watches `activeRuns` fall to zero on `GET /activity/ws` before stopping the process. A held input answers
