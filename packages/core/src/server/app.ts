@@ -18,6 +18,7 @@ import { createEventMapper } from "../protocol/event-mapper.ts";
 import { onProposalOpen, onProposalSettled } from "../protocol/proposals.ts";
 import { CONTEXT } from "../engine.ts";
 import {
+  AgentStopping,
   ConversationNotFound,
   FileNotFound,
   FileTooLarge,
@@ -93,6 +94,9 @@ export function protocolErrorResponse(error: unknown, c: Context): Response | un
   }
   if (error instanceof HeadlessAgentError) {
     return c.json({ error: "cannot_start_run", message: error.message }, 409);
+  }
+  if (error instanceof AgentStopping) {
+    return c.json({ error: "agent_stopping" }, 409);
   }
   if (error instanceof ModelRunError) {
     return c.json({ error: "model_error", message: error.message }, 500);

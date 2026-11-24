@@ -674,6 +674,7 @@ export class AgentHost {
     decision: GateDecision,
     options: { conversationId?: string } = {},
   ): Promise<void> {
+    if (this.stopping) throw new AgentStopping();
     if (options.conversationId !== undefined) await this.conversation(options.conversationId);
     const decidedBy =
       decision.decidedBy === undefined ? undefined : requireAuthor(decision.decidedBy);
@@ -800,6 +801,7 @@ export class AgentHost {
 
   /** Stop the conversation's current run. Background work such as open gates is untouched. */
   async abort(id: string): Promise<void> {
+    if (this.stopping) throw new AgentStopping();
     const conversation = await this.conversation(id);
     await conversation.abort(CONTEXT);
   }
