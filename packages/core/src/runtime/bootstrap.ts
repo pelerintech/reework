@@ -357,7 +357,10 @@ async function boot(
     activityHub.publishUsage(event);
   };
   host.onCaseUpdated((c) => activityHub.publishCase(c));
-  host.onAgentStateChanged((state) => activityHub.publishAgentState(state));
+  host.onAgentStateChanged((state) => {
+    activityHub.publishAgentState(state);
+    events.enqueue("onAgentState", undefined, state);
+  });
   onProposalOpen(engine, (proposal) => {
     activityHub.publishProposalOpened(proposal);
     void host

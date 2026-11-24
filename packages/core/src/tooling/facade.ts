@@ -36,6 +36,7 @@ import type {
   ModelMessage,
   ModelUsage,
   RunStopNotice,
+  AgentStatus,
 } from "@reework/types";
 import { isAuthor } from "@reework/types";
 import { Type } from "@earendil-works/pi-ai";
@@ -551,6 +552,8 @@ export interface PluginHooks {
   ): Promise<{ refuse: string } | void>;
   /** Another plugin emitted an event with `ctx.emit`; the emitter never receives its own. */
   onPluginEvent?(input: PluginEvent, ctx: PluginEventContext): Promise<void>;
+  /** Intake paused or resumed; agent-level, once per transition, after the commit. */
+  onAgentState?(input: AgentStatus, ctx: PluginEventContext): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
