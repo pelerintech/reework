@@ -617,6 +617,25 @@ export interface RouteSpec {
 
 export const ROUTES = {
   health: { method: "GET", path: "/health", auth: "open", summary: "Liveness and the agent name" },
+  "agent.pause": {
+    method: "POST",
+    path: "/pause",
+    auth: "token",
+    summary:
+      "Pause intake: input is accepted and stored, no new run starts; runs in progress continue",
+  },
+  "agent.resume": {
+    method: "POST",
+    path: "/resume",
+    auth: "token",
+    summary: "Resume intake: stored input runs in arrival order",
+  },
+  "agent.status": {
+    method: "GET",
+    path: "/status",
+    auth: "token",
+    summary: "Pause state, active runs and held input",
+  },
   "conversations.create": {
     method: "POST",
     path: "/conversations",

@@ -141,6 +141,10 @@ export function createServer(host: AgentHost, options: ServerOptions) {
     health: (c) =>
       c.json(options.name === undefined ? { ok: true } : { ok: true, name: options.name }),
 
+    "agent.pause": async (c) => c.json(await host.pause()),
+    "agent.resume": async (c) => c.json(await host.resume()),
+    "agent.status": async (c) => c.json(await host.status()),
+
     "conversations.create": async (c) => {
       const body = await c.req
         .json<{ key?: unknown; kind?: unknown; case?: { owner?: unknown } }>()
