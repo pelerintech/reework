@@ -516,7 +516,14 @@ export interface PluginHooks {
   ): Promise<{ summary: string } | { decline: true } | void>;
   /** Input was admitted (not a duplicate); it covers every source of input. */
   onInput?(
-    input: { conversationId: string; submissionId: string; content: string; from?: Author },
+    input: {
+      conversationId: string;
+      submissionId: string;
+      content: string;
+      from?: Author;
+      /** True for an input accepted while paused; it runs on resume under its own submission id. */
+      held?: boolean;
+    },
     ctx: PluginEventContext,
   ): Promise<void>;
   /** A gate proposal opened, before any decision. */

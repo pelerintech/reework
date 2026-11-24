@@ -528,6 +528,7 @@ export class AgentHost {
     content: string,
     options: SubmitOptions = {},
   ): Promise<SubmitResult> {
+    if (this.stopping) throw new AgentStopping();
     if (!(await this.hasConversation(id))) throw new ConversationNotFound(id);
     if (this.headless) throw new HeadlessAgentError();
     const from = options.from === undefined ? undefined : requireAuthor(options.from);
@@ -562,6 +563,38 @@ export class AgentHost {
     this.notifyCaseUpdated(reopened);
     this.caseTransition(id, before, reopened, "input");
     const { requestId } = options;
+    if (this.pausedCache) {
+      // A held input is accepted work: a repeated requestId returns it and
+      // appends nothing. Deduplication against earlier submissions waits for
+      // the resume (the pause is a new intake boundary).
+      if (requestId !== undefined) {
+        const intake = await this.intakeDoc();
+        const earlier = intake.held.find(
+          (held) => held.conversationId === id && held.requestId === requestId,
+        );
+        if (earlier) return { submissionId: earlier.id, duplicate: true, held: true };
+      }
+      const held: HeldInput = {
+        id: randomUUID(),
+        conversationId: id,
+        content,
+        ...(from === undefined ? {} : { from }),
+        ...(requestId === undefined ? {} : { requestId }),
+        acceptedAt: Date.now(),
+      };
+      await this.engine.commit(async (tx) => {
+        const intake = await tx.doc(IntakeDoc);
+        intake.held.push(held);
+      });
+      this.events?.enqueue("onInput", id, {
+        conversationId: id,
+        submissionId: held.id,
+        content,
+        ...(from === undefined ? {} : { from }),
+        held: true,
+      });
+      return { submissionId: held.id, held: true };
+    }
     if (requestId !== undefined) {
       const earlier = await this.engine.commit((tx) =>
         tx.submissionByRequest(conversation.id, requestId),
