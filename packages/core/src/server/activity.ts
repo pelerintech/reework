@@ -329,6 +329,7 @@ export class ActivityHub {
         runId: mapped.runId,
         timestamp: mapped.timestamp,
       });
+      await this.publishRestWhilePaused();
     } else if (mapped.kind === "run_end") {
       this.runActive.set(watcher.id, false);
       const outcome = await this.runOutcome(mapped.runId);
@@ -340,6 +341,7 @@ export class ActivityHub {
         timestamp: mapped.timestamp,
       });
       await this.refreshWatchers();
+      await this.publishRestWhilePaused();
     } else if (mapped.kind === "tool_execution_start") {
       watcher.starts.set(mapped.callId, mapped.timestamp);
       this.publishEvent({
@@ -371,6 +373,12 @@ export class ActivityHub {
     );
     const status = await submission?.status(CONTEXT);
     return status?.status === "unanswered" ? "unanswered" : "completed";
+  }
+
+  /** While paused, each run start and end carries the count a drainer watches fall to zero. */
+  private async publishRestWhilePaused(): Promise<void> {
+    if (!this.host.paused) return;
+    this.publishAgentState(await this.host.status());
   }
 
   /** Queue an event for every subscriber whose current record matches it. */
