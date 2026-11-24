@@ -137,6 +137,8 @@ export class AgentHost {
   private readonly agentStateListeners = new Set<(state: AgentStatus) => void>();
   /** True during the stop window: progress calls are refused, reads still answer. */
   private stopping = false;
+  /** The tail of the drain queue, so concurrent drains run one after another. */
+  private drainQueue: Promise<void> = Promise.resolve();
 
   constructor(
     engine: Engine | EngineChannel,
@@ -257,37 +259,53 @@ export class AgentHost {
   }
 
   /**
-   * Admit held input in arrival order, one submission each. The entry is removed
-   * only after its submission is admitted; a resubmission under the same key is
-   * found as an existing submission, so a crash mid-resume never runs twice.
+   * Admit held input in arrival order, one submission each. Drains are queued so
+   * two concurrent resumes cannot admit the same entry; each pass re-reads the
+   * doc until no held input remains, so an entry appended during a drain is not
+   * stranded. The entry is removed only after its submission is admitted; a
+   * resubmission under the same key is found as an existing submission, so a
+   * crash mid-resume never runs twice.
    */
-  private async drainHeld(): Promise<void> {
-    const doc = await this.intakeDoc();
-    for (const held of doc.held) {
-      const requestId = held.requestId ?? `held:${held.id}`;
-      const conversationId = Number(held.conversationId) as unknown as ConversationId;
-      const existing = await this.engine.commit((tx) =>
-        tx.submissionByRequest(conversationId, requestId),
-      );
-      if (existing === undefined) {
-        const conversation = await this.conversation(held.conversationId);
-        await conversation.submit(
-          {
-            type: "input",
-            content: held.content,
-            whenBusy: "followUp",
-            requestId,
-            ...(held.from === undefined
-              ? {}
-              : { entry: { kind: "reework.input", data: { from: held.from } } }),
-          },
-          CONTEXT,
+  private drainHeld(): Promise<void> {
+    const next = this.drainQueue.then(() => this.drainPass());
+    this.drainQueue = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+
+  private async drainPass(): Promise<void> {
+    for (;;) {
+      const doc = await this.intakeDoc();
+      // A pause during the drain leaves newly held input for the next resume.
+      if (doc.paused || doc.held.length === 0) return;
+      for (const held of doc.held) {
+        const requestId = held.requestId ?? `held:${held.id}`;
+        const conversationId = Number(held.conversationId) as unknown as ConversationId;
+        const existing = await this.engine.commit((tx) =>
+          tx.submissionByRequest(conversationId, requestId),
         );
+        if (existing === undefined) {
+          const conversation = await this.conversation(held.conversationId);
+          await conversation.submit(
+            {
+              type: "input",
+              content: held.content,
+              whenBusy: "followUp",
+              requestId,
+              ...(held.from === undefined
+                ? {}
+                : { entry: { kind: "reework.input", data: { from: held.from } } }),
+            },
+            CONTEXT,
+          );
+        }
+        await this.engine.commit(async (tx) => {
+          const intake = await tx.doc(IntakeDoc);
+          intake.held = intake.held.filter((entry) => entry.id !== held.id);
+        });
       }
-      await this.engine.commit(async (tx) => {
-        const intake = await tx.doc(IntakeDoc);
-        intake.held = intake.held.filter((entry) => entry.id !== held.id);
-      });
     }
   }
 
@@ -563,18 +581,24 @@ export class AgentHost {
     this.notifyCaseUpdated(reopened);
     this.caseTransition(id, before, reopened, "input");
     const { requestId } = options;
-    if (this.pausedCache) {
+    // Decide hold-versus-live in the commit that writes the held entry: a resume
+    // may have committed `paused: false` since the in-memory cache was read, and
+    // an entry appended after that resume's drain would otherwise stay stranded.
+    let held: HeldInput | undefined;
+    let duplicateHeldId: string | undefined;
+    await this.engine.commit(async (tx) => {
+      const intake = await tx.doc(IntakeDoc);
+      if (!intake.paused) return;
       // A held input is accepted work: a repeated requestId returns it and
       // appends nothing. Deduplication against earlier submissions waits for
       // the resume (the pause is a new intake boundary).
       if (requestId !== undefined) {
-        const intake = await this.intakeDoc();
-        const earlier = intake.held.find(
-          (held) => held.conversationId === id && held.requestId === requestId,
-        );
-        if (earlier) return { submissionId: earlier.id, duplicate: true, held: true };
+        duplicateHeldId = intake.held.find(
+          (entry) => entry.conversationId === id && entry.requestId === requestId,
+        )?.id;
+        if (duplicateHeldId !== undefined) return;
       }
-      const held: HeldInput = {
+      held = {
         id: randomUUID(),
         conversationId: id,
         content,
@@ -582,10 +606,12 @@ export class AgentHost {
         ...(requestId === undefined ? {} : { requestId }),
         acceptedAt: Date.now(),
       };
-      await this.engine.commit(async (tx) => {
-        const intake = await tx.doc(IntakeDoc);
-        intake.held.push(held);
-      });
+      intake.held.push(held);
+    });
+    if (duplicateHeldId !== undefined) {
+      return { submissionId: duplicateHeldId, duplicate: true, held: true };
+    }
+    if (held) {
       this.events?.enqueue("onInput", id, {
         conversationId: id,
         submissionId: held.id,

@@ -3,6 +3,8 @@
 import { describe, expect, it } from "vitest";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { Type, definePlugin, defineTool, gatedAction } from "@reework/core";
+import type { RunningAgent } from "@reework/core";
+import { engineOf } from "@reework/core/internal";
 import { waitForIdle, waitForProposal } from "@reework/core/testing";
 import { authedApp, fauxModels, startTestAgent, testDefinition } from "./support/agent.ts";
 import { eventually } from "./support/wait.ts";
@@ -156,6 +158,64 @@ function textOf(message: { content: unknown }): string {
     .filter((b) => b.type === "text")
     .map((b) => b.text ?? "")
     .join("");
+}
+
+/**
+ * Arm a one-shot hook that runs a resume before the next commit. The case-write
+ * notification fires after submitInput's case-reopen commit, so the next commit
+ * is the hold decision: the resume lands between the paused-cache read and it.
+ */
+function resumeBeforeNextCommit(agent: RunningAgent) {
+  const engine = engineOf(agent);
+  const host = agent.host as unknown as { notifyCaseUpdated(c: unknown): void };
+  const realCommit = engine.commit.bind(engine);
+  const realNotify = host.notifyCaseUpdated.bind(host);
+  let armed = false;
+  let resume: (() => Promise<unknown>) | undefined;
+  engine.commit = ((change: Parameters<typeof realCommit>[0]) => {
+    if (!armed) return realCommit(change);
+    armed = false;
+    return resume!().then(() => realCommit(change));
+  }) as typeof engine.commit;
+  host.notifyCaseUpdated = (c) => {
+    realNotify(c);
+    armed = true;
+  };
+  return {
+    onArm(fn: () => Promise<unknown>) {
+      resume = fn;
+    },
+    restore() {
+      engine.commit = realCommit as typeof engine.commit;
+      host.notifyCaseUpdated = realNotify;
+    },
+  };
+}
+
+/**
+ * Hold the first drain's submission check until both resume commits have landed,
+ * so the two drains overlap deterministically (no sleeps).
+ */
+function overlapConcurrentDrains(agent: RunningAgent) {
+  const engine = engineOf(agent);
+  const realCommit = engine.commit.bind(engine);
+  let calls = 0;
+  let secondCommitDone!: () => void;
+  const secondCommit = new Promise<void>((resolve) => {
+    secondCommitDone = resolve;
+  });
+  engine.commit = ((change: Parameters<typeof realCommit>[0]) => {
+    calls += 1;
+    if (calls === 3) return secondCommit.then(() => realCommit(change));
+    const result = realCommit(change);
+    if (calls === 2) result.then(secondCommitDone, secondCommitDone);
+    return result;
+  }) as typeof engine.commit;
+  return {
+    restore() {
+      engine.commit = realCommit as typeof engine.commit;
+    },
+  };
 }
 
 describe("resuming held input", () => {
@@ -410,5 +470,75 @@ describe("held input order is per conversation", () => {
         .map(textOf)
         .filter(Boolean),
     ).toEqual(["B answer"]);
+  });
+});
+
+describe("input racing a resume", () => {
+  it("runs an input submitted while a resume is in progress instead of stranding it", async () => {
+    const faux = fauxModels();
+    faux.respond([fauxAssistantMessage("during answer")]);
+    const agent = await startTestAgent(testDefinition(), { models: faux.models });
+    const { id } = await agent.host.createConversation();
+    await agent.pause();
+
+    const hook = resumeBeforeNextCommit(agent);
+    hook.onArm(() => agent.resume());
+    try {
+      const result = await agent.host.submitInput(id, "during resume", { wait: true });
+      expect(result.held).toBeUndefined();
+      expect(result.message).toBeDefined();
+      expect(textOf(result.message!)).toBe("during answer");
+    } finally {
+      hook.restore();
+    }
+
+    expect(await agent.status()).toMatchObject({ paused: false, heldInputs: 0, activeRuns: 0 });
+    const messages = (await agent.host.snapshot(id)).messages;
+    expect(messages.filter((m) => m.role === "user").map(textOf)).toEqual(["during resume"]);
+    expect(
+      messages
+        .filter((m) => m.role === "assistant")
+        .map(textOf)
+        .filter(Boolean),
+    ).toEqual(["during answer"]);
+  });
+
+  it("runs each held input exactly once when two resumes race", async () => {
+    const prompts: string[] = [];
+    const answer = (context: { messages: { role: string; content: unknown }[] }) => {
+      const user = [...context.messages].reverse().find((m) => m.role === "user");
+      const prompt = user ? textOf(user) : "";
+      prompts.push(prompt);
+      return fauxAssistantMessage(`${prompt} answer`);
+    };
+    const faux = fauxModels();
+    faux.respond([answer, answer]);
+    const agent = await startTestAgent(testDefinition(), { models: faux.models });
+    const { id } = await agent.host.createConversation();
+    await agent.pause();
+    await agent.host.submitInput(id, "one");
+    await agent.host.submitInput(id, "two");
+
+    const hook = overlapConcurrentDrains(agent);
+    try {
+      const [first, second] = await Promise.all([agent.resume(), agent.resume()]);
+      expect(first.heldInputs).toBe(0);
+      expect(second.heldInputs).toBe(0);
+    } finally {
+      hook.restore();
+    }
+
+    await waitForIdle(agent.host, id);
+    expect(prompts.filter((prompt) => prompt === "one")).toHaveLength(1);
+    expect(prompts.filter((prompt) => prompt === "two")).toHaveLength(1);
+    expect(await agent.status()).toMatchObject({ paused: false, heldInputs: 0, activeRuns: 0 });
+    const messages = (await agent.host.snapshot(id)).messages;
+    expect(messages.filter((m) => m.role === "user").map(textOf)).toEqual(["one", "two"]);
+    expect(
+      messages
+        .filter((m) => m.role === "assistant")
+        .map(textOf)
+        .filter(Boolean),
+    ).toEqual(["one answer", "two answer"]);
   });
 });
