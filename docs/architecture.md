@@ -103,21 +103,50 @@ submit, stored on the entry and shown on messages and snapshots — and gate dec
 boundary — any holder of it can claim `human` — an author records what the caller declared rather than proof,
 until scoped tokens exist. Channel transports verify their own identities before passing one through.
 
+## Pausing intake
+
+`agent.pause()` / `host.pause()` stops admitting **new** input without cutting off work already admitted. One
+durable, session-scoped intake document holds the pause state and the held inputs, so "paused" and "this input is
+held" commit atomically and a restart forgets neither: a paused agent restarts paused. Every input path goes through
+`host.submitInput`, so the interception is one door — the conversation check, the headless refusal, file resolution
+and the case reopen happen as today, then while paused the resolved content is appended to the held list with its
+own id, author and `requestId`, `onInput` fires at acceptance, and no submission reaches pi-durable: `submitInput`
+answers `{ submissionId, held: true }` with no message, and the HTTP route answers `202`. Runs in progress continue,
+proposals stay answerable, and a decision on an existing gate continues that case's run — a decided gate is work
+reaching rest, not new intake. `agent.resume()` commits the resumed state, then admits held input in arrival order,
+one submission each (`whenBusy: "followUp"`), removing each entry only after admission; a synthesized
+`"held:<id>"` requestId closes the crash window, and a not-paused agent with leftover held input drains it at boot.
+`activeRuns` counts every placed input submission agent-wide; `heldInputs` is the held list's length.
+
+Three token-guarded routes drive it: `POST /pause`, `POST /resume` and `GET /status`, each answering an
+`AgentStatus` (`paused`, `pausedAt?`, `resumedAt?`, `activeRuns`, `heldInputs`) and idempotent for retries. `/health`
+stays the unauthenticated liveness probe and carries no state. The activity stream reports the same state (below).
+
+**Stop order.** `agent.stop()` closes upgraded sockets, the activity hub and the servers, aborts the agent signal,
+drains queued event hooks, then closes the engine — the interrupt: it signals every run and tool invocation and
+joins them without writing an outcome, so the tasks stay pending in storage like a crash. Plugin `stop()` runs after
+that, in reverse declaration order, through a stop-only engine opened over the same storage so a stopping plugin can
+still commit and read; progress calls are refused during the window (`AgentStopping`, HTTP `409 agent_stopping`).
+The storage lock releases last.
+
 ## The activity stream
 
 A surface that needs the whole agent rather than one conversation opens `GET /activity/ws` — one socket per agent,
 behind the API token like every built-in route (a token-less or wrong-token handshake fails with 401 and no socket
 opens). The first frame is a snapshot of the agent's open work: runs answering input (`runId`, conversation id,
 `key` when the conversation has one, `caseKind`), open proposals (id, title, audience, option id/label, `createdAt`),
-and cases needing a human (title, status, stage, priority, owner, `needsHuman`, `openProposals`). Every later frame
-is one event; there is no batch buffer, because activity events are small and a fleet surface wants immediacy.
+and cases needing a human (title, status, stage, priority, owner, `needsHuman`, `openProposals`), plus the agent's
+intake state (`agent`: `paused`, `pausedAt?`, `resumedAt?`, `activeRuns`, `heldInputs`). Every later frame is one
+event; there is no batch buffer, because activity events are small and a fleet surface wants immediacy.
 
 The events are `run_started`/`run_ended` (`runId`, and `completed` or `unanswered` at the end),
 `tool_started`/`tool_finished` (`callId`, tool name, and `done` or `error` with `durationMs` when the stream saw the
 start), `proposal_opened`/`proposal_settled` (the gate's question and the chosen option with its decider),
 `case_changed` (status, stage, priority, owner, `needsHuman`, `openProposals`) and `model_usage` (source `run` or
-`plugin`, the model, and token counts). Every event carries the conversation identity — id, `key` when present, and
-`caseKind`.
+`plugin`, the model, and token counts). Every conversation event carries the conversation identity — id, `key` when
+present, and `caseKind`. One agent-level kind, `agent_state` (`paused`, `pausedAt?`, `resumedAt?`, `activeRuns`,
+`heldInputs`), is published on pause and resume and, while paused, on every run start and end, so a drainer can watch
+`activeRuns` fall to zero without reconnecting; it names no conversation.
 
 **No content.** The stream never carries message text, tool arguments or output, streamed text, proposal
 descriptions or attachments, case summaries or tags, or a decision's free-form instruction. It is state, not
@@ -128,7 +157,9 @@ conversation.
 without a key never matches), and `?tag=<tag>` keeps conversations carrying every given tag — repeat the parameter
 or comma-separate tags, as `conversations.list` does. Both together are AND, and the snapshot echoes the filter that
 was applied. Filtering is enforced per subscriber on every publish and in the snapshot, so a filtered stream reveals
-nothing about conversations outside it: not their ids, keys, case fields, proposal ids, run ids or tool call ids. It
+nothing about conversations outside it: not their ids, keys, case fields, proposal ids, run ids or tool call ids.
+`agent_state` is agent state, not conversation state, so it is sent to every subscriber regardless of its filter and
+carries no conversation fields. It
 scopes what a surface asks for; it is not authorization (the token is the operator boundary).
 
 **Observation.** A reconnect is a new connection and gets a fresh snapshot of current open work, then live events

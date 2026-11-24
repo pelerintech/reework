@@ -97,7 +97,10 @@ startup naming the plugin.
 
 A tool interrupted by a crash or a stop is, by default, **not** run again: the model gets an
 "interrupted" error result and decides what to do. Mark a tool `replay: "safe"` only when running it
-twice has the same effect as once (reads, idempotent writes). For effects that must happen once, use
+twice has the same effect as once (reads, idempotent writes). A stop now interrupts in-flight runs
+before plugin stops, exactly like a crash: the tasks stay pending in storage, so after a restart a
+`replay: "safe"` tool re-runs and an unsafe call settles `interrupted`. A plugin's `stop()` closing a
+connection a running tool used no longer turns that call into a connection error. For effects that must happen once, use
 `ctx.once` in a tool, or `once` / `onceInCommit` from the unstable `@reework/core/internal` entry in
 framework code, which record a durable receipt.
 
@@ -335,6 +338,51 @@ export const limiter = definePlugin("limiter", () => ({
     async beforeModelRequest(_input, ctx) {
       const used = await ctx.store.case.get<number>("tokens");
       if ((used ?? 0) > 200_000) return { stop: "daily token budget reached" };
+    },
+  },
+}));
+```
+
+## Pausing intake
+
+`host.pause()` stops admitting **new** work without cutting off what is already running: every input path
+(the API, channels, plugin-initiated runs, scheduled prompts that go through core) is accepted and stored
+durably, and no new run starts. Runs in progress continue to completion, a proposal stays answerable, and a
+decision on an existing gate continues that case's run — a decided gate is work reaching rest, not new
+intake. `host.resume()` admits the stored input in arrival order, one run each. Both calls are idempotent, so
+a relay can retry them safely.
+
+A plugin reads the state synchronously in a tick with `host.paused` (an in-memory cache seeded at boot), or
+authoritatively with `await host.status()` (`paused`, `pausedAt`, `resumedAt`, `activeRuns`, `heldInputs`).
+`activeRuns` counts every placed input submission agent-wide, so a drainer can watch it fall to zero; a pause
+and its held input survive a restart. A scheduler skips its tick while `host.paused`; a channel can stop
+notifying. `onAgentState(state, ctx)` runs once per pause or resume, after the commit, through the same FIFO
+event queue as the other event hooks, with an agent-level context (no `conversationId`, no `case`; `store.agent`
+works). It is not delivered on every `activeRuns` change — poll `host.status()` for rest.
+
+While paused, `submitInput` resolves with `held: true` and no `message`, and its `submissionId` is the held
+input's own id; `wait` is ignored because there is nothing to wait for, and the HTTP route answers `202`.
+`onInput` fires at acceptance with `held: true` (an audit plugin sees the input when it arrives), files are
+resolved into the stored content at acceptance, a repeated `requestId` returns the held input as `duplicate`,
+and a held `mode: "steer"` is not honoured — it runs as a normal input on resume. The routes a relay or
+orchestrator drives are `POST /pause`, `POST /resume` and `GET /status`, all behind the agent token like every
+other built-in route; each answers an `AgentStatus`. `/health` stays the unauthenticated liveness probe and
+carries no pause state.
+
+```ts
+import { definePlugin } from "@reework/core";
+
+export const scheduler = definePlugin("scheduler", () => ({
+  setup({ host, signal }) {
+    const timer = setInterval(() => {
+      if (host.paused) return; // skip ticks while intake is paused
+      // ... submit scheduled work with host.submitInput
+    }, 60_000);
+    signal.addEventListener("abort", () => clearInterval(timer));
+  },
+  hooks: {
+    async onAgentState(state, ctx) {
+      await ctx.store.agent.set("paused", state.paused);
     },
   },
 }));
@@ -645,8 +693,9 @@ by core act there. Core does not confine paths: wrap tools if you need a hard bo
 `setup({ host, store, config, signal, dataDir, models })` runs once the engine is open — for watchers, schedules or
 channel transports. `models` calls the plugin's named models from that work (see [Named models](#named-models)). `host` is the in-process protocol (`createConversation`, `submitInput`, `getCase`,
 `listCases`, `updateCase`, `addFile`, `listFiles`, `readFile`, `listProposals`, `submitDecision`,
-`snapshot`, `abort`); `store` is the plugin's durable store; `dataDir` is the plugin's own directory beside the
-agent's storage (see [Plugin data directory](#plugin-data-directory)).
+`snapshot`, `abort`, `pause`, `resume`, `status`, `paused`, `onAgentStateChanged`); `store` is the plugin's
+durable store; `dataDir` is the plugin's own directory beside the agent's storage (see
+[Plugin data directory](#plugin-data-directory)).
 
 ## Lifecycle
 
@@ -654,12 +703,18 @@ A plugin may start background work in `setup` and release it on stop. The `signa
 when the agent begins to stop, so a loop can break out cooperatively; `stop()` releases what the factory or
 `setup` opened (timers, sockets, subprocesses) and is awaited. A plugin may use either or both.
 
-On `agent.stop()` the servers close, the signal aborts, queued event hooks drain, and then each built plugin's
-`stop()` runs once in **reverse declaration order** — before the engine closes, so a stopping plugin can still
-commit. A failing `stop()` is logged as `plugin "<name>" stop failed:` and does not block the others; a stop
-that never settles is bounded by the stop timeout, and the error names the plugin still stopping. The same
-happens when startup fails after a plugin was built: the signal aborts and the built plugins stop before the
-original error is rethrown. `stop()` must tolerate a missing `setup` (a later plugin may have failed).
+On `agent.stop()` the upgraded sockets close, the activity hub and servers close, the agent signal aborts and
+queued event hooks drain. Then the engine closes: that close is the interrupt, signalling every run and tool
+invocation and joining them without writing an outcome, so the tasks stay pending in storage exactly as after
+a crash. After the interrupt each built plugin's `stop()` runs once in **reverse declaration order**, under the
+same deadline. A stopping plugin can still commit and read: core opens a **stop-only engine** over the same
+storage (scheduling never enabled) and points plugin store commits and host reads at it for the duration. A
+failing `stop()` is logged as `plugin "<name>" stop failed:` and does not block the others; a stop that never
+settles is bounded by the stop timeout, and the error names the plugin still stopping. Progress calls
+(`submitInput`, `abort`, `submitDecision`, `pause`, `resume`) are refused during that window with
+`AgentStopping` (HTTP `409 { "error": "agent_stopping" }`); reads keep answering. The same happens when startup
+fails after a plugin was built: the signal aborts and the built plugins stop before the original error is
+rethrown. `stop()` must tolerate a missing `setup` (a later plugin may have failed).
 
 ```ts
 import { definePlugin } from "@reework/core";
@@ -827,10 +882,12 @@ with `submitInput(id, text, { requestId })`.
 
 ## Shutdown
 
-`stop({ timeoutMs })` (default 8000 ms) aborts running tools and closes the engine; it rejects if
-that takes longer, and releases the storage lock either way. `reework start` exits 0 after a clean
-stop, 1 on timeout, and 130 at once on a second SIGINT/SIGTERM. In Docker, keep `stop_grace_period`
-above the timeout.
+`stop({ timeoutMs })` (default 8000 ms) interrupts in-flight runs and tools with the engine close before it
+stops the plugins, then releases the storage lock; it rejects if that takes longer, and releases the lock
+either way. The interrupt matches a crash, so a `replay: "safe"` tool re-runs after restart and an unsafe
+call settles `interrupted`. To drain instead, pause first and stop once `activeRuns` reaches zero.
+`reework start` exits 0 after a clean stop, 1 on timeout, and 130 at once on a second SIGINT/SIGTERM. In
+Docker, keep `stop_grace_period` above the timeout.
 
 ## Testing
 
