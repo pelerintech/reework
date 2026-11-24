@@ -228,9 +228,9 @@ change how a tool runs.
 
 ## Event hooks
 
-Five hooks cover moments outside a run: `onInput` (input was admitted), `onProposalOpened` (a gate proposal
+Six hooks cover moments outside a run: `onInput` (input was admitted), `onProposalOpened` (a gate proposal
 opened), `onDecision` (a gate proposal was settled), `onCaseClosed` and `onCaseReopened` (a case crossed the
-closed boundary). A proposal's `onProposalOpened` is delivered before its `onDecision`. They fire **after** the
+closed boundary), and `onAgentState` (intake paused or resumed, see [Pausing intake](#pausing-intake)). A proposal's `onProposalOpened` is delivered before its `onDecision`. They fire **after** the
 commit, from one FIFO queue per agent: one event at a time, plugins in declaration order, each hook awaited.
 The caller never waits — a submit or a decide returns as soon as its commit is done — and delivery is **at most
 once**, in-process: an event that happens while the process crashes is lost, and nothing is replayed on
@@ -239,8 +239,9 @@ compare them with its own store. Events already queued or running when `agent.st
 plugins stop; new events are dropped without logging. Errors are logged with the plugin's name and the hook.
 
 Their context is a run hook's without `memo`: `conversationId`, `models`, `store`, `files`, `case`. The same queue
-also delivers `onModelUsage` (see [Model usage events](#model-usage-events)), whose events for calls outside a
-conversation arrive with an agent-level context.
+also delivers `onModelUsage` (see [Model usage events](#model-usage-events)) and `onAgentState`; an event with no
+conversation (agent state, or a model call from `setup` or a route) arrives with an agent-level context: no
+`conversationId`, no `files`, no `case`, and no `store.case` — `store.agent` still works.
 
 ```ts
 import { definePlugin } from "@reework/core";
