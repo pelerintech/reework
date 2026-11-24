@@ -319,6 +319,20 @@ export interface ActivityFilter {
   readonly tag?: readonly string[];
 }
 
+/** The agent's intake state: whether input is held and how much work is in flight. */
+export interface AgentStatus {
+  /** Whether intake is paused. */
+  readonly paused: boolean;
+  /** When the current pause began; absent when never paused. */
+  readonly pausedAt?: number;
+  /** When intake last resumed; absent when never resumed. */
+  readonly resumedAt?: number;
+  /** Runs answering placed input right now, across every conversation. */
+  readonly activeRuns: number;
+  /** Inputs accepted and stored while paused, not yet submitted. */
+  readonly heldInputs: number;
+}
+
 /** The conversation an activity belongs to. */
 export interface ActivityConversation {
   readonly conversationId: string;

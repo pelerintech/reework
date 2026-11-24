@@ -2,7 +2,11 @@
 // for the framework's own tests and emergencies only. Everything here is hidden
 // from the main entry so the facade stays the only path to pi-durable.
 export { Engine, CONTEXT } from "./engine.ts";
-export type { EngineOptions } from "./engine.ts";
+export type { EngineOptions, EngineChannel } from "./engine.ts";
+
+/** The durable intake doc, for the framework's own tests and tooling. */
+export { IntakeDoc } from "./protocol/intake.ts";
+export type { HeldInput } from "./protocol/intake.ts";
 
 export { StorageSeam } from "./tooling/storage.ts";
 export type { StorageSeam as StorageSeamType } from "./tooling/storage.ts";

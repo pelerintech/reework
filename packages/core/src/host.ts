@@ -21,11 +21,14 @@ import type {
   ActivityRun,
   ActivityProposal,
   ActivityCase,
+  AgentStatus,
 } from "@reework/types";
 import { isAuthor, normalizeAuthor } from "@reework/types";
-import type { Engine } from "./engine.ts";
+import type { Engine, EngineChannel } from "./engine.ts";
 import { CONTEXT } from "./engine.ts";
 import { ConversationsDoc } from "./protocol/conversations.ts";
+import { IntakeDoc } from "./protocol/intake.ts";
+import type { HeldInput } from "./protocol/intake.ts";
 import { FilesDoc } from "./protocol/files.ts";
 import { FileStore } from "./files/store.ts";
 import { applyCasePatch, toCase, validateCasePatch } from "./protocol/cases.ts";
@@ -97,6 +100,8 @@ export interface SubmitResult {
   readonly duplicate?: boolean;
   /** The assistant answer, when `wait` was set and the input was answered. */
   readonly message?: Message;
+  /** True when intake was paused: the input is stored and no run started. */
+  readonly held?: boolean;
 }
 
 export interface ConversationRead {
@@ -109,7 +114,11 @@ export interface ConversationRead {
  * `setup`, and the HTTP server. Every surface goes through it.
  */
 export class AgentHost {
-  readonly engine: Engine;
+  /** The engine reads and commits go through; a stop swaps it for the stop-only engine. */
+  private readonly channel: EngineChannel;
+  get engine(): Engine {
+    return this.channel.current;
+  }
   private readonly agent: AgentChange;
   private readonly workspace: WorkspaceProvider | undefined;
   private readonly fileStore: FileStore;
@@ -122,23 +131,164 @@ export class AgentHost {
   private readonly headless: boolean;
   /** A gateway-backed model surfaces its failures as errors. */
   private readonly gatewayModel: boolean;
+  /** The in-memory pause cache, seeded at boot and updated on every pause and resume. */
+  private pausedCache: boolean;
+  /** In-process listeners for pause and resume, after the commit. */
+  private readonly agentStateListeners = new Set<(state: AgentStatus) => void>();
+  /** True during the stop window: progress calls are refused, reads still answer. */
+  private stopping = false;
 
   constructor(
-    engine: Engine,
+    engine: Engine | EngineChannel,
     agent: AgentChange,
     workspace?: WorkspaceProvider,
     files: { maxBytes?: number } = {},
     events?: EventDispatcher,
-    options: { headless?: boolean; gatewayModel?: boolean } = {},
+    options: { headless?: boolean; gatewayModel?: boolean; paused?: boolean } = {},
   ) {
-    this.engine = engine;
+    this.channel = "current" in engine ? engine : { current: engine };
     this.agent = agent;
     this.workspace = workspace;
-    this.fileStore = new FileStore(engine.path);
+    this.fileStore = new FileStore(this.channel.current.path);
     this.filesMaxBytes = files.maxBytes ?? 10 * 1024 * 1024;
     this.events = events;
     this.headless = options.headless === true;
     this.gatewayModel = options.gatewayModel === true;
+    this.pausedCache = options.paused === true;
+  }
+
+  /** Whether intake is paused, from the boot-seeded in-memory cache. */
+  get paused(): boolean {
+    return this.pausedCache;
+  }
+
+  /** Subscribe (in-process) to pause and resume commits. Returns an unsubscribe fn. */
+  onAgentStateChanged(listener: (state: AgentStatus) => void): () => void {
+    this.agentStateListeners.add(listener);
+    return () => this.agentStateListeners.delete(listener);
+  }
+
+  private notifyAgentState(state: AgentStatus): void {
+    for (const listener of this.agentStateListeners) {
+      try {
+        listener(state);
+      } catch (error) {
+        console.error("[reework] agent state listener threw:", error);
+      }
+    }
+  }
+
+  /** Enter the stop window: progress calls answer `AgentStopping`, reads keep answering. */
+  beginStopping(): void {
+    this.stopping = true;
+  }
+
+  /** The durable intake document; a record without one reads as its initial value. */
+  private async intakeDoc(): Promise<{
+    paused: boolean;
+    pausedAt?: number;
+    resumedAt?: number;
+    held: HeldInput[];
+  }> {
+    const doc = await this.engine.harness.snapshot(IntakeDoc, CONTEXT);
+    return doc ?? { paused: false, held: [] };
+  }
+
+  private statusOf(
+    doc: { paused: boolean; pausedAt?: number; resumedAt?: number; held: readonly HeldInput[] },
+    inspect: { submissions: readonly { type: string; status: string }[] },
+  ): AgentStatus {
+    return {
+      paused: doc.paused,
+      ...(doc.pausedAt === undefined ? {} : { pausedAt: doc.pausedAt }),
+      ...(doc.resumedAt === undefined ? {} : { resumedAt: doc.resumedAt }),
+      activeRuns: inspect.submissions.filter((s) => s.type === "input" && s.status === "placed")
+        .length,
+      heldInputs: doc.held.length,
+    };
+  }
+
+  /** The durable intake state and the work in flight: the authoritative answer. */
+  async status(): Promise<AgentStatus> {
+    const doc = await this.intakeDoc();
+    const inspect = await this.engine.harness.inspect(CONTEXT);
+    return this.statusOf(doc, inspect);
+  }
+
+  /** Pause intake; idempotent, so a retried call writes and publishes nothing. */
+  async pause(): Promise<AgentStatus> {
+    if (this.stopping) throw new AgentStopping();
+    if (this.pausedCache) return this.status();
+    const now = Date.now();
+    await this.engine.commit(async (tx) => {
+      const doc = await tx.doc(IntakeDoc);
+      if (!doc.paused) {
+        doc.paused = true;
+        doc.pausedAt = now;
+      }
+    });
+    this.pausedCache = true;
+    const status = await this.status();
+    this.notifyAgentState(status);
+    return status;
+  }
+
+  /** Resume intake and admit held input in arrival order; idempotent without held input. */
+  async resume(): Promise<AgentStatus> {
+    if (this.stopping) throw new AgentStopping();
+    if (!this.pausedCache) {
+      // A leftover of an interrupted resume drains; otherwise nothing is written.
+      await this.drainHeld();
+      return this.status();
+    }
+    const now = Date.now();
+    await this.engine.commit(async (tx) => {
+      const doc = await tx.doc(IntakeDoc);
+      if (doc.paused) {
+        doc.paused = false;
+        doc.resumedAt = now;
+      }
+    });
+    this.pausedCache = false;
+    await this.drainHeld();
+    const status = await this.status();
+    this.notifyAgentState(status);
+    return status;
+  }
+
+  /**
+   * Admit held input in arrival order, one submission each. The entry is removed
+   * only after its submission is admitted; a resubmission under the same key is
+   * found as an existing submission, so a crash mid-resume never runs twice.
+   */
+  private async drainHeld(): Promise<void> {
+    const doc = await this.intakeDoc();
+    for (const held of doc.held) {
+      const requestId = held.requestId ?? `held:${held.id}`;
+      const conversationId = Number(held.conversationId) as unknown as ConversationId;
+      const existing = await this.engine.commit((tx) =>
+        tx.submissionByRequest(conversationId, requestId),
+      );
+      if (existing === undefined) {
+        const conversation = await this.conversation(held.conversationId);
+        await conversation.submit(
+          {
+            type: "input",
+            content: held.content,
+            whenBusy: "followUp",
+            requestId,
+            ...(held.from === undefined
+              ? {}
+              : { entry: { kind: "reework.input", data: { from: held.from } } }),
+          },
+          CONTEXT,
+        );
+      }
+      await this.engine.commit(async (tx) => {
+        const intake = await tx.doc(IntakeDoc);
+        intake.held = intake.held.filter((entry) => entry.id !== held.id);
+      });
+    }
   }
 
   async createConversation(options: CreateConversationOptions = {}): Promise<ConversationInfo> {
@@ -704,6 +854,14 @@ export class ModelRunError extends Error {
     super(`model error: ${detail}`);
     this.name = "ModelRunError";
     this.detail = detail;
+  }
+}
+
+/** A progress call was made while the agent is stopping. */
+export class AgentStopping extends Error {
+  constructor() {
+    super("agent is stopping");
+    this.name = "AgentStopping";
   }
 }
 

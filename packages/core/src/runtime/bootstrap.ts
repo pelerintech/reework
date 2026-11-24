@@ -16,8 +16,10 @@ import { isAuthor, PLUGIN_ROUTE_PREFIX } from "@reework/types";
 import type { Author } from "@reework/types";
 import type { AgentDefinition, DeclaredModule } from "../agent-definition.ts";
 import { CONTEXT, Engine } from "../engine.ts";
+import type { EngineChannel } from "../engine.ts";
 import { installHITL } from "../hitl/gate.ts";
 import { AgentHost } from "../host.ts";
+import { IntakeDoc } from "../protocol/intake.ts";
 import { createServer } from "../server/index.ts";
 import { ActivityHub } from "../server/activity.ts";
 import type { ActivityOptions } from "../server/activity.ts";
@@ -93,6 +95,14 @@ export interface RunningAgent {
   readonly app: ReturnType<typeof createServer>["app"];
   /** Serve the app (REST + WebSocket) on `port`; `0` picks a free port. */
   listen(port: number, hostname?: string): Promise<{ port: number; close: () => Promise<void> }>;
+  /** Pause intake; input is accepted and stored, no new run starts. Idempotent. */
+  pause(): Promise<import("@reework/types").AgentStatus>;
+  /** Resume intake; stored input runs in arrival order. Idempotent. */
+  resume(): Promise<import("@reework/types").AgentStatus>;
+  /** Whether intake is paused, from the in-memory cache. */
+  readonly paused: boolean;
+  /** The durable intake state and the work in flight. */
+  status(): Promise<import("@reework/types").AgentStatus>;
   /**
    * Stop the server and the engine (running tools get their abort signal) and release
    * the storage lock. Rejects if the engine has not closed within `timeoutMs` (default
@@ -267,6 +277,10 @@ async function boot(
     settings,
     workspaces: true,
   });
+  // The channel lets a stop point plugin commits and host reads at the stop-only
+  // engine for the duration of the plugin stops.
+  const channel: EngineChannel = { current: engine };
+  const intake = await engine.harness.snapshot(IntakeDoc, CONTEXT);
   const agentChange: AgentChange = {
     ...(agent.model
       ? { model: { provider: MODEL_PROVIDER_ID, modelId: agent.model.modelId } }
@@ -320,12 +334,16 @@ async function boot(
   });
   const pluginSockets = createPluginSocketRegistry();
   const host = new AgentHost(
-    engine,
+    channel,
     agentChange,
     workspace,
     { maxBytes: agent.files?.maxBytes },
     events,
-    { headless: agent.model === undefined, gatewayModel: secrets.isGateway() },
+    {
+      headless: agent.model === undefined,
+      gatewayModel: secrets.isGateway(),
+      paused: intake?.paused === true,
+    },
   );
   opened.engine = engine;
   opened.host = host;
@@ -381,7 +399,7 @@ async function boot(
     read: (id, fid) => host.readFile(id, fid),
     add: (id, input) => host.addFile(id, input),
   };
-  bindings.storage = { commit: (fn) => engine.commit(fn) };
+  bindings.storage = { commit: (fn) => channel.current.commit(fn) };
   bindings.inputAuthors = async (id) => {
     const conversation = await engine.harness.conversation(
       Number(id) as unknown as ConversationId,
@@ -444,7 +462,7 @@ async function boot(
     try {
       await plugin.built.setup?.({
         host,
-        store: createPluginStore({ commit: (fn) => engine.commit(fn) }, plugin.name),
+        store: createPluginStore({ commit: (fn) => channel.current.commit(fn) }, plugin.name),
         secrets: makePluginSecrets(plugin.name, bindings),
         config: plugin.config,
         signal: lifecycle.signal,
@@ -472,6 +490,7 @@ async function boot(
     built,
     host,
     engine,
+    channel,
     lifecycle.signal,
     token,
     options.storagePath,
@@ -504,6 +523,12 @@ async function boot(
     engine,
     host,
     app,
+    pause: () => host.pause(),
+    resume: () => host.resume(),
+    status: () => host.status(),
+    get paused() {
+      return host.paused;
+    },
     listen(port, hostname = "127.0.0.1") {
       return new Promise((resolve, reject) => {
         const server = serve({ fetch: app.fetch, port, hostname }, (info) => {
@@ -603,6 +628,7 @@ function mountPluginRoutes(
   built: readonly Built[],
   host: AgentHost,
   engine: Engine,
+  channel: EngineChannel,
   signal: AbortSignal,
   token: string,
   storagePath: string,
@@ -616,7 +642,7 @@ function mountPluginRoutes(
     const subApp = new Hono();
     const ctx: PluginRouteContext<unknown> = {
       host,
-      store: createPluginStore({ commit: (fn) => engine.commit(fn) }, plugin.name),
+      store: createPluginStore({ commit: (fn) => channel.current.commit(fn) }, plugin.name),
       secrets: makePluginSecrets(plugin.name, bindings),
       config: plugin.config,
       signal,
