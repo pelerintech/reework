@@ -766,11 +766,13 @@ export class AgentHost {
           openProposals: c.openProposals,
         };
       });
+    const intake = await this.intakeDoc();
     return {
       ...(filter === undefined ? {} : { filter }),
       runs,
       proposals,
       cases,
+      agent: this.statusOf(intake, inspect),
     };
   }
 

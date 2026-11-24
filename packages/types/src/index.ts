@@ -370,6 +370,8 @@ export interface ActivitySnapshot {
   readonly runs: readonly ActivityRun[];
   readonly proposals: readonly ActivityProposal[];
   readonly cases: readonly ActivityCase[];
+  /** The agent's intake state at snapshot time; always present. */
+  readonly agent: AgentStatus;
 }
 
 export type ActivityEventKind =
@@ -440,6 +442,17 @@ export interface ActivityModelUsageEvent extends ActivityEventBase {
   readonly usage: ModelUsage;
 }
 
+/** The agent's intake state changed; agent-level, so it names no conversation. */
+export interface ActivityAgentStateEvent {
+  readonly kind: "agent_state";
+  readonly timestamp: number;
+  readonly paused: boolean;
+  readonly pausedAt?: number;
+  readonly resumedAt?: number;
+  readonly activeRuns: number;
+  readonly heldInputs: number;
+}
+
 export type ActivityEvent =
   | ActivityRunStartedEvent
   | ActivityRunEndedEvent
@@ -448,7 +461,8 @@ export type ActivityEvent =
   | ActivityProposalOpenedEvent
   | ActivityProposalSettledEvent
   | ActivityCaseChangedEvent
-  | ActivityModelUsageEvent;
+  | ActivityModelUsageEvent
+  | ActivityAgentStateEvent;
 
 /** The snapshot arrives first, exactly once per connection. */
 export interface ActivitySnapshotFrame {
