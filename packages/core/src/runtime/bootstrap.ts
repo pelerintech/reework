@@ -508,6 +508,9 @@ async function boot(
   }
   // Continue whatever the previous process left unfinished: runs, gates, tasks.
   engine.resume();
+  // A not-paused agent with held input is the leftover of a resume the last
+  // process did not finish; a paused agent keeps its held input held.
+  if (intake !== undefined && !intake.paused && intake.held.length > 0) await host.resume();
   const servers = new Set<ServerType>();
   const closeServer = (server: ServerType) =>
     new Promise<void>((resolve) => {
