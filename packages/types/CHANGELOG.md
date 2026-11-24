@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.4.0](https://github.com/pelerintech/reework/compare/types-v1.3.0...types-v1.4.0) (2026-11-24)
+
+
+### Features
+
+* **core:** add durable intake pause state ([93c0528](https://github.com/pelerintech/reework/commit/93c0528cbc6b24a1de4256f28373445becc710da))
+* **core:** pause intake and interrupt tools on a graceful stop ([baf060c](https://github.com/pelerintech/reework/commit/baf060c69d0c8ef47156bf95e9c42989d4588b09))
+* **types:** add token-guarded pause, resume and status routes ([4e724ab](https://github.com/pelerintech/reework/commit/4e724ab61dbec77433a833261093404b7b28401d))
+* **types:** report agent pause state on the activity stream ([35784c8](https://github.com/pelerintech/reework/commit/35784c8a43220297fe5b99131ea8c7871b9e095c))
+
 ## [1.3.0](https://github.com/pelerintech/reework/compare/types-v1.2.0...types-v1.3.0) (2026-11-17)
 
 
