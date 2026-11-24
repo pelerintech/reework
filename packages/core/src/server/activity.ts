@@ -10,10 +10,12 @@ import type {
   SubmissionId,
 } from "@earendil-works/pi-durable";
 import type {
+  ActivityAgentStateEvent,
   ActivityEvent,
   ActivityFilter,
   ActivityFrame,
   AgentEvent,
+  AgentStatus,
   Case,
   Proposal,
 } from "@reework/types";
@@ -29,6 +31,9 @@ import {
 import type { ConversationRecord } from "../protocol/conversations.ts";
 import type { SettledProposal } from "../hitl/gate.ts";
 import type { ModelUsageEvent } from "../tooling/facade.ts";
+
+/** A conversation-scoped activity event; agent state names no conversation. */
+type ConversationActivityEvent = Exclude<ActivityEvent, ActivityAgentStateEvent>;
 
 /** The deployment bounds of an activity connection's queue. */
 export interface ActivityOptions {
@@ -185,6 +190,23 @@ export class ActivityHub {
     void this.refreshWatchers();
   }
 
+  /** Pause or resume: publish to every subscriber; agent state names no conversation. */
+  publishAgentState(state: AgentStatus): void {
+    const event: ActivityAgentStateEvent = {
+      kind: "agent_state",
+      timestamp: Date.now(),
+      paused: state.paused,
+      ...(state.pausedAt === undefined ? {} : { pausedAt: state.pausedAt }),
+      ...(state.resumedAt === undefined ? {} : { resumedAt: state.resumedAt }),
+      activeRuns: state.activeRuns,
+      heldInputs: state.heldInputs,
+    };
+    for (const subscriber of this.subscribers.values()) {
+      if (subscriber.closed) continue;
+      this.enqueue(subscriber, { kind: "event", event });
+    }
+  }
+
   /** A case write: update membership, publish the change, and re-evaluate watchers. */
   publishCase(c: Case): void {
     this.records.set(c.id, recordOfCase(c));
@@ -307,6 +329,7 @@ export class ActivityHub {
         runId: mapped.runId,
         timestamp: mapped.timestamp,
       });
+      await this.publishRestWhilePaused();
     } else if (mapped.kind === "run_end") {
       this.runActive.set(watcher.id, false);
       const outcome = await this.runOutcome(mapped.runId);
@@ -318,6 +341,7 @@ export class ActivityHub {
         timestamp: mapped.timestamp,
       });
       await this.refreshWatchers();
+      await this.publishRestWhilePaused();
     } else if (mapped.kind === "tool_execution_start") {
       watcher.starts.set(mapped.callId, mapped.timestamp);
       this.publishEvent({
@@ -351,8 +375,14 @@ export class ActivityHub {
     return status?.status === "unanswered" ? "unanswered" : "completed";
   }
 
+  /** While paused, each run start and end carries the count a drainer watches fall to zero. */
+  private async publishRestWhilePaused(): Promise<void> {
+    if (!this.host.paused) return;
+    this.publishAgentState(await this.host.status());
+  }
+
   /** Queue an event for every subscriber whose current record matches it. */
-  private publishEvent(event: ActivityEvent): void {
+  private publishEvent(event: ConversationActivityEvent): void {
     const record = this.records.get(event.conversationId);
     if (!record) return;
     for (const subscriber of this.subscribers.values()) {

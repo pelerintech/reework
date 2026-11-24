@@ -16,6 +16,11 @@ import type { HitlState } from "./hitl/gate.ts";
 
 export const CONTEXT = BACKGROUND_CONTEXT;
 
+/** The engine a running agent reads and commits through; a stop swaps it for a stop-only engine. */
+export interface EngineChannel {
+  current: Engine;
+}
+
 /** Default agent: the mock (faux) model at the LLM boundary. */
 function defaultAgent(): AgentChange {
   return { model: { provider: "faux", modelId: "faux-1" } };

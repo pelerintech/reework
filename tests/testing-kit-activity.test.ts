@@ -56,6 +56,7 @@ describe("testing kit: the activity stream", () => {
       const frame = await client.next();
       expect(frame.kind).toBe("event");
       if (frame.kind !== "event") throw new Error("expected an event frame");
+      if (frame.event.kind === "agent_state") throw new Error("expected a conversation event");
       expect(frame.event.conversationId).toBe(conversation.id);
       await client.close();
       const handle = listener();

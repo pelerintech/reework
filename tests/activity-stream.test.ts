@@ -30,6 +30,7 @@ async function nextEvent(
     const frame = await client.next();
     if (
       frame.kind === "event" &&
+      frame.event.kind !== "agent_state" &&
       frame.event.conversationId === conversationId &&
       frame.event.kind === kind
     ) {
@@ -279,7 +280,11 @@ describe("the activity stream", () => {
     const kinds: string[] = [];
     while (!(kinds.includes("run_started") && kinds.includes("run_ended"))) {
       const frame = await client.next();
-      if (frame.kind === "event" && frame.event.conversationId === conversation.id) {
+      if (
+        frame.kind === "event" &&
+        frame.event.kind !== "agent_state" &&
+        frame.event.conversationId === conversation.id
+      ) {
         kinds.push(frame.event.kind);
       }
     }
@@ -822,7 +827,8 @@ describe("the activity stream", () => {
     }
     const events = client.frames
       .filter((f): f is Extract<ActivityFrame, { kind: "event" }> => f.kind === "event")
-      .map((f) => f.event);
+      .map((f) => f.event)
+      .filter((event) => event.kind !== "agent_state");
     expect(events.length).toBeGreaterThan(0);
     for (const event of events) {
       expect(event.conversationId).toBe(a.id);
@@ -974,7 +980,8 @@ describe("the activity stream", () => {
     }
     const events = filtered.frames
       .filter((f): f is Extract<ActivityFrame, { kind: "event" }> => f.kind === "event")
-      .map((f) => f.event);
+      .map((f) => f.event)
+      .filter((event) => event.kind !== "agent_state");
     expect(events.length).toBeGreaterThan(0);
     for (const event of events) expect(event.conversationId).toBe(a.id);
     await filtered.close();

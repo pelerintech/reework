@@ -16,8 +16,10 @@ import { isAuthor, PLUGIN_ROUTE_PREFIX } from "@reework/types";
 import type { Author } from "@reework/types";
 import type { AgentDefinition, DeclaredModule } from "../agent-definition.ts";
 import { CONTEXT, Engine } from "../engine.ts";
+import type { EngineChannel } from "../engine.ts";
 import { installHITL } from "../hitl/gate.ts";
 import { AgentHost } from "../host.ts";
+import { IntakeDoc } from "../protocol/intake.ts";
 import { createServer } from "../server/index.ts";
 import { ActivityHub } from "../server/activity.ts";
 import type { ActivityOptions } from "../server/activity.ts";
@@ -93,6 +95,14 @@ export interface RunningAgent {
   readonly app: ReturnType<typeof createServer>["app"];
   /** Serve the app (REST + WebSocket) on `port`; `0` picks a free port. */
   listen(port: number, hostname?: string): Promise<{ port: number; close: () => Promise<void> }>;
+  /** Pause intake; input is accepted and stored, no new run starts. Idempotent. */
+  pause(): Promise<import("@reework/types").AgentStatus>;
+  /** Resume intake; stored input runs in arrival order. Idempotent. */
+  resume(): Promise<import("@reework/types").AgentStatus>;
+  /** Whether intake is paused, from the in-memory cache. */
+  readonly paused: boolean;
+  /** The durable intake state and the work in flight. */
+  status(): Promise<import("@reework/types").AgentStatus>;
   /**
    * Stop the server and the engine (running tools get their abort signal) and release
    * the storage lock. Rejects if the engine has not closed within `timeoutMs` (default
@@ -267,6 +277,10 @@ async function boot(
     settings,
     workspaces: true,
   });
+  // The channel lets a stop point plugin commits and host reads at the stop-only
+  // engine for the duration of the plugin stops.
+  const channel: EngineChannel = { current: engine };
+  const intake = await engine.harness.snapshot(IntakeDoc, CONTEXT);
   const agentChange: AgentChange = {
     ...(agent.model
       ? { model: { provider: MODEL_PROVIDER_ID, modelId: agent.model.modelId } }
@@ -320,12 +334,16 @@ async function boot(
   });
   const pluginSockets = createPluginSocketRegistry();
   const host = new AgentHost(
-    engine,
+    channel,
     agentChange,
     workspace,
     { maxBytes: agent.files?.maxBytes },
     events,
-    { headless: agent.model === undefined, gatewayModel: secrets.isGateway() },
+    {
+      headless: agent.model === undefined,
+      gatewayModel: secrets.isGateway(),
+      paused: intake?.paused === true,
+    },
   );
   opened.engine = engine;
   opened.host = host;
@@ -339,6 +357,10 @@ async function boot(
     activityHub.publishUsage(event);
   };
   host.onCaseUpdated((c) => activityHub.publishCase(c));
+  host.onAgentStateChanged((state) => {
+    activityHub.publishAgentState(state);
+    events.enqueue("onAgentState", undefined, state);
+  });
   onProposalOpen(engine, (proposal) => {
     activityHub.publishProposalOpened(proposal);
     void host
@@ -381,7 +403,7 @@ async function boot(
     read: (id, fid) => host.readFile(id, fid),
     add: (id, input) => host.addFile(id, input),
   };
-  bindings.storage = { commit: (fn) => engine.commit(fn) };
+  bindings.storage = { commit: (fn) => channel.current.commit(fn) };
   bindings.inputAuthors = async (id) => {
     const conversation = await engine.harness.conversation(
       Number(id) as unknown as ConversationId,
@@ -444,7 +466,7 @@ async function boot(
     try {
       await plugin.built.setup?.({
         host,
-        store: createPluginStore({ commit: (fn) => engine.commit(fn) }, plugin.name),
+        store: createPluginStore({ commit: (fn) => channel.current.commit(fn) }, plugin.name),
         secrets: makePluginSecrets(plugin.name, bindings),
         config: plugin.config,
         signal: lifecycle.signal,
@@ -472,6 +494,7 @@ async function boot(
     built,
     host,
     engine,
+    channel,
     lifecycle.signal,
     token,
     options.storagePath,
@@ -489,6 +512,9 @@ async function boot(
   }
   // Continue whatever the previous process left unfinished: runs, gates, tasks.
   engine.resume();
+  // A not-paused agent with held input is the leftover of a resume the last
+  // process did not finish; a paused agent keeps its held input held.
+  if (intake !== undefined && !intake.paused && intake.held.length > 0) await host.resume();
   const servers = new Set<ServerType>();
   const closeServer = (server: ServerType) =>
     new Promise<void>((resolve) => {
@@ -504,6 +530,12 @@ async function boot(
     engine,
     host,
     app,
+    pause: () => host.pause(),
+    resume: () => host.resume(),
+    status: () => host.status(),
+    get paused() {
+      return host.paused;
+    },
     listen(port, hostname = "127.0.0.1") {
       return new Promise((resolve, reject) => {
         const server = serve({ fetch: app.fetch, port, hostname }, (info) => {
@@ -561,16 +593,8 @@ async function boot(
             `agent did not stop within ${timeoutMs} ms; still running: queued event hooks`,
           );
         }
-        let stopping: string | undefined;
-        const stops = stopPlugins(built, (name) => (stopping = name));
-        const stopped = await Promise.race([stops.then(() => "stopped" as const), timedOut]);
-        if (stopped === "timeout") {
-          void engine.close().catch(() => {});
-          const name = stopping ?? [...built].reverse()[0]?.name ?? "unknown";
-          throw new Error(
-            `agent did not stop within ${timeoutMs} ms; plugin "${name}" still stopping`,
-          );
-        }
+        // The engine close is the interrupt: it signals every invocation and joins
+        // them without writing an outcome, so the tasks stay pending like a crash.
         const still = await stillRunning(engine);
         const closed = await Promise.race([engine.close().then(() => "closed" as const), timedOut]);
         if (closed === "timeout") {
@@ -578,6 +602,37 @@ async function boot(
             `agent did not stop within ${timeoutMs} ms; still running: ${still || "unknown work"}`,
           );
         }
+        // Progress calls are refused from here; plugin stops may still commit and
+        // read through a stop-only engine over the same storage (no scheduling).
+        host.beginStopping();
+        let stopOnly: Engine | undefined;
+        if (built.some((plugin) => plugin.built.stop !== undefined)) {
+          try {
+            stopOnly = await Engine.open({
+              storagePath: options.storagePath,
+              models,
+              registry,
+              settings,
+              workspaces: true,
+            });
+          } catch (error) {
+            console.error("[reework] stop-only engine failed to open:", error);
+          }
+        }
+        channel.current = stopOnly ?? engine;
+        let stopping: string | undefined;
+        const stops = stopPlugins(built, (name) => (stopping = name));
+        const stopped = await Promise.race([stops.then(() => "stopped" as const), timedOut]);
+        if (stopped === "timeout") {
+          channel.current = engine;
+          await stopOnly?.close().catch(() => {});
+          const name = stopping ?? [...built].reverse()[0]?.name ?? "unknown";
+          throw new Error(
+            `agent did not stop within ${timeoutMs} ms; plugin "${name}" still stopping`,
+          );
+        }
+        channel.current = engine;
+        await stopOnly?.close().catch(() => {});
       } finally {
         clearTimeout(timer);
         unlock();
@@ -603,6 +658,7 @@ function mountPluginRoutes(
   built: readonly Built[],
   host: AgentHost,
   engine: Engine,
+  channel: EngineChannel,
   signal: AbortSignal,
   token: string,
   storagePath: string,
@@ -616,7 +672,7 @@ function mountPluginRoutes(
     const subApp = new Hono();
     const ctx: PluginRouteContext<unknown> = {
       host,
-      store: createPluginStore({ commit: (fn) => engine.commit(fn) }, plugin.name),
+      store: createPluginStore({ commit: (fn) => channel.current.commit(fn) }, plugin.name),
       secrets: makePluginSecrets(plugin.name, bindings),
       config: plugin.config,
       signal,

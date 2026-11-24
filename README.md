@@ -140,6 +140,34 @@ const [proposal] = await client.listProposals();
 await client.decide({ proposalId: proposal.id, selectedOption: "restart", instruction: null });
 ```
 
+## Pause and resume
+
+A running agent can stop admitting new work without cutting off what it is already doing. `POST /pause` (behind
+the API token like every built-in route) accepts and stores every input — API submits, channel messages, plugin
+runs, scheduled prompts — and starts no new run; runs in progress finish, proposals stay answerable, and a
+decision on an existing gate continues that case's run. `POST /resume` runs the stored input in arrival order within
+each conversation (different conversations run concurrently), and
+`GET /status` reports `{ paused, pausedAt?, resumedAt?, activeRuns, heldInputs }`. Both verbs are idempotent, the
+pause survives a restart, and `agent.pause()` / `agent.resume()` / `agent.status()` do the same in process. A
+drainer watches `activeRuns` fall to zero on `GET /activity/ws` before stopping the process. A held input answers
+`{ submissionId, held: true }` with no message; its `submissionId` is the held input's own id, and the run it later
+starts has pi-durable's submission id.
+
+```sh
+curl -X POST -H "Authorization: Bearer $REEWORK_API_TOKEN" http://127.0.0.1:8080/pause
+curl -H "Authorization: Bearer $REEWORK_API_TOKEN" http://127.0.0.1:8080/status
+curl -X POST -H "Authorization: Bearer $REEWORK_API_TOKEN" http://127.0.0.1:8080/resume
+```
+
+## Stopping
+
+`agent.stop()` (or SIGINT to `reework start`) interrupts in-flight runs and tools before it stops plugins, the
+same way a crash does: the tasks stay pending in storage, so after a restart a `replay: "safe"` tool re-runs and
+an unsafe call settles `interrupted` instead of failing on a connection a plugin closed. Plugin `stop()` can still
+commit and read, and progress calls made during the stop window answer `409 agent_stopping`. To drain rather than
+interrupt, pause first, wait for `activeRuns` to reach zero, then stop. `/health` stays an unauthenticated liveness
+probe and carries no pause state.
+
 ## Architecture
 
 How an agent project, `@reework/core` and pi-durable fit together, with a diagram:

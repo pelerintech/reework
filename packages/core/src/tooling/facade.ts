@@ -36,6 +36,7 @@ import type {
   ModelMessage,
   ModelUsage,
   RunStopNotice,
+  AgentStatus,
 } from "@reework/types";
 import { isAuthor } from "@reework/types";
 import { Type } from "@earendil-works/pi-ai";
@@ -516,7 +517,14 @@ export interface PluginHooks {
   ): Promise<{ summary: string } | { decline: true } | void>;
   /** Input was admitted (not a duplicate); it covers every source of input. */
   onInput?(
-    input: { conversationId: string; submissionId: string; content: string; from?: Author },
+    input: {
+      conversationId: string;
+      submissionId: string;
+      content: string;
+      from?: Author;
+      /** True for an input accepted while paused; it runs on resume under its own submission id. */
+      held?: boolean;
+    },
     ctx: PluginEventContext,
   ): Promise<void>;
   /** A gate proposal opened, before any decision. */
@@ -544,6 +552,8 @@ export interface PluginHooks {
   ): Promise<{ refuse: string } | void>;
   /** Another plugin emitted an event with `ctx.emit`; the emitter never receives its own. */
   onPluginEvent?(input: PluginEvent, ctx: PluginEventContext): Promise<void>;
+  /** Intake paused or resumed; agent-level, once per transition, after the commit. */
+  onAgentState?(input: AgentStatus, ctx: PluginEventContext): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------

@@ -319,6 +319,20 @@ export interface ActivityFilter {
   readonly tag?: readonly string[];
 }
 
+/** The agent's intake state: whether input is held and how much work is in flight. */
+export interface AgentStatus {
+  /** Whether intake is paused. */
+  readonly paused: boolean;
+  /** When the current pause began; absent when never paused. */
+  readonly pausedAt?: number;
+  /** When intake last resumed; absent when never resumed. */
+  readonly resumedAt?: number;
+  /** Runs answering placed input right now, across every conversation. */
+  readonly activeRuns: number;
+  /** Inputs accepted and stored while paused, not yet submitted. */
+  readonly heldInputs: number;
+}
+
 /** The conversation an activity belongs to. */
 export interface ActivityConversation {
   readonly conversationId: string;
@@ -356,6 +370,8 @@ export interface ActivitySnapshot {
   readonly runs: readonly ActivityRun[];
   readonly proposals: readonly ActivityProposal[];
   readonly cases: readonly ActivityCase[];
+  /** The agent's intake state at snapshot time; always present. */
+  readonly agent: AgentStatus;
 }
 
 export type ActivityEventKind =
@@ -426,6 +442,17 @@ export interface ActivityModelUsageEvent extends ActivityEventBase {
   readonly usage: ModelUsage;
 }
 
+/** The agent's intake state changed; agent-level, so it names no conversation. */
+export interface ActivityAgentStateEvent {
+  readonly kind: "agent_state";
+  readonly timestamp: number;
+  readonly paused: boolean;
+  readonly pausedAt?: number;
+  readonly resumedAt?: number;
+  readonly activeRuns: number;
+  readonly heldInputs: number;
+}
+
 export type ActivityEvent =
   | ActivityRunStartedEvent
   | ActivityRunEndedEvent
@@ -434,7 +461,8 @@ export type ActivityEvent =
   | ActivityProposalOpenedEvent
   | ActivityProposalSettledEvent
   | ActivityCaseChangedEvent
-  | ActivityModelUsageEvent;
+  | ActivityModelUsageEvent
+  | ActivityAgentStateEvent;
 
 /** The snapshot arrives first, exactly once per connection. */
 export interface ActivitySnapshotFrame {
@@ -603,6 +631,25 @@ export interface RouteSpec {
 
 export const ROUTES = {
   health: { method: "GET", path: "/health", auth: "open", summary: "Liveness and the agent name" },
+  "agent.pause": {
+    method: "POST",
+    path: "/pause",
+    auth: "token",
+    summary:
+      "Pause intake: input is accepted and stored, no new run starts; runs in progress continue",
+  },
+  "agent.resume": {
+    method: "POST",
+    path: "/resume",
+    auth: "token",
+    summary: "Resume intake: stored input runs in arrival order",
+  },
+  "agent.status": {
+    method: "GET",
+    path: "/status",
+    auth: "token",
+    summary: "Pause state, active runs and held input",
+  },
   "conversations.create": {
     method: "POST",
     path: "/conversations",

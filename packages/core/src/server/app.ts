@@ -18,6 +18,7 @@ import { createEventMapper } from "../protocol/event-mapper.ts";
 import { onProposalOpen, onProposalSettled } from "../protocol/proposals.ts";
 import { CONTEXT } from "../engine.ts";
 import {
+  AgentStopping,
   ConversationNotFound,
   FileNotFound,
   FileTooLarge,
@@ -94,6 +95,9 @@ export function protocolErrorResponse(error: unknown, c: Context): Response | un
   if (error instanceof HeadlessAgentError) {
     return c.json({ error: "cannot_start_run", message: error.message }, 409);
   }
+  if (error instanceof AgentStopping) {
+    return c.json({ error: "agent_stopping" }, 409);
+  }
   if (error instanceof ModelRunError) {
     return c.json({ error: "model_error", message: error.message }, 500);
   }
@@ -140,6 +144,10 @@ export function createServer(host: AgentHost, options: ServerOptions) {
   const handlers: Record<RouteId, Handler> = {
     health: (c) =>
       c.json(options.name === undefined ? { ok: true } : { ok: true, name: options.name }),
+
+    "agent.pause": async (c) => c.json(await host.pause()),
+    "agent.resume": async (c) => c.json(await host.resume()),
+    "agent.status": async (c) => c.json(await host.status()),
 
     "conversations.create": async (c) => {
       const body = await c.req
@@ -245,7 +253,12 @@ export function createServer(host: AgentHost, options: ServerOptions) {
           files,
           from,
         });
-        return c.json({ conversationId: id, ...result }, wait || duplicate ? 200 : 202);
+        // A held input is accepted work with no answer to wait for: 202 even with
+        // `wait`, and even when it is a repeated held requestId.
+        return c.json(
+          { conversationId: id, ...result },
+          result.held ? 202 : wait || duplicate ? 200 : 202,
+        );
       } catch (error) {
         if (error instanceof FileNotFound) {
           return c.json({ error: "file_not_found", fileId: error.fileId }, 400);

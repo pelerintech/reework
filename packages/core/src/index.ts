@@ -15,6 +15,7 @@ export type {
 
 export {
   AgentHost,
+  AgentStopping,
   ConversationNotFound,
   GateAudienceRejected,
   HeadlessAgentError,
