@@ -253,7 +253,12 @@ export function createServer(host: AgentHost, options: ServerOptions) {
           files,
           from,
         });
-        return c.json({ conversationId: id, ...result }, wait || duplicate ? 200 : 202);
+        // A held input is accepted work with no answer to wait for: 202 even with
+        // `wait`, and even when it is a repeated held requestId.
+        return c.json(
+          { conversationId: id, ...result },
+          result.held ? 202 : wait || duplicate ? 200 : 202,
+        );
       } catch (error) {
         if (error instanceof FileNotFound) {
           return c.json({ error: "file_not_found", fileId: error.fileId }, 400);

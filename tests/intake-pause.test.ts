@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { Type, definePlugin, defineTool } from "@reework/core";
 import { waitForIdle } from "@reework/core/testing";
-import { fauxModels, startTestAgent, testDefinition } from "./support/agent.ts";
+import { authedApp, fauxModels, startTestAgent, testDefinition } from "./support/agent.ts";
 import { eventually } from "./support/wait.ts";
 
 /** A tool that blocks until released (or the run is aborted). */
@@ -99,6 +99,23 @@ describe("intake while paused", () => {
     expect(authored.held).toBe(true);
     expect((await agent.status()).heldInputs).toBe(4);
     expect((await agent.status()).activeRuns).toBe(0);
+  });
+
+  it("answers 202 for a held input submitted with wait through the API", async () => {
+    const agent = await startTestAgent(testDefinition());
+    const { id } = await agent.host.createConversation();
+    await agent.pause();
+
+    const res = await authedApp(agent).request(`/conversations/${id}/messages?wait=true`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: "waiting" }),
+    });
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as { held?: boolean; message?: unknown };
+    expect(body.held).toBe(true);
+    expect(body.message).toBeUndefined();
+    expect((await agent.status()).heldInputs).toBe(1);
   });
 
   it("deduplicates a repeated requestId against the held input", async () => {
